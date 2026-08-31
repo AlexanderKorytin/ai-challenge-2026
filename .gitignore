@@ -1,0 +1,18 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Node
+node_modules/
+
+# Видео-записи отчётов — хранятся на Google Диске, не в git
+*.mp4
+*.mov
+
+# Временные файлы записи экрана
+*.pid
