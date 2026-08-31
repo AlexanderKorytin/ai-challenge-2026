@@ -15,6 +15,7 @@ from prompt_toolkit.layout.containers import HSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.layout import Layout
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
 from . import api, ui
@@ -37,6 +38,7 @@ class State:
     awaiting_key: bool = False
     log: Fragments = field(default_factory=list)
     line_count: int = 0
+    autoscroll: bool = True
 
 
 def append_log(state: State, fragments: Fragments) -> None:
@@ -235,21 +237,35 @@ async def handle_submit(raw_text: str, state: State) -> None:
 
 
 def on_submit(buf, state: State) -> bool:  # noqa: ANN001 — тип Buffer, не импортируем ради аннотации
+    state.autoscroll = True  # новое сообщение — вернуться к живому выводу
     asyncio.get_event_loop().create_task(handle_submit(buf.text, state))
     return False
 
 
+class LogWindow(Window):
+    """Window с логом: колесо мыши отключает автопрокрутку (даём пролистать историю)."""
+
+    def __init__(self, *args, on_manual_scroll, **kwargs) -> None:  # noqa: ANN001
+        super().__init__(*args, **kwargs)
+        self._on_manual_scroll = on_manual_scroll
+
+    def _mouse_handler(self, mouse_event: MouseEvent):
+        if mouse_event.event_type in (MouseEventType.SCROLL_UP, MouseEventType.SCROLL_DOWN):
+            self._on_manual_scroll()
+        return super()._mouse_handler(mouse_event)
+
+
 def build_app(state: State) -> Application:
-    output_control = FormattedTextControl(
-        text=lambda: state.log,
-        get_cursor_position=lambda: Point(x=0, y=state.line_count),
-        show_cursor=False,
-    )
-    output_window = Window(
+    output_control = FormattedTextControl(text=lambda: state.log, show_cursor=False)
+    output_window = LogWindow(
         content=output_control,
         wrap_lines=True,
         always_hide_cursor=True,
         height=Dimension(weight=1),
+        on_manual_scroll=lambda: setattr(state, "autoscroll", False),
+    )
+    output_control.get_cursor_position = lambda: (
+        Point(x=0, y=state.line_count) if state.autoscroll else Point(x=0, y=output_window.vertical_scroll)
     )
 
     input_area = TextArea(
@@ -278,12 +294,26 @@ def build_app(state: State) -> Application:
     def _quit(event) -> None:  # noqa: ANN001
         event.app.exit()
 
+    @kb.add("pageup")
+    def _scroll_up(event) -> None:  # noqa: ANN001
+        state.autoscroll = False
+        output_window.vertical_scroll = max(0, output_window.vertical_scroll - 10)
+
+    @kb.add("pagedown")
+    def _scroll_down(event) -> None:  # noqa: ANN001
+        state.autoscroll = False
+        output_window.vertical_scroll += 10
+
+    @kb.add("c-end")
+    def _resume_autoscroll(event) -> None:  # noqa: ANN001
+        state.autoscroll = True
+
     return Application(
         layout=layout,
         key_bindings=kb,
         style=ui.STYLE,
         full_screen=True,
-        mouse_support=False,
+        mouse_support=True,
         erase_when_done=True,
     )
 
