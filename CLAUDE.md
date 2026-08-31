@@ -167,4 +167,4 @@ smoke_test.py      проверка API одним запросом: `uv run smo
 
 | # | Задание | Сервис / папка | Порт | Статус |
 |---|---------|----------------|------|--------|
-| 1 | Первый запрос к LLM через API (harness `myharness`, DeepSeek API) | `week_1/day_1` | — | Validation |
+| 1 | Первый запрос к LLM через API (harness `myharness`, DeepSeek API) | `week_1/day_1` | — | Done |
