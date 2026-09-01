@@ -297,5 +297,6 @@ JSON обрывается на полуслове и не разбирается
 ## Отчёт
 
 - Репозиторий: https://github.com/AlexanderKorytin/ai-challenge-2026
-- Код дня (ветка `day2-fish-facts`): _ссылка на снимок ниже_
+- Код дня (ветка `day2-fish-facts`):
+  https://github.com/AlexanderKorytin/ai-challenge-2026/tree/9196edb94269fcc0e26c4e1555d9415a63867c0b/week_1/day_2
 - Видео-демонстрация: записывает и выкладывает пользователь
