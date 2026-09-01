@@ -67,15 +67,12 @@ FINISH_REASONS = {
 
 
 def visible_commands(authorized: bool) -> list[tuple[str, str, str]]:
-    """Не авторизован — показываем только то, чем можно воспользоваться сейчас."""
-    out: list[tuple[str, str, str]] = []
-    for name, arg, description, needs_auth in COMMANDS:
-        if needs_auth and not authorized:
-            continue
-        if name == "/auth" and authorized:
-            description = "сменить API-ключ DeepSeek"
-        out.append((name, arg, description))
-    return out
+    """Пока ключа нет, в меню только /auth: остальное всё равно не сработает. После
+    авторизации /auth из меню уходит — он больше не нужен на каждый день. Сама команда
+    остаётся рабочей (сменить ключ можно, набрав её целиком), и в /help она есть."""
+    if not authorized:
+        return [(name, arg, description) for name, arg, description, needs_auth in COMMANDS if name == "/auth"]
+    return [(name, arg, description) for name, arg, description, _ in COMMANDS if name != "/auth"]
 
 
 def _plain_len(fragments: Fragments) -> int:
@@ -214,8 +211,10 @@ def system_prompt_fragments(profile_name: str, system: str | None) -> Fragments:
 
 
 def help_fragments() -> Fragments:
+    """В справке перечислены все команды, включая /auth: меню его после авторизации прячет,
+    а узнать, чем сменить ключ, пользователь должен где-то одном месте."""
     lines = ["Команды\n"]
-    for name, arg, description in visible_commands(authorized=True):
+    for name, arg, description, _ in COMMANDS:
         signature = f"{name} {arg}".strip()
         lines.append(f"  {signature:<20} — {description}\n")
     text = (

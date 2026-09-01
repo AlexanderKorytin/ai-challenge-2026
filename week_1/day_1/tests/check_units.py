@@ -109,10 +109,11 @@ class Doc:
 
 
 names = [c.text for c in comp.get_completions(Doc("/"), None)]
-check("без авторизации показаны только /auth, /help, /exit", set(names) == {"/auth", "/help", "/exit"}, str(names))
+check("без авторизации в меню только /auth", set(names) == {"/auth"}, str(names))
 state.config.api_key = "sk-test"
 names = [c.text for c in comp.get_completions(Doc("/"), None)]
-check("после авторизации появились остальные", {"/set", "/profile", "/params", "/model"} <= set(names), str(names))
+check("после авторизации появились остальные, а /auth ушёл",
+      {"/set", "/profile", "/params", "/model"} <= set(names) and "/auth" not in names, str(names))
 check("аргументы /set — параметры", [c.text for c in comp.get_completions(Doc("/set temp"), None)] == ["temperature"])
 check("аргументы /profile — профили", "s3" in [c.text for c in comp.get_completions(Doc("/profile "), None)])
 check("обычный текст меню не открывает", [c.text for c in comp.get_completions(Doc("щука"), None)] == [])
