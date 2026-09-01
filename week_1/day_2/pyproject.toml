@@ -1,0 +1,18 @@
+[project]
+name = "fishfacts"
+version = "0.1.0"
+description = "Агент поиска информации о рыбах: сравнение уровней контроля ответа LLM"
+requires-python = ">=3.11"
+dependencies = [
+    "myharnessfish",
+    "pydantic>=2.9",
+]
+
+[tool.uv]
+# Проект не собирается в пакет: модули берутся из рабочего каталога. Так запуск не зависит
+# от .pth-файлов — в облачной папке macOS помечает их скрытыми, а Python скрытые .pth
+# игнорирует, и editable-установка молча перестаёт работать.
+package = false
+
+[tool.uv.sources]
+myharnessfish = { path = "../day_1" }

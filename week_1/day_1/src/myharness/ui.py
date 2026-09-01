@@ -105,7 +105,7 @@ def banner_fragments(model: str, authorized: bool, profile: str, description: st
         [("class:ok", "● авторизован")] if authorized else [("class:bad", "○ не авторизован — /auth")]
     )
     lines = [
-        [("class:title", "myharness"), ("", "  ·  DeepSeek API")],
+        [("class:title", "myharnessfish"), ("", "  ·  DeepSeek API")],
         [("class:answer", AGENT_TITLE)],
         [("", "модель: "), ("class:model", model), ("", "   ")] + auth_line,
         [("", "профиль: "), ("class:model", profile)],
