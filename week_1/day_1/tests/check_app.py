@@ -23,6 +23,7 @@ from prompt_toolkit.application import create_app_session  # noqa: E402
 from prompt_toolkit.key_binding.key_processor import KeyPress  # noqa: E402
 from prompt_toolkit.keys import Keys  # noqa: E402
 from prompt_toolkit.input import create_pipe_input  # noqa: E402
+from prompt_toolkit.layout.containers import Window  # noqa: E402
 from prompt_toolkit.output import DummyOutput  # noqa: E402
 
 from myharness import api, cli, profiles  # noqa: E402
@@ -60,6 +61,24 @@ class FakeClient:
 
 def log_text(state):
     return "".join(text for _, text in state.log)
+
+
+def screen_texts(app):
+    """Тексты всех окон текущей раскладки — так видно, что показывает строка состояния."""
+    out = []
+    for window in app.layout.walk():
+        if not isinstance(window, Window):
+            continue
+        getter = getattr(window.content, "text", None)
+        if not callable(getter):
+            continue
+        try:
+            value = getter()
+        except Exception:
+            continue
+        if isinstance(value, list):
+            out.append("".join(text for _, text in value))
+    return out
 
 
 async def main():
@@ -139,7 +158,14 @@ async def main():
         await send(ESC, pause=0.5)
         check("панель закрыта перед следующим шагом", state.picker is None)
 
-        print("\n4. Ответ модели")
+        print("\n4. Строка состояния")
+        check("показывает, что ключ есть", any("● авторизован" in s for s in screen_texts(app)))
+        state.config.api_key = None
+        check("сразу отражает потерю ключа", any("не авторизован" in s for s in screen_texts(app)))
+        state.config.api_key = "sk-test"
+        check("и возвращается обратно без перезапуска", any("● авторизован" in s for s in screen_texts(app)))
+
+        print("\n5. Ответ модели")
         await send("щука" + ENTER, pause=0.4)
         text = log_text(state)
         check("вопрос показан", "› щука" in text)
@@ -151,14 +177,14 @@ async def main():
         check("temperature ушла в запрос", fake.calls[0]["params"].get("temperature") is not None)
         check("запрос ушёл выбранной моделью", fake.calls[0]["model"] == "deepseek-v4-pro", fake.calls[0]["model"])
 
-        print("\n5. Журнал")
+        print("\n6. Журнал")
         record = json.loads(Path(os.environ["MYHARNESS_JOURNAL"]).read_text(encoding="utf-8").strip().splitlines()[0])
         check("прогон записан", record["status"] == "ok" and record["query"] == "щука")
         check("в записи слепок профиля с параметрами", "temperature" in record["profile"]["params"])
         check("в записи причина остановки и токены", record["finish_reason"] == "length" and record["usage"]["completion_tokens"] == 34)
         check("ключ в журнал не попал", "sk-test" not in json.dumps(record, ensure_ascii=False))
 
-        print("\n6. Выход")
+        print("\n7. Выход")
         await send("/exit" + ENTER)
         await asyncio.sleep(0.15)
         check("приложение завершилось", run.done())

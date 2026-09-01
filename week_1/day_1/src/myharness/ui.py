@@ -24,6 +24,10 @@ STYLE = Style.from_dict(
         "user": "#61afef bold",
         "answer": "#56b6c2 bold",
         "sep": "#3b3f4a",
+        "status": "bg:#21252b #7f8896",
+        "status.ok": "bg:#21252b #98c379",
+        "status.bad": "bg:#21252b #e5c07b",
+        "status.value": "bg:#21252b #56b6c2",
         "meta": "#5c6370",
         "meta.warn": "#e5c07b",
         # всплывающие панели: меню команд и выбор значения параметра
@@ -111,6 +115,24 @@ def banner_fragments(model: str, authorized: bool, profile: str, description: st
         lines.append([("class:hint", description)])
     lines.append([("class:dim", "введите название рыбы · / — список команд")])
     return _box(lines) + [("", "\n")]
+
+
+def status_fragments(model: str, authorized: bool, profile: str, profile_dirty: bool) -> Fragments:
+    """Живая строка состояния внизу экрана. Шапка печатается один раз и остаётся историей,
+    а здесь всегда актуальное: после /auth статус меняется сразу, без перезапуска."""
+    out: Fragments = [("class:status", " ")]
+    if authorized:
+        out.append(("class:status.ok", "● авторизован"))
+    else:
+        out.append(("class:status.bad", "○ не авторизован — /auth"))
+    out.append(("class:status", "  ·  "))
+    out.append(("class:status.value", model))
+    out.append(("class:status", "  ·  профиль: "))
+    out.append(("class:status.value", profile))
+    if profile_dirty:
+        out.append(("class:status.bad", " (изменён)"))
+    out.append(("class:status", " "))
+    return out
 
 
 def hint_fragments(text: str) -> Fragments:
