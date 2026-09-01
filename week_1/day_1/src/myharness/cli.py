@@ -617,6 +617,16 @@ def build_app(state: State) -> Application:
     def sep() -> Window:
         return Window(height=1, char="─", style="class:sep")
 
+    status_window = Window(
+        content=FormattedTextControl(
+            text=lambda: ui.status_fragments(
+                state.model, state.config.is_authorized, state.profile.name, state.profile_dirty
+            )
+        ),
+        height=1,
+        style="class:status",
+    )
+
     picker_active = Condition(lambda: state.picker is not None)
     picker_window = Window(
         content=FormattedTextControl(text=lambda: picker_mod.fragments(state.picker) if state.picker else []),
@@ -626,10 +636,10 @@ def build_app(state: State) -> Application:
     )
 
     root = FloatContainer(
-        content=HSplit([output_window, sep(), input_area, sep()]),
+        content=HSplit([output_window, sep(), input_area, sep(), status_window]),
         floats=[
             Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=12, scroll_offset=1)),
-            Float(left=2, bottom=3, content=ConditionalContainer(picker_window, filter=picker_active)),
+            Float(left=2, bottom=4, content=ConditionalContainer(picker_window, filter=picker_active)),
         ],
     )
     layout = Layout(root, focused_element=input_area)
