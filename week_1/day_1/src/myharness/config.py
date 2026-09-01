@@ -12,11 +12,19 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "myharness"
-CONFIG_PATH = CONFIG_DIR / "config.json"
-
 DEFAULT_MODEL = "deepseek-v4-flash"
 DEFAULT_PROFILE = "default"
+
+
+def config_dir() -> Path:
+    """Каталог настроек. Переопределяется `$MYHARNESS_CONFIG_DIR` — это нужно проверкам:
+    без переопределения они писали бы в настоящий файл пользователя и затирали его ключ."""
+    override = os.environ.get("MYHARNESS_CONFIG_DIR")
+    return Path(override).expanduser() if override else Path.home() / ".config" / "myharness"
+
+
+def config_path() -> Path:
+    return config_dir() / "config.json"
 
 
 @dataclass
@@ -31,10 +39,11 @@ class Config:
 
 
 def load() -> Config:
-    if not CONFIG_PATH.exists():
+    path = config_path()
+    if not path.exists():
         return Config()
     try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return Config()
     return Config(
@@ -45,6 +54,7 @@ def load() -> Config:
 
 
 def save(config: Config) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
-    os.chmod(CONFIG_PATH, 0o600)
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
+    os.chmod(path, 0o600)

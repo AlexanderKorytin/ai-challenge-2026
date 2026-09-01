@@ -22,10 +22,13 @@ from string import Template
 from typing import Any
 
 from . import params as params_mod
-from .config import CONFIG_DIR
+from .config import config_dir
 
-USER_PROFILES_DIR = CONFIG_DIR / "profiles"
 DEFAULT_PROFILE_NAME = "default"
+
+
+def user_profiles_dir() -> Path:
+    return config_dir() / "profiles"
 
 
 @dataclass
@@ -92,7 +95,7 @@ def search_dirs() -> list[Path]:
         dirs.extend(_upward_dirs(Path.cwd().resolve()))
     except OSError:  # каталог запуска удалён из-под нас
         pass
-    dirs.append(USER_PROFILES_DIR)
+    dirs.append(user_profiles_dir())
     seen: set[Path] = set()
     unique: list[Path] = []
     for d in dirs:
@@ -177,7 +180,8 @@ def load(name: str) -> tuple[Profile, list[str]]:
 
 
 def save(profile: Profile) -> Path:
-    USER_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    path = USER_PROFILES_DIR / f"{profile.name}.json"
+    directory = user_profiles_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{profile.name}.json"
     path.write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
