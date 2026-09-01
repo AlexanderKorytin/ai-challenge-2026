@@ -87,7 +87,7 @@ async def main():
         buffer = app.layout.get_buffer_by_name("text-area") or app.current_buffer
         check("список команд открылся без Enter", buffer.complete_state is not None)
         count = len(buffer.complete_state.completions) if buffer.complete_state else 0
-        check("в списке все команды авторизованного", count >= 8, f"их {count}")
+        check("в списке команды авторизованного, без /auth", count == 8, f"их {count}")
 
         await send(DOWN)
         check("стрелка выбирает пункт", buffer.complete_state.current_completion is not None)
