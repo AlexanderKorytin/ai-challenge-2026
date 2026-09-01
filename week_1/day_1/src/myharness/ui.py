@@ -95,16 +95,24 @@ def _box(lines: list[Fragments]) -> Fragments:
     return out
 
 
-def banner_fragments(model: str, authorized: bool, profile: str) -> Fragments:
+# Ветка day2-fish-facts: harness работает как агент-справочник по рыбам. Строка стоит в
+# шапке, чтобы назначение было видно сразу, а не угадывалось по имени профиля.
+AGENT_TITLE = "агент поиска информации о рыбах"
+
+
+def banner_fragments(model: str, authorized: bool, profile: str, description: str = "") -> Fragments:
     auth_line: Fragments = (
         [("class:ok", "● авторизован")] if authorized else [("class:bad", "○ не авторизован — /auth")]
     )
     lines = [
         [("class:title", "myharness"), ("", "  ·  DeepSeek API")],
+        [("class:answer", AGENT_TITLE)],
         [("", "модель: "), ("class:model", model), ("", "   ")] + auth_line,
         [("", "профиль: "), ("class:model", profile)],
-        [("class:dim", "введите / — появится список команд")],
     ]
+    if description:
+        lines.append([("class:hint", description)])
+    lines.append([("class:dim", "введите название рыбы · / — список команд")])
     return _box(lines) + [("", "\n")]
 
 

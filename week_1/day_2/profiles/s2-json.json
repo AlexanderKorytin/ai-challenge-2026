@@ -1,6 +1,6 @@
 {
   "name": "s2-json",
-  "description": "Справочник по рыбам · ступень 2: задан формат — json_object плюс описание полей и пример",
+  "description": "ступень 2: задан формат — json_object плюс описание полей и пример",
   "system_file": "s2-json.md",
   "keep_history": false,
   "response_format": {

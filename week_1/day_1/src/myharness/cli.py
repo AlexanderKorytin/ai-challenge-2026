@@ -109,6 +109,8 @@ def switch_profile(state: State, name: str) -> None:
         append_log(state, ui.system_fragments("история диалога очищена — профиль сменился"))
     source = str(profile.source) if profile.source else "встроенный"
     append_log(state, ui.system_fragments(f"профиль: {profile.name} ({source})"))
+    if profile.description:
+        append_log(state, ui.hint_fragments(profile.description))
     if not profile.keep_history:
         append_log(state, ui.system_fragments("в этом профиле каждый запрос уходит без истории"))
 
@@ -672,7 +674,12 @@ def build_app(state: State) -> Application:
 async def repl(state: State) -> None:
     app = build_app(state)
     state.app = app
-    append_log(state, ui.banner_fragments(state.model, state.config.is_authorized, state.profile.name))
+    append_log(
+        state,
+        ui.banner_fragments(
+            state.model, state.config.is_authorized, state.profile.name, state.profile.description
+        ),
+    )
     if state.profile.system:
         append_log(state, ui.system_fragments("профиль задаёт системную инструкцию — показать: /system"))
     worker_task = asyncio.create_task(worker(state))
