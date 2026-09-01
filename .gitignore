@@ -16,3 +16,6 @@ node_modules/
 
 # Временные файлы записи экрана
 *.pid
+
+# Журнал прогонов myharness — рабочие данные, не код
+myharness-journal.jsonl
