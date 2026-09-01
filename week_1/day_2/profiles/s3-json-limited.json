@@ -1,0 +1,17 @@
+{
+  "name": "s3-json-limited",
+  "description": "Справочник по рыбам · ступень 3: формат плюс ограничение длины и условие завершения",
+  "system_file": "s3-json-limited.md",
+  "keep_history": false,
+  "response_format": {
+    "type": "json_object"
+  },
+  "thinking": {
+    "type": "disabled"
+  },
+  "max_tokens": 700,
+  "vars": {
+    "summary_max_words": 45,
+    "max_items": 5
+  }
+}
