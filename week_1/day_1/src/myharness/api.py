@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -99,3 +100,7 @@ class DeepSeekClient:
 
     async def aclose(self) -> None:
         await self._client.close()
+        # Обход дефекта httpcore2 2.12: если ответ оборван по max_tokens, тело остаётся
+        # недочитанным, и закрытие пула сыплет в stderr «generator didn't stop after
+        # athrow()». Короткий оборот цикла даёт транспорту закрыться до этой проверки.
+        await asyncio.sleep(0.05)
