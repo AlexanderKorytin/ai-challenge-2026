@@ -271,12 +271,16 @@ async def do_auth(raw_key: str, state: State) -> None:
     append_log(state, ui.system_fragments("авторизация сохранена — вводить ключ заново не потребуется"))
 
 
+def set_model(state: State, name: str) -> None:
+    state.model = name
+    state.config.model = name
+    save_config(state.config)
+    append_log(state, ui.system_fragments(f"модель установлена: {name}"))
+
+
 async def cmd_model(state: State, arg: str) -> None:
     if arg:
-        state.model = arg
-        state.config.model = arg
-        save_config(state.config)
-        append_log(state, ui.system_fragments(f"модель установлена: {arg}"))
+        set_model(state, arg)
         return
     models = state.known_models
     if state.client:
@@ -286,20 +290,58 @@ async def cmd_model(state: State, arg: str) -> None:
         except Exception as exc:
             append_log(state, ui.error_fragments(f"не удалось получить список моделей: {exc}"))
             append_log(state, ui.system_fragments("показан статический список"))
-    append_log(state, ui.system_fragments("доступные модели:"))
-    lines: Fragments = []
-    for m in models:
-        mark = "●" if m == state.model else "○"
-        lines.append(("", f"  {mark} {m}\n"))
-    append_log(state, lines)
-    append_log(state, ui.hint_fragments("выбрать: /model <имя>"))
+    items: list[picker_mod.Item] = []
+    marked: int | None = None
+    for name in models:
+        if name == state.model:
+            marked = len(items)
+        items.append(picker_mod.Item(label=name, hint="текущая" if name == state.model else "", payload=name))
+
+    def choose(payload: Any) -> None:
+        state.picker = None
+        set_model(state, str(payload))
+
+    state.picker = picker_mod.Picker(
+        title="/model — модель DeepSeek",
+        description="какой моделью отвечать",
+        items=items,
+        on_choose=choose,
+        index=marked or 0,
+        marked=marked,
+    )
+    refresh(state)
+
+
+def open_profile_picker(state: State) -> None:
+    items: list[picker_mod.Item] = []
+    marked: int | None = None
+    for name, source in profiles.available():
+        if name == state.profile.name:
+            marked = len(items)
+        hint = str(source.parent) if source else "встроенный"
+        items.append(picker_mod.Item(label=name, hint=hint, payload=name))
+
+    def choose(payload: Any) -> None:
+        state.picker = None
+        switch_profile(state, str(payload))
+
+    description = "какой профиль генерации применить"
+    if state.profile_dirty:
+        description += " (текущие изменения не сохранены — /profile save <имя>)"
+    state.picker = picker_mod.Picker(
+        title="/profile — профиль генерации",
+        description=description,
+        items=items,
+        on_choose=choose,
+        index=marked or 0,
+        marked=marked,
+    )
+    refresh(state)
 
 
 def cmd_profile(state: State, arg: str) -> None:
     if not arg:
-        append_log(state, ui.profile_list_fragments(profiles.available(), state.profile.name))
-        if state.profile_dirty:
-            append_log(state, ui.hint_fragments("параметры изменены и не сохранены — /profile save <имя>"))
+        open_profile_picker(state)
         return
     parts = arg.split(maxsplit=1)
     if parts[0] == "save":
@@ -319,9 +361,11 @@ def cmd_profile(state: State, arg: str) -> None:
 
 
 def cmd_params(state: State) -> None:
+    """Показываем значения и сразу даём их менять: список в логе выбирать нечем."""
     append_log(state, ui.params_fragments(state.profile.name, state.profile.params, state.profile.system))
     if state.profile_dirty:
         append_log(state, ui.hint_fragments("изменения не сохранены — /profile save <имя>"))
+    open_param_picker(state)
 
 
 def set_param(state: State, name: str, value: Any) -> None:
