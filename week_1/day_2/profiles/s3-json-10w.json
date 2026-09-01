@@ -1,0 +1,10 @@
+{
+  "name": "s3-json-10w",
+  "description": "ступень 3, жёсткий вариант: описание не длиннее 10 слов — ограничение задано инструкцией, а не лимитом токенов",
+  "system_file": "s3-json-limited.md",
+  "keep_history": false,
+  "response_format": {"type": "json_object"},
+  "thinking": {"type": "disabled"},
+  "max_tokens": 700,
+  "vars": {"summary_max_words": 10, "max_items": 3}
+}

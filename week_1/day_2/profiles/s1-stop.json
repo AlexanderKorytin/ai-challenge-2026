@@ -1,0 +1,8 @@
+{
+  "name": "s1-stop",
+  "description": "текстовая ступень со стоп-последовательностью: модель просят закончить маркером ###, API обрывает на нём",
+  "system_file": "s1-stop.md",
+  "keep_history": false,
+  "thinking": {"type": "disabled"},
+  "stop": ["###"]
+}
