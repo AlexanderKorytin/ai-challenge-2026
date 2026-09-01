@@ -754,7 +754,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def silence_transport_noise(loop: asyncio.AbstractEventLoop) -> None:
+    """Глушит одно конкретное сообщение httpcore2 2.12: при обрыве ответа по max_tokens
+    тело остаётся недочитанным, и закрытие потока печатает «generator didn't stop after
+    athrow()». Это шум чужой библиотеки, но в полноэкранном режиме он рвёт разметку экрана.
+    Все прочие ошибки цикла обрабатываются как обычно."""
+    default_handler = loop.get_exception_handler()
+
+    def handler(target_loop: asyncio.AbstractEventLoop, context: dict) -> None:
+        exception = context.get("exception")
+        message = context.get("message", "")
+        if isinstance(exception, RuntimeError) and "athrow" in str(exception):
+            return
+        if "closing of asynchronous generator" in message:
+            return
+        if default_handler is not None:
+            default_handler(target_loop, context)
+        else:
+            target_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handler)
+
+
 async def _main(argv: list[str] | None = None) -> None:
+    silence_transport_noise(asyncio.get_running_loop())
     args = parse_args(argv)
     cfg = load_config()
     profile_name = args.profile or os.environ.get("MYHARNESS_PROFILE") or cfg.profile
