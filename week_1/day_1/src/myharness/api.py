@@ -65,7 +65,7 @@ class DeepSeekClient:
     ) -> AsyncIterator[StreamEvent]:
         """Потоковый ответ. Последним отдаёт событие "meta" с причиной остановки и расходом токенов."""
         direct, extra_body = split_params(params or {})
-        stream = await self._client.chat.completions.create(
+        response = await self._client.chat.completions.create(
             model=model,
             messages=messages,
             stream=True,
@@ -75,22 +75,26 @@ class DeepSeekClient:
         )
         finish_reason: str | None = None
         usage: dict[str, Any] = {}
-        async for chunk in stream:
-            if chunk.usage is not None:
-                usage = chunk.usage.model_dump(exclude_none=True)
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            delta = choice.delta
-            if delta is None:
-                continue
-            reasoning = getattr(delta, "reasoning_content", None)
-            if reasoning:
-                yield StreamEvent("reasoning", reasoning)
-            if delta.content:
-                yield StreamEvent("content", delta.content)
+        # Поток закрываем явно: иначе HTTP-соединение остаётся подвешенным до сборки мусора,
+        # и при выходе сыплются ошибки закрытия асинхронных генераторов — особенно заметно,
+        # когда ответ оборван по max_tokens или запрос отменён на полуслове.
+        async with response as stream:
+            async for chunk in stream:
+                if chunk.usage is not None:
+                    usage = chunk.usage.model_dump(exclude_none=True)
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+                delta = choice.delta
+                if delta is None:
+                    continue
+                reasoning = getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    yield StreamEvent("reasoning", reasoning)
+                if delta.content:
+                    yield StreamEvent("content", delta.content)
         yield StreamEvent("meta", finish_reason=finish_reason, usage=usage)
 
     async def aclose(self) -> None:
