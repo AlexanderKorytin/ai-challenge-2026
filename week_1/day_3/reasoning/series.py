@@ -51,9 +51,10 @@ class Reply:
     def ok(self) -> bool:
         return self.error is None and bool(self.text)
 
-    def as_step(self, name: str) -> metrics.Step:
+    def as_step(self, name: str, kind: str = metrics.AGENT) -> metrics.Step:
         return metrics.Step(
             name=name,
+            kind=kind,
             text=self.text,
             prompt_tokens=int(self.usage.get("prompt_tokens") or 0),
             completion_tokens=int(self.usage.get("completion_tokens") or 0),
@@ -108,7 +109,9 @@ async def run_single(client, model: str, profile: profiles.Profile, question: st
     )
 
 
-async def run_chain(client, model: str, profile: profiles.Profile, question: str, index: int) -> metrics.Run:
+async def run_chain(
+    client, model: str, profile: profiles.Profile, question: str, index: int, thinking: str | None = None
+) -> metrics.Run:
     """Способ 3: первым запросом модель составляет промпт, вторым — решает им задачу.
 
     Промпт составляется заново в каждом прогоне. Иначе мы измеряли бы один удачно или
@@ -116,6 +119,8 @@ async def run_chain(client, model: str, profile: profiles.Profile, question: str
     """
     run = metrics.Run(method=profile.name, index=index)
     step_profiles = [profiles.load(name)[0] for name in profile.screens]
+    for step in step_profiles:
+        force_thinking(step, thinking)
     if len(step_profiles) != 2:
         run.error = "цепочка ожидает ровно два шага: составить промпт и решить им задачу"
         return run
@@ -128,7 +133,8 @@ async def run_chain(client, model: str, profile: profiles.Profile, question: str
         ([{"role": "system", "content": ask_profile.system}] if ask_profile.system else [])
         + [{"role": "user", "content": question}],
     )
-    run.steps.append(first.as_step(ask_profile.name))
+    # составленный промпт — это не ответ на задачу, судить его по эталону бессмысленно
+    run.steps.append(first.as_step(ask_profile.name, metrics.STAGE))
     if not first.ok:
         run.error = first.error or "модель не вернула промпт"
         return run
@@ -148,7 +154,9 @@ async def run_chain(client, model: str, profile: profiles.Profile, question: str
     return run
 
 
-async def run_team(client, model: str, lead: profiles.Profile, question: str, index: int) -> metrics.Run:
+async def run_team(
+    client, model: str, lead: profiles.Profile, question: str, index: int, thinking: str | None = None
+) -> metrics.Run:
     """Способ 4: агенты отвечают независимо и одновременно, ведущий сводит их ответы.
 
     Здесь та же схема, что и в harness, только без экранов: агенты не видят ответов друг
@@ -156,6 +164,8 @@ async def run_team(client, model: str, lead: profiles.Profile, question: str, in
     """
     run = metrics.Run(method=lead.name, index=index)
     agents = [profiles.load(name)[0] for name in lead.agents]
+    for agent in agents:
+        force_thinking(agent, thinking)
     replies = await asyncio.gather(
         *(
             ask(client, model, agent, screens.build_messages(agent, screens.Screen(key=agent.name, title=agent.name), question))
@@ -189,27 +199,48 @@ async def run_team(client, model: str, lead: profiles.Profile, question: str, in
     return run
 
 
-async def one_run(client, model: str, profile: profiles.Profile, question: str, index: int, limiter) -> metrics.Run:
+async def one_run(
+    client, model: str, profile: profiles.Profile, question: str, index: int, limiter, thinking: str | None = None
+) -> metrics.Run:
     async with limiter:
         if profile.agents:
-            return await run_team(client, model, profile, question, index)
+            return await run_team(client, model, profile, question, index, thinking)
         if profile.screens:
-            return await run_chain(client, model, profile, question, index)
+            return await run_chain(client, model, profile, question, index, thinking)
         return await run_single(client, model, profile, question, index)
 
 
-async def run_method(client, model: str, name: str, question: str, runs: int, concurrency: int) -> list[metrics.Run]:
+def force_thinking(profile: profiles.Profile, mode: str | None) -> None:
+    """Переопределить режим рассуждений у профиля и у всех, кого он поднимает.
+
+    Режим — половина клетки замера: одна и та же группа экспертов с рассуждениями и без них
+    даёт разные результаты, и сравнивать её со способом «решай пошагово» честно только при
+    одинаковом режиме. Чтобы не заводить зеркальный набор профилей, режим задаётся флагом.
+    """
+    if mode is None:
+        return
+    profile.params["thinking"] = {"type": "enabled" if mode == "on" else "disabled"}
+
+
+async def run_method(
+    client, model: str, name: str, question: str, runs: int, concurrency: int, thinking: str | None = None
+) -> list[metrics.Run]:
     profile, warnings = profiles.load(name)
     for warning in warnings:
         print(f"  ! {warning}")
+    force_thinking(profile, thinking)
+    if thinking:
+        print(f"  режим рассуждений переопределён: {thinking}")
     limiter = asyncio.Semaphore(concurrency)
-    tasks = [one_run(client, model, profile, question, i + 1, limiter) for i in range(runs)]
+    tasks = [one_run(client, model, profile, question, i + 1, limiter, thinking) for i in range(runs)]
     return list(await asyncio.gather(*tasks))
 
 
-def save(name: str, runs: list[metrics.Run]) -> Path:
+def save(name: str, runs: list[metrics.Run], thinking: str | None = None) -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    path = DATA_DIR / f"series-{name}.json"
+    # режим в имени файла: иначе прогон с рассуждениями затёр бы прогон без них
+    suffix = {"on": "-thinking", "off": "-nothinking"}.get(thinking or "", "")
+    path = DATA_DIR / f"series-{name}{suffix}.json"
     payload = {
         "summary": metrics.summarize(name, runs).to_dict(),
         "runs": [run.to_dict() for run in runs],
@@ -235,8 +266,8 @@ async def main_async(args: argparse.Namespace) -> int:
     try:
         for name in args.profile:
             print(f"\n▸ {name}: {args.runs} прогонов (модель {model})")
-            runs = await run_method(client, model, name, question, args.runs, args.concurrency)
-            path = save(name, runs)
+            runs = await run_method(client, model, name, question, args.runs, args.concurrency, args.thinking)
+            path = save(name, runs, args.thinking)
             summary = metrics.summarize(name, runs)
             summaries.append(summary)
             print(f"  результат: {path}")
@@ -257,6 +288,11 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, default=5, help="сколько прогонов держать одновременно")
     parser.add_argument("--model", help="модель DeepSeek (по умолчанию из настроек harness)")
     parser.add_argument("--task", default=str(TASK_FILE), help="файл с условием задачи")
+    parser.add_argument(
+        "--thinking",
+        choices=("on", "off"),
+        help="переопределить режим рассуждений у профиля и всех, кого он поднимает",
+    )
     args = parser.parse_args()
     if not args.profile:
         args.profile = list(DEFAULT_METHODS)

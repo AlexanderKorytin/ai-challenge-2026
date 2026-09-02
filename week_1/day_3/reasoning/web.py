@@ -25,8 +25,20 @@ TITLES = {
     "chain_of_thought_nothinking": "2к. Пошагово без рассуждений",
     "meta_prompting": "3. Промпт от модели",
     "multiprompting": "4. Группа экспертов",
+    "multiprompting-nothinking": "4. Группа без рассуждений",
+    "multiprompting-thinking": "4. Группа + рассуждения",
+    "meta_prompting-thinking": "3. Промпт от модели + рассуждения",
 }
-ORDER = ("free", "chain_of_thought_nothinking", "chain_of_thought", "meta_prompting", "multiprompting")
+ORDER = (
+    "free",
+    "chain_of_thought_nothinking",
+    "chain_of_thought",
+    "meta_prompting",
+    "meta_prompting-thinking",
+    "multiprompting-nothinking",
+    "multiprompting",
+    "multiprompting-thinking",
+)
 
 STYLE = """
 :root { color-scheme: light dark; }
@@ -66,17 +78,21 @@ def load_series() -> list[tuple[str, metrics.Summary, list[metrics.Run]]]:
 
 def total_table(items: list[tuple[str, metrics.Summary, list[metrics.Run]]]) -> str:
     rows = [
-        "<tr><th>способ</th><th>верных</th><th>прогонов</th><th>запросов</th>"
-        "<th>токенов</th><th>сек/ответ</th></tr>"
+        (
+            "<tr><th>способ</th><th>верных</th><th>у экспертов</th><th>прогонов</th>"
+            "<th>запросов</th><th>токенов</th><th>сек/ответ</th></tr>"
+        )
     ]
     for name, summary, _ in items:
         judged = summary.answered - summary.unjudged
         share = "—" if summary.accuracy is None else f"{summary.correct}/{judged} ({summary.accuracy * 100:.0f}%)"
         per_answer = summary.elapsed_ms / summary.answered / 1000 if summary.answered else 0
         tokens = summary.prompt_tokens + summary.completion_tokens
+        in_steps = f"{summary.steps_correct}/{summary.runs}" if summary.has_steps else "—"
         rows.append(
             f"<tr><td>{html.escape(TITLES.get(name, name))}</td><td class='score'>{share}</td>"
-            f"<td>{summary.runs}</td><td>{summary.requests}</td><td>{tokens}</td><td>{per_answer:.1f}</td></tr>"
+            f"<td>{in_steps}</td><td>{summary.runs}</td><td>{summary.requests}</td>"
+            f"<td>{tokens}</td><td>{per_answer:.1f}</td></tr>"
         )
     return "<table class='total'>" + "".join(rows) + "</table>"
 
@@ -91,11 +107,17 @@ def run_card(run: metrics.Run) -> str:
     body = html.escape(run.answer.strip() or run.error or "пусто")
     steps = ""
     if run.steps:
+        marks = {True: "✓", False: "✕", None: "?"}
         parts = "".join(
-            f"<p class='step'><b>{html.escape(step.name)}</b><br>{html.escape(step.text.strip()[:1500])}</p>"
+            f"<p class='step'><b>{marks[step.correct]} {html.escape(step.name)}</b><br>"
+            f"{html.escape(step.text.strip()[:1500])}</p>"
             for step in run.steps
         )
-        steps = f"<details><summary>шаги: {len(run.steps)}</summary>{parts}</details>"
+        correct_here = sum(1 for step in run.steps if step.correct is True)
+        steps = (
+            f"<details><summary>ответы экспертов: {len(run.steps)}, верных {correct_here}</summary>"
+            f"{parts}</details>"
+        )
     return f"<div class='run {state}'><div class='meta'>{meta}</div><div class='answer'>{body}</div>{steps}</div>"
 
 

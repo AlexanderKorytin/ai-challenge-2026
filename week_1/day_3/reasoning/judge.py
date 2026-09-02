@@ -42,8 +42,13 @@ def load_runs(path: Path) -> list[metrics.Run]:
     return [metrics.Run.from_dict(item) for item in payload["runs"]]
 
 
+def cell_name(path: Path) -> str:
+    """Клетка замера — это профиль плюс режим рассуждений, а он записан в имени файла."""
+    return path.stem.removeprefix("series-")
+
+
 def save_runs(path: Path, runs: list[metrics.Run]) -> None:
-    method = runs[0].method if runs else path.stem.removeprefix("series-")
+    method = cell_name(path)
     payload = {"summary": metrics.summarize(method, runs).to_dict(), "runs": [run.to_dict() for run in runs]}
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -82,21 +87,36 @@ async def judge_runs(client, model: str, runs: list[metrics.Run], question: str,
         print(f"  ! {warning}")
     limiter = asyncio.Semaphore(concurrency)
     pending = [run for run in runs if run.answer and not run.error and (recheck or run.correct is None)]
+    # ответы экспертов размечаем отдельно: ведущий их не выбирает, и без этого не видно,
+    # знала ли группа ответ вообще
+    pending_steps = [
+        step
+        for run in runs
+        for step in run.steps
+        if step.kind == metrics.AGENT and step.text and not step.error and (recheck or step.correct is None)
+    ]
 
-    async def judge(run: metrics.Run) -> None:
+    async def verdict(text: str) -> tuple[bool | None, str]:
         async with limiter:
-            run.correct, run.verdict_why = await judge_one(
-                client, model, profile, verdict_request(question, reference, run.answer)
-            )
+            return await judge_one(client, model, profile, verdict_request(question, reference, text))
 
-    await asyncio.gather(*(judge(run) for run in pending))
-    return len(pending)
+    async def judge_answer(run: metrics.Run) -> None:
+        run.correct, run.verdict_why = await verdict(run.answer)
+
+    async def judge_step(step: metrics.Step) -> None:
+        step.correct, step.verdict_why = await verdict(step.text)
+
+    await asyncio.gather(
+        *(judge_answer(run) for run in pending),
+        *(judge_step(step) for step in pending_steps),
+    )
+    return len(pending) + len(pending_steps)
 
 
 def show(path: Path, limit: int) -> None:
     """Ответы и вердикты подряд — чтобы проверить судью, а не поверить ему."""
     runs = load_runs(path)
-    print(f"\n▸ {path.stem.removeprefix('series-')}: {len(runs)} прогонов, показываю {min(limit, len(runs))}")
+    print(f"\n▸ {cell_name(path)}: {len(runs)} прогонов, показываю {min(limit, len(runs))}")
     for run in runs[:limit]:
         mark = {True: "✓ верно", False: "✕ неверно", None: "? без вердикта"}[run.correct]
         print(f"\n── прогон {run.index} — {mark} ({run.verdict_why})")
@@ -113,7 +133,7 @@ async def main_async(args: argparse.Namespace) -> int:
         return 1
     if args.show:
         for path in files:
-            if path.stem.removeprefix("series-") in args.show:
+            if cell_name(path) in args.show:
                 show(path, args.limit)
         return 0
 
@@ -135,7 +155,7 @@ async def main_async(args: argparse.Namespace) -> int:
             runs = load_runs(path)
             judged = await judge_runs(client, model, runs, question, reference, args.recheck, args.concurrency)
             save_runs(path, runs)
-            summary = metrics.summarize(runs[0].method if runs else path.stem, runs)
+            summary = metrics.summarize(cell_name(path), runs)
             summaries.append(summary)
             print(f"  {path.name}: размечено {judged}")
     finally:
