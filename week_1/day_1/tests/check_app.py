@@ -232,10 +232,11 @@ async def main():
         summary_screen = state.screens[2]
         check("у каждого эксперта своя панель", [p.key for p in board.panes] == ["analyst", "critic"], str([p.key for p in board.panes]))
         analyst_pane = board.panes[0]
-        check("в панели эксперта его постановка задачи", "агент «analyst»" in log_text(state, analyst_pane) and "ты аналитик" in log_text(state, analyst_pane))
+        check("в панели эксперта его постановка задачи", "● analyst" in log_text(state, analyst_pane) and "ты аналитик" in log_text(state, analyst_pane))
+        check("инструкция свёрнута, но доступна целиком", "(/system — целиком)" in log_text(state, analyst_pane))
         check("в панели эксперта его рассуждения и ответ", "прикидываю…" in log_text(state, analyst_pane) and '"status": "ok"' in log_text(state, analyst_pane))
         check("ответ соседа в чужую панель не попадает", "ты критик" not in log_text(state, analyst_pane))
-        check("вывод агентов в главный экран не льётся", "агент «analyst»" not in log_text(state))
+        check("вывод агентов в главный экран не льётся", "ты аналитик" not in log_text(state))
         check("в главном экране сказано, где смотреть", "группа поднята: analyst, critic" in log_text(state))
         check("сводка ведущего — на своей вкладке", "свожу ответы агентов (2)" in log_text(state, summary_screen))
 
@@ -251,6 +252,8 @@ async def main():
         handler = next(f[2] for f in tabs if len(f) == 3 and f[1].strip().endswith("lead"))
         handler(MouseEvent(position=Point(0, 0), event_type=MouseEventType.MOUSE_UP, button=MouseButton.LEFT, modifiers=frozenset()))
         check("клик по вкладке открывает экран группы", state.active == 1 and state.screen is board)
+        await send("/system" + ENTER, pause=0.25)
+        check("/system на панели эксперта показывает его инструкцию", "ты аналитик" in log_text(state, board.panes[0]))
         cli.switch_screen(state, 0)
         check("возврат на главный экран", state.active == 0)
 

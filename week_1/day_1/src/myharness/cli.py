@@ -766,7 +766,9 @@ async def handle_command(text: str, state: State) -> bool:
     elif cmd == "/set":
         cmd_set(state, arg)
     elif cmd == "/system":
-        append_log(state, ui.system_prompt_fragments(state.profile.name, state.profile.system))
+        # на панели исполнителя показываем его инструкцию: именно её там свернули до строки
+        source = state.screen.pane.profile or state.profile
+        append_log(state, ui.system_prompt_fragments(source.name, source.system))
     elif cmd == "/team":
         cmd_team(state, arg)
     elif cmd == "/mouse":

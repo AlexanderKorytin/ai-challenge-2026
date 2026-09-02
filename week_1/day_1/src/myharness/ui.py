@@ -204,13 +204,19 @@ def methods_fragments(names: list[str]) -> Fragments:
 
 
 def agent_task_fragments(agent: str, profile_name: str, system: str | None, question: str) -> Fragments:
-    """Шапка экрана агента: кто он, с какой инструкцией поднят и что ему поручено."""
-    out: Fragments = [("class:agent", f"● агент «{agent}»"), ("class:dim", f"   профиль: {profile_name}"), ("", "\n")]
+    """Шапка панели: кто отвечает, с какой инструкцией и что ему поручено.
+
+    Инструкция сворачивается до первой строки: в сетке из пяти панелей развёрнутый текст
+    вытеснил бы сам ответ, ради которого панель и открыта. Целиком инструкцию показывает
+    /system на этой панели.
+    """
+    out: Fragments = [("class:agent", f"● {agent}"), ("class:dim", f"   {profile_name}"), ("", "\n")]
     if system:
-        out.append(("class:system", "· системная инструкция:"))
+        first_line = system.strip().splitlines()[0]
+        preview = first_line[:70] + ("…" if len(first_line) > 70 else "")
+        out.append(("class:dim", f"· {preview}"))
+        out.append(("class:dim", "  (/system — целиком)"))
         out.append(("", "\n"))
-        for line in system.strip().splitlines():
-            out.append(("class:dim", f"  {line}\n"))
     else:
         out.extend(system_fragments("системная инструкция не задана"))
     out.append(("class:user", "› "))
