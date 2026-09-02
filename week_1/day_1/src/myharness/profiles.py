@@ -11,7 +11,8 @@
 
 Профиль со списком `agents` — ведущий группы: перечисленные в нём профили поднимаются
 как отдельные агенты, каждый со своей системной инструкцией и своим экраном, а сам ведущий
-сводит их ответы.
+сводит их ответы. Профиль со списком `screens` раскладывает по вкладкам приём в несколько
+шагов: каждый экран — своя инструкция, своя заготовка ввода и своя ветка разговора.
 
 Профили ищутся в нескольких местах, ближний перекрывает дальний:
   1. `$MYHARNESS_PROFILES`, если переменная задана;
@@ -62,6 +63,7 @@ class Profile:
     prefill_file: str | None = None
     keep_history: bool = True
     agents: list[str] = field(default_factory=list)  # непусто — профиль ведущего группы
+    screens: list[str] = field(default_factory=list)  # непусто — набор рабочих экранов
     vars: dict[str, Any] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     source: Path | None = None
@@ -76,6 +78,8 @@ class Profile:
         }
         if self.agents:
             snapshot["agents"] = list(self.agents)
+        if self.screens:
+            snapshot["screens"] = list(self.screens)
         return snapshot
 
     def to_dict(self) -> dict[str, Any]:
@@ -93,6 +97,8 @@ class Profile:
         data["keep_history"] = self.keep_history
         if self.agents:
             data["agents"] = list(self.agents)
+        if self.screens:
+            data["screens"] = list(self.screens)
         if self.vars:
             data["vars"] = self.vars
         data.update(self.params)
@@ -153,20 +159,20 @@ def available() -> list[tuple[str, Path | None]]:
     return items
 
 
-def _agent_names(raw: Any, warnings: list[str]) -> list[str]:
-    """Состав группы: список имён профилей-агентов. Мусор в поле не должен ронять профиль —
-    отбрасываем его с предупреждением, как и неизвестные параметры."""
+def _profile_names(raw: Any, field_name: str, warnings: list[str]) -> list[str]:
+    """Список имён профилей (состав группы или набор рабочих экранов). Мусор в поле не должен
+    ронять профиль — отбрасываем его с предупреждением, как и неизвестные параметры."""
     if raw is None:
         return []
     if not isinstance(raw, list):
-        warnings.append("поле «agents» — не список имён профилей, группа не поднята")
+        warnings.append(f"поле «{field_name}» — не список имён профилей, пропущено")
         return []
     names: list[str] = []
     for item in raw:
         if isinstance(item, str) and item.strip():
             names.append(item.strip())
         else:
-            warnings.append(f"состав группы: {item!r} — не имя профиля, пропущено")
+            warnings.append(f"поле «{field_name}»: {item!r} — не имя профиля, пропущено")
     return names
 
 
@@ -181,6 +187,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "prefill_file",
         "keep_history",
         "agents",
+        "screens",
         "vars",
     }
 
@@ -225,7 +232,8 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         prefill=prefill_text.strip() if isinstance(prefill_text, str) else None,
         prefill_file=data.get("prefill_file"),
         keep_history=bool(data.get("keep_history", True)),
-        agents=_agent_names(data.get("agents"), warnings),
+        agents=_profile_names(data.get("agents"), "agents", warnings),
+        screens=_profile_names(data.get("screens"), "screens", warnings),
         vars=dict(variables),
         params=collected,
         source=source,

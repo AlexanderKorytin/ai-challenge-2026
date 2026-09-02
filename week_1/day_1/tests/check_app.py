@@ -114,7 +114,7 @@ async def main():
         buffer = app.layout.get_buffer_by_name("text-area") or app.current_buffer
         check("список команд открылся без Enter", buffer.complete_state is not None)
         count = len(buffer.complete_state.completions) if buffer.complete_state else 0
-        check("в списке команды авторизованного, без /auth", count == 9, f"их {count}")
+        check("в списке команды авторизованного, без /auth", count == 10, f"их {count}")
 
         await send(DOWN)
         check("стрелка выбирает пункт", buffer.complete_state.current_completion is not None)
@@ -253,7 +253,59 @@ async def main():
         check("в журнале отмечено, кто отвечал", {r.get("agent") for r in team_records} == {"analyst", "critic", "lead"}, str([r.get("agent") for r in team_records]))
         check("вся группа помечена одним прогоном", len({r["run_id"] for r in team_records}) == 1)
 
-        print("\n8. Выход")
+        print("\n8. Рабочие экраны и мышь")
+        (profiles_dir / "step_ask.json").write_text(
+            json.dumps(
+                {
+                    "name": "step_ask",
+                    "system": "составь промпт",
+                    "prefill": "вставьте логическую задачу",
+                    "keep_history": False,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (profiles_dir / "step_solve.json").write_text(
+            json.dumps({"name": "step_solve", "prefill": "вставьте промпт", "keep_history": False}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (profiles_dir / "two_steps.json").write_text(
+            json.dumps({"name": "two_steps", "screens": ["step_ask", "step_solve"]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        await send("/profile two_steps" + ENTER, pause=0.3)
+        check("рабочие экраны открыты вместо экранов группы", [s.key for s in state.screens] == ["main", "step_ask", "step_solve"], str([s.key for s in state.screens]))
+        check("сразу открыт первый шаг", state.active == 1)
+        check("заготовка первого шага в строке ввода", buffer.text == "вставьте логическую задачу", repr(buffer.text))
+
+        before = len(fake.calls)
+        await send("\x7f" * 40 + "задача про шофёров" + ENTER, pause=0.5)
+        step_screen = state.screens[1]
+        check("вопрос и ответ остались на своём экране", "задача про шофёров" in log_text(state, step_screen) and '"status": "ok"' in log_text(state, step_screen))
+        check("главный экран не тронут", "задача про шофёров" not in log_text(state))
+        check("экран остался открытым — не перескочили на главный", state.active == 1)
+        check("ушла инструкция этого экрана", fake.calls[before]["messages"][0]["content"] == "составь промпт")
+
+        cli.switch_screen(state, 2)
+        check("заготовка второго шага подставилась при переходе", buffer.text == "вставьте промпт", repr(buffer.text))
+        buffer.text = "своё"
+        cli.switch_screen(state, 1)
+        check("набранное вручную заготовка не затирает", buffer.text == "своё")
+        buffer.text = ""
+
+        check("мышь по умолчанию у harness", state.mouse_enabled is True)
+        app.key_processor.feed(KeyPress(Keys.F2, "\x1bOQ"))
+        app.key_processor.process_keys()
+        await asyncio.sleep(0.15)
+        check("F2 отдаёт мышь терминалу — можно выделять текст", state.mouse_enabled is False)
+        check("приложение перестало перехватывать мышь", app.mouse_support() is False)
+        check("в строке состояния видно, что мышь отдана", any("мышь у терминала" in text for text in screen_texts(app)))
+        await send("/mouse" + ENTER, pause=0.2)
+        check("/mouse возвращает мышь harness", state.mouse_enabled is True and app.mouse_support() is True)
+
+        print("\n9. Выход")
         await send("/exit" + ENTER)
         await asyncio.sleep(0.15)
         check("приложение завершилось", run.done())

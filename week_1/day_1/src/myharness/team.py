@@ -38,18 +38,6 @@ def ensure_screen(state, name: str, profile: Profile) -> screens_mod.Screen:
     return screen
 
 
-def build_agent_messages(profile: Profile, screen: screens_mod.Screen, question: str) -> list[dict]:
-    messages: list[dict] = []
-    if profile.system:
-        messages.append({"role": "system", "content": profile.system})
-    if profile.keep_history:
-        screen.messages.append({"role": "user", "content": question})
-        messages.extend(screen.messages)
-    else:
-        messages.append({"role": "user", "content": question})
-    return messages
-
-
 def build_summary_request(question: str, answers: list[tuple[str, str]]) -> str:
     parts = [f"Задача:\n{question}", ""]
     for name, text in answers:
@@ -85,7 +73,7 @@ async def run(state, question: str, lead: Profile) -> None:
     for name, profile, screen in loaded:
         screen.status = screens_mod.BUSY
         cli.append_log(state, ui.agent_task_fragments(name, profile.name, profile.system, question), screen)
-        messages = build_agent_messages(profile, screen, question)
+        messages = screens_mod.build_messages(profile, screen, question)
         tasks.append(
             cli.generate_response(
                 state,

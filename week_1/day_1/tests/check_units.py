@@ -33,7 +33,7 @@ os.environ["MYHARNESS_CONFIG_DIR"] = str(tmp / "config")
 os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
 
 from myharness import api, journal, params as params_mod, picker as picker_mod, profiles, ui  # noqa: E402
-from myharness import cli, team  # noqa: E402
+from myharness import cli, screens, team  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 print("\n1. Профили")
@@ -175,6 +175,13 @@ check("мусор в составе отсеян с предупреждение
 check("состав попадает в слепок для журнала", lead.snapshot().get("agents") == ["analyst", "critic"])
 check("обычный профиль остаётся без группы", profiles.load("analyst")[0].agents == [])
 
+(tmp / "profiles" / "steps.json").write_text(
+    json.dumps({"name": "steps", "screens": ["meta", "analyst"]}, ensure_ascii=False), encoding="utf-8"
+)
+steps, _ = profiles.load("steps")
+check("набор рабочих экранов прочитан", steps.screens == ["meta", "analyst"] and steps.agents == [])
+check("набор экранов попадает в слепок для журнала", steps.snapshot().get("screens") == ["meta", "analyst"])
+
 meta, _ = profiles.load("meta")
 check("заготовка ввода прочитана из файла", meta.prefill == "Составь промпт для задачи про шофёров", repr(meta.prefill))
 check("заготовка не путается с системной инструкцией", meta.system is None)
@@ -192,7 +199,7 @@ check("переключение экрана меняет показываему
 cli.drop_agent_screens(team_state)
 check("смена профиля закрывает экраны агентов", len(team_state.screens) == 1 and team_state.active == 0)
 
-agent_messages = team.build_agent_messages(analyst_profile, first, "вопрос")
+agent_messages = screens.build_messages(analyst_profile, first, "вопрос")
 check("агенту уходит его инструкция и вопрос", [m["role"] for m in agent_messages] == ["system", "user"])
 check("keep_history=false не копит историю агента", first.messages == [])
 summary = team.build_summary_request("задача", [("analyst", "ответ А"), ("critic", "ответ Б")])

@@ -69,6 +69,7 @@ COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("/set", "<параметр>", "изменить параметр — меню выбора значения", True),
     ("/system", "", "показать текущую системную инструкцию", True),
     ("/team", "[вопрос]", "поднять группу агентов из профиля-ведущего", True),
+    ("/mouse", "", "отдать мышь терминалу и обратно (F2) — чтобы выделять текст", False),
     ("/clear", "", "очистить историю диалога", True),
     ("/exit", "", "выход", False),
 )
@@ -121,7 +122,9 @@ def banner_fragments(model: str, authorized: bool, profile: str) -> Fragments:
     return _box(lines) + [("", "\n")]
 
 
-def status_fragments(model: str, authorized: bool, profile: str, profile_dirty: bool) -> Fragments:
+def status_fragments(
+    model: str, authorized: bool, profile: str, profile_dirty: bool, mouse_enabled: bool = True
+) -> Fragments:
     """Живая строка состояния внизу экрана. Шапка печатается один раз и остаётся историей,
     а здесь всегда актуальное: после /auth статус меняется сразу, без перезапуска."""
     out: Fragments = [("class:status", " ")]
@@ -135,6 +138,8 @@ def status_fragments(model: str, authorized: bool, profile: str, profile_dirty: 
     out.append(("class:status.value", profile))
     if profile_dirty:
         out.append(("class:status.bad", " (изменён)"))
+    if not mouse_enabled:
+        out.append(("class:status.bad", "  ·  мышь у терминала (F2)"))
     out.append(("class:status", " "))
     return out
 
@@ -202,6 +207,14 @@ def team_start_fragments(names: list[str]) -> Fragments:
         ("class:dim", "  ответ каждого — на своём экране (Alt+2…), сводка появится здесь"),
         ("", "\n"),
     ]
+
+
+def work_screens_fragments(names: list[str]) -> Fragments:
+    """Сообщение о том, что профиль разложил приём по вкладкам."""
+    out: Fragments = [("class:agent", f"● рабочие экраны: {', '.join(names)}"), ("", "\n")]
+    out.append(("class:dim", "  ввод уходит в тот экран, который открыт (Alt+N, Shift+←/→ или клик)"))
+    out.append(("", "\n"))
+    return out
 
 
 def team_summary_label_fragments(count: int) -> Fragments:
@@ -332,6 +345,13 @@ def help_fragments() -> Fragments:
         "системной инструкцией, ответы приходят на отдельные экраны, а профиль-ведущий\n"
         "сводит их в общий вывод. Экраны агентов — только для чтения: постановка задачи,\n"
         "рассуждения и ответ. Переключение — клик по вкладке, Alt+N или Shift+←/→.\n"
+        "\n"
+        "Профиль со списком screens раскладывает приём по вкладкам: у каждого экрана своя\n"
+        "инструкция и своя заготовка ввода, и ввод уходит в тот экран, который открыт.\n"
+        "\n"
+        "F2 или /mouse — отдать мышь терминалу и обратно. Полноэкранный режим забирает мышь\n"
+        "себе, поэтому выделить текст для копирования можно только отдав её терминалу;\n"
+        "клики по вкладкам и прокрутка колесом на это время отключаются.\n"
         "\n"
         "Ctrl+C во время ответа — отменить текущий запрос (всю группу разом).\n"
         "Пока модель отвечает, можно вводить следующие сообщения — они встанут в очередь\n"

@@ -45,6 +45,7 @@ class Request:
 
     content: str
     lead: Profile | None = None
+    screen: screens_mod.Screen | None = None  # ввод с рабочего экрана уходит в него же
 
 
 @dataclass
@@ -66,6 +67,7 @@ class State:
     known_models: list[str] = field(default_factory=lambda: list(api.FALLBACK_MODELS))
     journal_warned: bool = False
     input_buffer: Any = None  # буфер строки ввода: профиль подставляет в него заготовку
+    mouse_enabled: bool = True  # False — мышь отдана терминалу, чтобы выделять и копировать
 
     @property
     def main(self) -> screens_mod.Screen:
@@ -78,6 +80,13 @@ class State:
         return self.screens[self.active if 0 <= self.active < len(self.screens) else 0]
 
     @property
+    def focus(self) -> screens_mod.Screen:
+        """Куда писать вывод команд: на рабочем экране — в него, на экране агента (он только
+        для чтения) — в главный, иначе сообщение осталось бы незамеченным."""
+        current = self.screen
+        return current if current.interactive else self.main
+
+    @property
     def log(self) -> Fragments:
         return self.main.log
 
@@ -87,9 +96,8 @@ class State:
 
 
 def append_log(state: State, fragments: Fragments, screen: screens_mod.Screen | None = None) -> None:
-    """Без указания экрана вывод идёт в главный: команды и подсказки всегда там, даже если
-    пользователь смотрит на экран агента."""
-    target = screen or state.main
+    """Без указания экрана вывод идёт на тот, где пользователь работает (см. State.focus)."""
+    target = screen or state.focus
     target.log.extend(fragments)
     target.line_count += sum(text.count("\n") for _, text in fragments)
     if state.app is not None:
@@ -97,7 +105,7 @@ def append_log(state: State, fragments: Fragments, screen: screens_mod.Screen | 
 
 
 def truncate_log(state: State, mark: int, screen: screens_mod.Screen | None = None) -> None:
-    target = screen or state.main
+    target = screen or state.focus
     removed = target.log[mark:]
     target.line_count -= sum(text.count("\n") for _, text in removed)
     del target.log[mark:]
@@ -109,13 +117,17 @@ def switch_screen(state: State, index: int) -> None:
     if not 0 <= index < len(state.screens) or index == state.active:
         return
     state.active = index
-    state.screen.autoscroll = True  # переключились — показываем свежий конец ленты
+    screen = state.screen
+    screen.autoscroll = True  # переключились — показываем свежий конец ленты
+    if screen.interactive and screen.profile is not None:
+        # набранное пользователем не затираем: заготовка подставляется только в пустую строку
+        apply_prefill(state, screen.profile, only_if_empty=True)
     refresh(state)
 
 
 def drop_agent_screens(state: State) -> None:
-    """Экраны агентов живут ровно столько, сколько состав группы: сменился профиль —
-    прежние ленты уже не о чем."""
+    """Экраны агентов и рабочие экраны живут ровно столько, сколько профиль, который их
+    завёл: сменился профиль — прежние ленты уже не о чем."""
     del state.screens[1:]
     state.active = 0
 
@@ -162,18 +174,43 @@ def switch_profile(state: State, name: str) -> None:
         append_log(state, ui.system_fragments("в этом профиле каждый запрос уходит без истории"))
     if profile.agents:
         append_log(state, ui.team_list_fragments(profile.name, profile.agents))
+    if profile.screens:
+        open_work_screens(state, profile)
+        return
     apply_prefill(state, profile)
 
 
-def apply_prefill(state: State, profile: Profile) -> None:
+def apply_prefill(state: State, profile: Profile, *, only_if_empty: bool = False) -> None:
     """Заготовку ввода кладём в строку ввода, а не отправляем сами: пользователь видит текст,
     может его поправить и отправляет сам — Enter'ом."""
     if not profile.prefill or state.input_buffer is None:
+        return
+    if only_if_empty and state.input_buffer.text.strip():
         return
     text = profile.prefill.strip()
     state.input_buffer.text = text
     state.input_buffer.cursor_position = len(text)
     append_log(state, ui.system_fragments("заготовка вопроса подставлена в строку ввода — Enter отправит её"))
+
+
+def open_work_screens(state: State, profile: Profile) -> None:
+    """Профиль со списком screens раскладывает приём по вкладкам: каждый экран — свой шаг со
+    своей инструкцией и своей заготовкой ввода. Ввод уходит в тот экран, который открыт."""
+    opened: list[str] = []
+    for name in profile.screens:
+        step, warnings = profiles.load(name)
+        for warning in warnings:
+            append_log(state, ui.error_fragments(f"экран «{name}»: {warning}"))
+        if step.name == profiles.DEFAULT_PROFILE_NAME and name != profiles.DEFAULT_PROFILE_NAME:
+            append_log(state, ui.error_fragments(f"экран «{name}» пропущен: профиль не найден"))
+            continue
+        state.screens.append(screens_mod.Screen(key=name, title=name, profile=step, interactive=True))
+        opened.append(name)
+    if not opened:
+        append_log(state, ui.error_fragments("рабочие экраны не открыты: профили не найдены"))
+        return
+    append_log(state, ui.work_screens_fragments(opened))
+    switch_screen(state, 1)
 
 
 # ─────────────────────────────── генерация ответа ───────────────────────────────
@@ -337,7 +374,13 @@ async def worker(state: State) -> None:
         request = await state.queue.get()
         lead = request.lead or state.profile
         state.busy = True
-        if lead.agents:
+        if request.screen is not None and request.screen.profile is not None:
+            screen = request.screen
+            messages = screens_mod.build_messages(screen.profile, screen, request.content)
+            task = asyncio.create_task(
+                generate_response(state, messages, request.content, screen=screen, profile=screen.profile)
+            )
+        elif lead.agents:
             task = asyncio.create_task(team.run(state, request.content, lead))
         else:
             if lead.keep_history:
@@ -590,6 +633,20 @@ def apply_custom_value(state: State, raw: str) -> None:
     set_param(state, name, value)
 
 
+def toggle_mouse(state: State) -> None:
+    """Полноэкранный режим забирает мышь себе, и выделить текст мышью становится нельзя —
+    терминал не видит ни нажатий, ни протяжек. Здесь мышь можно вернуть терминалу: тогда
+    выделение и копирование работают как обычно, а клики по вкладкам и прокрутка колесом
+    временно отключаются."""
+    state.mouse_enabled = not state.mouse_enabled
+    if state.mouse_enabled:
+        append_log(state, ui.system_fragments("мышь снова у harness: клики по вкладкам и прокрутка колесом"))
+    else:
+        append_log(state, ui.system_fragments("мышь отдана терминалу: выделяйте и копируйте текст обычным образом"))
+        append_log(state, ui.hint_fragments("вернуть мышь harness — F2 или /mouse"))
+    refresh(state)
+
+
 def cmd_team(state: State, arg: str) -> None:
     """Разовый запуск группы. Без аргумента — показывает состав; с вопросом — задаёт его
     группе. Первым словом можно назвать профиль-ведущего: так группу поднимают, не уходя
@@ -644,6 +701,8 @@ async def handle_command(text: str, state: State) -> bool:
         append_log(state, ui.system_prompt_fragments(state.profile.name, state.profile.system))
     elif cmd == "/team":
         cmd_team(state, arg)
+    elif cmd == "/mouse":
+        toggle_mouse(state)
     elif cmd == "/clear":
         state.main.messages.clear()
         append_log(state, ui.system_fragments("история диалога очищена"))
@@ -676,11 +735,12 @@ async def handle_submit(raw_text: str, state: State) -> None:
         append_log(state, ui.hint_fragments("сначала авторизуйтесь: /auth"))
         return
 
-    append_log(state, ui.user_fragments(text))
+    screen = state.screen if state.screen.interactive and state.screen is not state.main else None
+    append_log(state, ui.user_fragments(text), screen)
     was_busy = state.busy
-    state.queue.put_nowait(Request(content=text))
+    state.queue.put_nowait(Request(content=text, screen=screen))
     if was_busy:
-        append_log(state, ui.queued_fragments(state.queue.qsize()))
+        append_log(state, ui.queued_fragments(state.queue.qsize()), screen)
 
 
 # ─────────────────────────────── меню команд ───────────────────────────────
@@ -774,7 +834,11 @@ def build_app(state: State) -> Application:
     status_window = Window(
         content=FormattedTextControl(
             text=lambda: ui.status_fragments(
-                state.model, state.config.is_authorized, state.profile.name, state.profile_dirty
+                state.model,
+                state.config.is_authorized,
+                state.profile.name,
+                state.profile_dirty,
+                state.mouse_enabled,
             )
         ),
         height=1,
@@ -850,8 +914,9 @@ def build_app(state: State) -> Application:
             return
         text = buffer.text
         buffer.reset()
-        state.active = 0  # ответ придёт в главный экран — переводим взгляд туда
-        state.main.autoscroll = True  # новое сообщение — вернуться к живому выводу
+        if not state.screen.interactive:
+            state.active = 0  # экран агента только для чтения — ответ придёт в главный
+        state.screen.autoscroll = True  # новое сообщение — вернуться к живому выводу
         asyncio.get_running_loop().create_task(handle_submit(text, state))
 
     @kb.add("c-c", filter=~picker_active)
@@ -862,6 +927,10 @@ def build_app(state: State) -> Application:
     @kb.add("c-d")
     def _quit(event) -> None:  # noqa: ANN001
         event.app.exit()
+
+    @kb.add("f2")
+    def _toggle_mouse(event) -> None:  # noqa: ANN001
+        toggle_mouse(state)
 
     @kb.add("pageup")
     def _scroll_up(event) -> None:  # noqa: ANN001
@@ -896,7 +965,7 @@ def build_app(state: State) -> Application:
         key_bindings=kb,
         style=ui.STYLE,
         full_screen=True,
-        mouse_support=True,
+        mouse_support=Condition(lambda: state.mouse_enabled),
         erase_when_done=True,
     )
     # Esc — начало alt-комбинаций и escape-последовательностей, поэтому prompt_toolkit

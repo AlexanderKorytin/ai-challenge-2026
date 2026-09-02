@@ -6,8 +6,10 @@
 за концом», историю сообщений и состояние занятости — по нему полоса вкладок показывает,
 кто ещё думает, а кто уже ответил.
 
-Экраны агентов работают только на просмотр: писать в них пользователь не может, ввод всегда
-уходит в главный экран.
+Экраны бывают двух родов. Экран агента — только на просмотр: писать в него пользователь не
+может, ввод уходит в главный. Рабочий экран (профиль со списком `screens`) ввод принимает:
+на нём ведётся своя ветка разговора со своей инструкцией — так приём в несколько шагов
+раскладывается по вкладкам, а не мешается в одной ленте.
 """
 
 from __future__ import annotations
@@ -37,7 +39,8 @@ class Screen:
     autoscroll: bool = True
     messages: list[dict] = field(default_factory=list)
     status: str = IDLE
-    profile: Profile | None = None  # у агента — его профиль: постановка задачи и параметры
+    profile: Profile | None = None  # свой профиль: постановка задачи и параметры
+    interactive: bool = False  # рабочий экран принимает ввод; экран агента — только чтение
 
     @property
     def is_agent(self) -> bool:
@@ -45,4 +48,19 @@ class Screen:
 
 
 def main_screen() -> Screen:
-    return Screen(key=MAIN_KEY, title="главный")
+    return Screen(key=MAIN_KEY, title="главный", interactive=True)
+
+
+def build_messages(profile: Profile, screen: Screen, content: str) -> list[dict]:
+    """Сообщения одного запроса: инструкция экрана, его история (если профиль её держит)
+    и новый ввод. Одинаково для агента группы и для рабочего экрана — разница только в том,
+    кто набирает текст."""
+    messages: list[dict] = []
+    if profile.system:
+        messages.append({"role": "system", "content": profile.system})
+    if profile.keep_history:
+        screen.messages.append({"role": "user", "content": content})
+        messages.extend(screen.messages)
+    else:
+        messages.append({"role": "user", "content": content})
+    return messages
