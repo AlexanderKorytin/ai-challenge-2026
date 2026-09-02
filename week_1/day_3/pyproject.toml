@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Одна логическая задача четырьмя способами промптинга: замер и сравнение"
 requires-python = ">=3.11"
 dependencies = [
-    "myharness",
+    "myharnesslogic",
 ]
 
 [tool.uv]
@@ -14,4 +14,4 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
-myharness = { path = "../day_1" }
+myharnesslogic = { path = "../day_1" }

@@ -172,7 +172,7 @@ wheels = [
 ]
 
 [[package]]
-name = "myharness"
+name = "myharnesslogic"
 version = "0.1.0"
 source = { directory = "../day_1" }
 dependencies = [
@@ -337,11 +337,11 @@ name = "reasoning"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "myharness" },
+    { name = "myharnesslogic" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "myharness", directory = "../day_1" }]
+requires-dist = [{ name = "myharnesslogic", directory = "../day_1" }]
 
 [[package]]
 name = "sniffio"

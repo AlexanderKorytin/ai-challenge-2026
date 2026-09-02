@@ -1,7 +1,7 @@
 [project]
-name = "myharness"
+name = "myharnesslogic"
 version = "0.1.0"
-description = "Минимальный терминальный harness для DeepSeek API"
+description = "Терминальный harness для DeepSeek API — сборка ветки дня 3"
 readme = "README.md"
 authors = [
     { name = "AlexandrKorytin", email = "koritin84@gmail.com" }
@@ -13,7 +13,13 @@ dependencies = [
 ]
 
 [project.scripts]
-myharness = "myharness:main"
+myharnesslogic = "myharness:main"
+
+# Имя дистрибутива в этой ветке отличается от main намеренно: так команда myharnesslogic
+# (код ветки дня 3) и команда myharness (код main) живут рядом, не вытесняя друг друга.
+# Сам импортируемый пакет остаётся myharness.
+[tool.uv.build-backend]
+module-name = "myharness"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]
