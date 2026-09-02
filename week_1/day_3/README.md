@@ -172,4 +172,4 @@ uv run python -m reasoning.web                # ответы рядом на 127
 ## Ссылки из отчёта
 
 - Видео: `week_1/day_3/test/day3_report_small.mp4` (2,9 МБ; ссылка на Google Диск — после выгрузки)
-- Снимок кода: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/f3303d5fb888bd43237e80b08715d849e2bc963f/week_1/day_3
+- Снимок кода: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/039da09465cfba6abed458b758699f6526b4483c/week_1/day_3
