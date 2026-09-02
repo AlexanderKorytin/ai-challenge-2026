@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
 
 from . import params as params_mod
+from . import screens as screens_mod
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -28,6 +31,14 @@ STYLE = Style.from_dict(
         "status.ok": "bg:#21252b #98c379",
         "status.bad": "bg:#21252b #e5c07b",
         "status.value": "bg:#21252b #56b6c2",
+        # полоса вкладок под строкой ввода: главный экран и экраны агентов
+        "tabs": "bg:#2c313a #7f8896",
+        "tabs.active": "bg:#3e4451 #ffffff bold",
+        "tabs.busy": "bg:#2c313a #61afef",
+        "tabs.done": "bg:#2c313a #98c379",
+        "tabs.error": "bg:#2c313a #e06c75",
+        "tabs.hint": "bg:#2c313a #5c6370 italic",
+        "agent": "#c678dd bold",
         "meta": "#5c6370",
         "meta.warn": "#e5c07b",
         # всплывающие панели: меню команд и выбор значения параметра
@@ -57,6 +68,7 @@ COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("/params", "", "параметры профиля: показать и изменить", True),
     ("/set", "<параметр>", "изменить параметр — меню выбора значения", True),
     ("/system", "", "показать текущую системную инструкцию", True),
+    ("/team", "[вопрос]", "поднять группу агентов из профиля-ведущего", True),
     ("/clear", "", "очистить историю диалога", True),
     ("/exit", "", "выход", False),
 )
@@ -124,6 +136,83 @@ def status_fragments(model: str, authorized: bool, profile: str, profile_dirty: 
     if profile_dirty:
         out.append(("class:status.bad", " (изменён)"))
     out.append(("class:status", " "))
+    return out
+
+
+STATUS_MARKS: dict[str, tuple[str, str]] = {
+    screens_mod.IDLE: ("·", "class:tabs"),
+    screens_mod.BUSY: ("…", "class:tabs.busy"),
+    screens_mod.DONE: ("✓", "class:tabs.done"),
+    screens_mod.ERROR: ("✕", "class:tabs.error"),
+}
+
+
+def _tab_click(on_click: Callable[[int], None], index: int) -> Callable[[MouseEvent], Any]:
+    def handler(mouse_event: MouseEvent) -> Any:
+        if mouse_event.event_type == MouseEventType.MOUSE_UP:
+            on_click(index)
+            return None
+        return NotImplemented  # прочие события мыши пусть обрабатывает prompt_toolkit
+
+    return handler
+
+
+def tabs_fragments(items: list[tuple[str, str]], active: int, on_click: Callable[[int], None]) -> Fragments:
+    """Полоса вкладок под строкой ввода: главный экран и экраны агентов.
+
+    Вкладка кликабельна (обработчик висит прямо на фрагменте текста) и пронумерована —
+    номер совпадает с Alt+N, чтобы клавиша и клик вели в одно и то же место. Значок
+    показывает, что с агентом происходит: думает, ответил или упал.
+    """
+    out: Fragments = []
+    for index, (title, status) in enumerate(items):
+        mark, mark_style = STATUS_MARKS.get(status, STATUS_MARKS[screens_mod.IDLE])
+        handler = _tab_click(on_click, index)
+        style = "class:tabs.active" if index == active else "class:tabs"
+        out.append((style, f" {index + 1} {title} ", handler))
+        out.append((style if index == active else mark_style, f"{mark} ", handler))
+        out.append(("class:tabs", "│"))
+    out.append(("class:tabs.hint", "  Alt+N или Shift+←/→ — переключить экран"))
+    out.append(("class:tabs", " "))
+    return out
+
+
+def agent_task_fragments(agent: str, profile_name: str, system: str | None, question: str) -> Fragments:
+    """Шапка экрана агента: кто он, с какой инструкцией поднят и что ему поручено."""
+    out: Fragments = [("class:agent", f"● агент «{agent}»"), ("class:dim", f"   профиль: {profile_name}"), ("", "\n")]
+    if system:
+        out.append(("class:system", "· системная инструкция:"))
+        out.append(("", "\n"))
+        for line in system.strip().splitlines():
+            out.append(("class:dim", f"  {line}\n"))
+    else:
+        out.extend(system_fragments("системная инструкция не задана"))
+    out.append(("class:user", "› "))
+    out.append(("", question))
+    out.append(("", "\n"))
+    return out
+
+
+def team_start_fragments(names: list[str]) -> Fragments:
+    """Сообщение в главном экране: группа поднята, ответы смотреть на соседних вкладках."""
+    listing = ", ".join(names)
+    return [
+        ("class:agent", f"● группа поднята: {listing}"),
+        ("", "\n"),
+        ("class:dim", "  ответ каждого — на своём экране (Alt+2…), сводка появится здесь"),
+        ("", "\n"),
+    ]
+
+
+def team_summary_label_fragments(count: int) -> Fragments:
+    return [("class:system", f"· свожу ответы агентов ({count})"), ("", "\n")]
+
+
+def team_list_fragments(lead: str, names: list[str]) -> Fragments:
+    out: Fragments = [("class:system", f"· группа профиля «{lead}»"), ("", "\n")]
+    for name in names:
+        out.append(("", f"  ● {name}\n"))
+    out.append(("class:dim", "  вопрос уходит всей группе; разово: /team <вопрос>\n"))
     return out
 
 
@@ -238,7 +327,13 @@ def help_fragments() -> Fragments:
         "/set <параметр> открывает меню значений: стрелки — выбор, Enter — применить,\n"
         "Esc — выйти без изменений.\n"
         "\n"
-        "Ctrl+C во время ответа — отменить текущий запрос.\n"
+        "Группа агентов\n"
+        "Профиль со списком agents поднимает агентов: вопрос уходит каждому со своей\n"
+        "системной инструкцией, ответы приходят на отдельные экраны, а профиль-ведущий\n"
+        "сводит их в общий вывод. Экраны агентов — только для чтения: постановка задачи,\n"
+        "рассуждения и ответ. Переключение — клик по вкладке, Alt+N или Shift+←/→.\n"
+        "\n"
+        "Ctrl+C во время ответа — отменить текущий запрос (всю группу разом).\n"
         "Пока модель отвечает, можно вводить следующие сообщения — они встанут в очередь\n"
         "и уйдут в LLM сразу после ответа на предыдущее.\n"
         "Колесо мыши / PageUp, PageDown — прокрутка истории вверх-вниз (обычная прокрутка\n"

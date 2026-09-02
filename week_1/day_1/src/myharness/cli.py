@@ -25,9 +25,10 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
-from . import api, journal, profiles, ui
+from . import api, journal, profiles, team, ui
 from . import params as params_mod
 from . import picker as picker_mod
+from . import screens as screens_mod
 from .api import DeepSeekClient
 from .config import Config
 from .config import load as load_config
@@ -38,14 +39,24 @@ Fragments = list[tuple[str, str]]
 
 
 @dataclass
+class Request:
+    """Единица очереди. Ведущий задаётся только для разового запуска группы через /team —
+    в остальных случаях берётся профиль, активный на момент отправки."""
+
+    content: str
+    lead: Profile | None = None
+
+
+@dataclass
 class State:
     config: Config
     client: DeepSeekClient | None
     model: str
     profile: Profile
     app: Application | None = None
-    messages: list[dict] = field(default_factory=list)
-    queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
+    screens: list[screens_mod.Screen] = field(default_factory=lambda: [screens_mod.main_screen()])
+    active: int = 0
+    queue: asyncio.Queue[Request] = field(default_factory=asyncio.Queue)
     current_task: asyncio.Task | None = None
     busy: bool = False
     awaiting_key: bool = False
@@ -54,24 +65,59 @@ class State:
     profile_dirty: bool = False  # параметры меняли, но профиль не сохранён
     known_models: list[str] = field(default_factory=lambda: list(api.FALLBACK_MODELS))
     journal_warned: bool = False
-    log: Fragments = field(default_factory=list)
-    line_count: int = 0
-    autoscroll: bool = True
+    input_buffer: Any = None  # буфер строки ввода: профиль подставляет в него заготовку
+
+    @property
+    def main(self) -> screens_mod.Screen:
+        """Экран пользователя: сюда идут команды, вопросы и сводка группы."""
+        return self.screens[0]
+
+    @property
+    def screen(self) -> screens_mod.Screen:
+        """Показываемый сейчас экран — он же и прокручивается."""
+        return self.screens[self.active if 0 <= self.active < len(self.screens) else 0]
+
+    @property
+    def log(self) -> Fragments:
+        return self.main.log
+
+    @property
+    def messages(self) -> list[dict]:
+        return self.main.messages
 
 
-def append_log(state: State, fragments: Fragments) -> None:
-    state.log.extend(fragments)
-    state.line_count += sum(text.count("\n") for _, text in fragments)
+def append_log(state: State, fragments: Fragments, screen: screens_mod.Screen | None = None) -> None:
+    """Без указания экрана вывод идёт в главный: команды и подсказки всегда там, даже если
+    пользователь смотрит на экран агента."""
+    target = screen or state.main
+    target.log.extend(fragments)
+    target.line_count += sum(text.count("\n") for _, text in fragments)
     if state.app is not None:
         state.app.invalidate()
 
 
-def truncate_log(state: State, mark: int) -> None:
-    removed = state.log[mark:]
-    state.line_count -= sum(text.count("\n") for _, text in removed)
-    del state.log[mark:]
+def truncate_log(state: State, mark: int, screen: screens_mod.Screen | None = None) -> None:
+    target = screen or state.main
+    removed = target.log[mark:]
+    target.line_count -= sum(text.count("\n") for _, text in removed)
+    del target.log[mark:]
     if state.app is not None:
         state.app.invalidate()
+
+
+def switch_screen(state: State, index: int) -> None:
+    if not 0 <= index < len(state.screens) or index == state.active:
+        return
+    state.active = index
+    state.screen.autoscroll = True  # переключились — показываем свежий конец ленты
+    refresh(state)
+
+
+def drop_agent_screens(state: State) -> None:
+    """Экраны агентов живут ровно столько, сколько состав группы: сменился профиль —
+    прежние ленты уже не о чем."""
+    del state.screens[1:]
+    state.active = 0
 
 
 def refresh(state: State) -> None:
@@ -104,30 +150,47 @@ def switch_profile(state: State, name: str) -> None:
     for warning in warnings:
         append_log(state, ui.error_fragments(warning))
     # история, набранная под прежней инструкцией, исказила бы следующий ответ
-    if state.messages:
-        state.messages.clear()
+    if state.main.messages:
+        state.main.messages.clear()
         append_log(state, ui.system_fragments("история диалога очищена — профиль сменился"))
+    if len(state.screens) > 1:
+        drop_agent_screens(state)
+        append_log(state, ui.system_fragments("экраны прежней группы закрыты"))
     source = str(profile.source) if profile.source else "встроенный"
     append_log(state, ui.system_fragments(f"профиль: {profile.name} ({source})"))
     if not profile.keep_history:
         append_log(state, ui.system_fragments("в этом профиле каждый запрос уходит без истории"))
+    if profile.agents:
+        append_log(state, ui.team_list_fragments(profile.name, profile.agents))
+    apply_prefill(state, profile)
+
+
+def apply_prefill(state: State, profile: Profile) -> None:
+    """Заготовку ввода кладём в строку ввода, а не отправляем сами: пользователь видит текст,
+    может его поправить и отправляет сам — Enter'ом."""
+    if not profile.prefill or state.input_buffer is None:
+        return
+    text = profile.prefill.strip()
+    state.input_buffer.text = text
+    state.input_buffer.cursor_position = len(text)
+    append_log(state, ui.system_fragments("заготовка вопроса подставлена в строку ввода — Enter отправит её"))
 
 
 # ─────────────────────────────── генерация ответа ───────────────────────────────
 
 
-async def _spin(state: State) -> None:
-    mark = len(state.log)
+async def _spin(state: State, screen: screens_mod.Screen) -> None:
+    mark = len(screen.log)
     i = 0
     try:
         while True:
             frame = ui.SPINNER_FRAMES[i % len(ui.SPINNER_FRAMES)]
-            truncate_log(state, mark)
-            append_log(state, [("class:dim", f"{frame} думаю…")])
+            truncate_log(state, mark, screen)
+            append_log(state, [("class:dim", f"{frame} думаю…")], screen)
             i += 1
             await asyncio.sleep(0.08)
     except asyncio.CancelledError:
-        truncate_log(state, mark)
+        truncate_log(state, mark, screen)
         raise
 
 
@@ -138,9 +201,43 @@ def record(state: State, entry: dict[str, Any]) -> None:
         append_log(state, ui.error_fragments(error))
 
 
-async def generate_response(state: State, request_messages: list[dict], user_text: str) -> None:
+@dataclass
+class Turn:
+    """Итог одного обмена с моделью — тем, кто позвал: тексту ответа и цене."""
+
+    status: str
+    text: str = ""
+    reasoning: str = ""
+    finish_reason: str | None = None
+    usage: dict[str, Any] = field(default_factory=dict)
+    elapsed_ms: int = 0
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
+async def generate_response(
+    state: State,
+    request_messages: list[dict],
+    user_text: str,
+    *,
+    screen: screens_mod.Screen | None = None,
+    profile: Profile | None = None,
+    agent: str | None = None,
+    run_id: str | None = None,
+) -> Turn:
+    """Один запрос к модели с потоковым выводом в свой экран.
+
+    Экран и профиль задаются явно, потому что агенты группы отвечают одновременно: у каждого
+    своя лента, своя системная инструкция и свои параметры, а State у них общий.
+    """
     assert state.client is not None
-    spinner_task = asyncio.create_task(_spin(state))
+    target = screen or state.main
+    active_profile = profile or state.profile
+    target.status = screens_mod.BUSY
+    spinner_task = asyncio.create_task(_spin(state, target))
 
     async def clear_spinner() -> None:
         if not spinner_task.done():
@@ -158,7 +255,7 @@ async def generate_response(state: State, request_messages: list[dict], user_tex
     error_text: str | None = None
     started = time.monotonic()
     try:
-        async for event in state.client.stream_chat(state.model, request_messages, state.profile.params):
+        async for event in state.client.stream_chat(state.model, request_messages, active_profile.params):
             await clear_spinner()
             if event.kind == "meta":
                 finish_reason = event.finish_reason
@@ -166,17 +263,17 @@ async def generate_response(state: State, request_messages: list[dict], user_tex
                 continue
             if event.kind == "reasoning":
                 if not reasoning_started:
-                    append_log(state, ui.reasoning_label_fragments())
+                    append_log(state, ui.reasoning_label_fragments(), target)
                     reasoning_started = True
                 reasoning_text += event.text
-                append_log(state, [("class:dim", event.text)])
+                append_log(state, [("class:dim", event.text)], target)
             else:
                 if not answer_started:
                     if reasoning_started:
-                        append_log(state, [("", "\n")])
-                    append_log(state, ui.answer_label_fragments())
+                        append_log(state, [("", "\n")], target)
+                    append_log(state, ui.answer_label_fragments(), target)
                     answer_started = True
-                append_log(state, [("", event.text)])
+                append_log(state, [("", event.text)], target)
                 answer_text += event.text
         status = "ok"
     except asyncio.CancelledError:
@@ -186,47 +283,67 @@ async def generate_response(state: State, request_messages: list[dict], user_tex
     except Exception as exc:  # сеть, лимиты, ошибки API — не роняем harness
         await clear_spinner()
         error_text = str(exc)
-        append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {exc}"))
+        append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {exc}"), target)
     finally:
         await clear_spinner()
         elapsed = time.monotonic() - started
+        target.status = screens_mod.DONE if status == "ok" else screens_mod.ERROR
         if reasoning_started or answer_started:
-            append_log(state, [("", "\n")])
+            append_log(state, [("", "\n")], target)
         if status == "ok":
-            append_log(state, ui.meta_fragments(finish_reason, usage, elapsed, state.profile.name))
+            append_log(state, ui.meta_fragments(finish_reason, usage, elapsed, active_profile.name), target)
             if finish_reason == "length":
-                append_log(state, ui.hint_fragments("ответ упёрся в max_tokens — увеличьте лимит: /set max_tokens"))
-        if status == "ok" and answer_text and state.profile.keep_history:
-            state.messages.append({"role": "assistant", "content": answer_text})
-        elif state.profile.keep_history and state.messages and state.messages[-1]["role"] == "user":
+                append_log(
+                    state,
+                    ui.hint_fragments("ответ упёрся в max_tokens — увеличьте лимит: /set max_tokens"),
+                    target,
+                )
+        if status == "ok" and answer_text and active_profile.keep_history:
+            target.messages.append({"role": "assistant", "content": answer_text})
+        elif active_profile.keep_history and target.messages and target.messages[-1]["role"] == "user":
             # ответ не получен (ошибка/отмена) — не оставляем в истории вопрос без ответа
-            state.messages.pop()
-        record(
-            state,
-            {
-                "status": status,
-                "model": state.model,
-                "profile": state.profile.snapshot(),
-                "query": user_text,
-                "messages": request_messages,
-                "response": answer_text or None,
-                "reasoning": reasoning_text or None,
-                "finish_reason": finish_reason,
-                "usage": usage or None,
-                "elapsed_ms": int(elapsed * 1000),
-                "error": error_text,
-            },
-        )
+            target.messages.pop()
+        entry: dict[str, Any] = {
+            "status": status,
+            "model": state.model,
+            "profile": active_profile.snapshot(),
+            "query": user_text,
+            "messages": request_messages,
+            "response": answer_text or None,
+            "reasoning": reasoning_text or None,
+            "finish_reason": finish_reason,
+            "usage": usage or None,
+            "elapsed_ms": int(elapsed * 1000),
+            "error": error_text,
+        }
+        if agent:
+            entry["agent"] = agent
+        if run_id:
+            entry["run_id"] = run_id
+        record(state, entry)
+    return Turn(
+        status=status,
+        text=answer_text,
+        reasoning=reasoning_text,
+        finish_reason=finish_reason,
+        usage=usage,
+        elapsed_ms=int((time.monotonic() - started) * 1000),
+        error=error_text,
+    )
 
 
 async def worker(state: State) -> None:
     while True:
-        content = await state.queue.get()
-        if state.profile.keep_history:
-            state.messages.append({"role": "user", "content": content})
-        request_messages = build_request_messages(state, content)
+        request = await state.queue.get()
+        lead = request.lead or state.profile
         state.busy = True
-        task = asyncio.create_task(generate_response(state, request_messages, content))
+        if lead.agents:
+            task = asyncio.create_task(team.run(state, request.content, lead))
+        else:
+            if lead.keep_history:
+                state.main.messages.append({"role": "user", "content": request.content})
+            request_messages = build_request_messages(state, request.content)
+            task = asyncio.create_task(generate_response(state, request_messages, request.content))
         state.current_task = task
         try:
             await task
@@ -473,6 +590,38 @@ def apply_custom_value(state: State, raw: str) -> None:
     set_param(state, name, value)
 
 
+def cmd_team(state: State, arg: str) -> None:
+    """Разовый запуск группы. Без аргумента — показывает состав; с вопросом — задаёт его
+    группе. Первым словом можно назвать профиль-ведущего: так группу поднимают, не уходя
+    с обычного профиля."""
+    text = arg.strip()
+    lead = state.profile
+    if text:
+        parts = text.split(maxsplit=1)
+        known = {name for name, _ in profiles.available()}
+        if len(parts) > 1 and parts[0] in known:
+            candidate, warnings = profiles.load(parts[0])
+            for warning in warnings:
+                append_log(state, ui.error_fragments(warning))
+            if candidate.agents:
+                lead, text = candidate, parts[1]
+    if not lead.agents:
+        append_log(state, ui.error_fragments(f"в профиле «{lead.name}» группа не задана"))
+        append_log(state, ui.hint_fragments("группу задаёт поле agents профиля: /profile <имя-ведущего>"))
+        return
+    if not text:
+        append_log(state, ui.team_list_fragments(lead.name, lead.agents))
+        return
+    if not state.config.is_authorized:
+        append_log(state, ui.hint_fragments("сначала авторизуйтесь: /auth"))
+        return
+    append_log(state, ui.user_fragments(text))
+    was_busy = state.busy
+    state.queue.put_nowait(Request(content=text, lead=lead))
+    if was_busy:
+        append_log(state, ui.queued_fragments(state.queue.qsize()))
+
+
 async def handle_command(text: str, state: State) -> bool:
     parts = text.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -493,8 +642,10 @@ async def handle_command(text: str, state: State) -> bool:
         cmd_set(state, arg)
     elif cmd == "/system":
         append_log(state, ui.system_prompt_fragments(state.profile.name, state.profile.system))
+    elif cmd == "/team":
+        cmd_team(state, arg)
     elif cmd == "/clear":
-        state.messages.clear()
+        state.main.messages.clear()
         append_log(state, ui.system_fragments("история диалога очищена"))
     else:
         append_log(state, ui.error_fragments(f"неизвестная команда: {cmd} (см. /help)"))
@@ -527,7 +678,7 @@ async def handle_submit(raw_text: str, state: State) -> None:
 
     append_log(state, ui.user_fragments(text))
     was_busy = state.busy
-    state.queue.put_nowait(text)
+    state.queue.put_nowait(Request(content=text))
     if was_busy:
         append_log(state, ui.queued_fragments(state.queue.qsize()))
 
@@ -592,17 +743,20 @@ class LogWindow(Window):
 
 
 def build_app(state: State) -> Application:
-    output_control = FormattedTextControl(text=lambda: state.log, show_cursor=False)
+    output_control = FormattedTextControl(text=lambda: state.screen.log, show_cursor=False)
     output_window = LogWindow(
         content=output_control,
         wrap_lines=True,
         always_hide_cursor=True,
         height=Dimension(weight=1),
-        on_manual_scroll=lambda: setattr(state, "autoscroll", False),
+        on_manual_scroll=lambda: setattr(state.screen, "autoscroll", False),
     )
-    output_control.get_cursor_position = lambda: (
-        Point(x=0, y=state.line_count) if state.autoscroll else Point(x=0, y=output_window.vertical_scroll)
-    )
+    def cursor_position() -> Point:
+        """Курсор держим в конце ленты активного экрана — на нём и стоит автопрокрутка."""
+        screen = state.screen
+        return Point(x=0, y=screen.line_count) if screen.autoscroll else Point(x=0, y=output_window.vertical_scroll)
+
+    output_control.get_cursor_position = cursor_position
 
     input_area = TextArea(
         height=1,
@@ -627,6 +781,21 @@ def build_app(state: State) -> Application:
         style="class:status",
     )
 
+    tabs_window = Window(
+        content=FormattedTextControl(
+            text=lambda: ui.tabs_fragments(
+                [(screen.title, screen.status) for screen in state.screens],
+                state.active,
+                lambda index: switch_screen(state, index),
+            ),
+            focusable=False,
+        ),
+        height=1,
+        style="class:tabs",
+    )
+    # Пока агентов нет, полоса не нужна — она только отнимала бы строку экрана.
+    tabs_area = ConditionalContainer(tabs_window, filter=Condition(lambda: len(state.screens) > 1))
+
     picker_active = Condition(lambda: state.picker is not None)
     picker_window = Window(
         content=FormattedTextControl(text=lambda: picker_mod.fragments(state.picker) if state.picker else []),
@@ -636,13 +805,14 @@ def build_app(state: State) -> Application:
     )
 
     root = FloatContainer(
-        content=HSplit([output_window, sep(), input_area, sep(), status_window]),
+        content=HSplit([output_window, sep(), input_area, tabs_area, sep(), status_window]),
         floats=[
             Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=12, scroll_offset=1)),
             Float(left=2, bottom=4, content=ConditionalContainer(picker_window, filter=picker_active)),
         ],
     )
     layout = Layout(root, focused_element=input_area)
+    state.input_buffer = input_area.buffer
 
     kb = KeyBindings()
     buffer = input_area.buffer
@@ -680,7 +850,8 @@ def build_app(state: State) -> Application:
             return
         text = buffer.text
         buffer.reset()
-        state.autoscroll = True  # новое сообщение — вернуться к живому выводу
+        state.active = 0  # ответ придёт в главный экран — переводим взгляд туда
+        state.main.autoscroll = True  # новое сообщение — вернуться к живому выводу
         asyncio.get_running_loop().create_task(handle_submit(text, state))
 
     @kb.add("c-c", filter=~picker_active)
@@ -694,17 +865,31 @@ def build_app(state: State) -> Application:
 
     @kb.add("pageup")
     def _scroll_up(event) -> None:  # noqa: ANN001
-        state.autoscroll = False
+        state.screen.autoscroll = False
         output_window.vertical_scroll = max(0, output_window.vertical_scroll - 10)
 
     @kb.add("pagedown")
     def _scroll_down(event) -> None:  # noqa: ANN001
-        state.autoscroll = False
+        state.screen.autoscroll = False
         output_window.vertical_scroll += 10
 
     @kb.add("c-end")
     def _resume_autoscroll(event) -> None:  # noqa: ANN001
-        state.autoscroll = True
+        state.screen.autoscroll = True
+
+    @kb.add("s-right", filter=~picker_active)
+    def _next_screen(event) -> None:  # noqa: ANN001
+        switch_screen(state, (state.active + 1) % len(state.screens))
+
+    @kb.add("s-left", filter=~picker_active)
+    def _prev_screen(event) -> None:  # noqa: ANN001
+        switch_screen(state, (state.active - 1) % len(state.screens))
+
+    # Alt+N — прямо на экран с этим номером: номер написан на самой вкладке.
+    for number in range(1, 10):
+        @kb.add("escape", str(number), filter=~picker_active)
+        def _goto_screen(event, index=number - 1) -> None:  # noqa: ANN001
+            switch_screen(state, index)
 
     app = Application(
         layout=layout,

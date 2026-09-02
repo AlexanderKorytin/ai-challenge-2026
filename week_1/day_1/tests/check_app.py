@@ -26,7 +26,10 @@ from prompt_toolkit.input import create_pipe_input  # noqa: E402
 from prompt_toolkit.layout.containers import Window  # noqa: E402
 from prompt_toolkit.output import DummyOutput  # noqa: E402
 
-from myharness import api, cli, profiles  # noqa: E402
+from prompt_toolkit.data_structures import Point  # noqa: E402
+from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType  # noqa: E402
+
+from myharness import api, cli, profiles, ui  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 failures = []
@@ -59,8 +62,13 @@ class FakeClient:
         self.closed = True
 
 
-def log_text(state):
-    return "".join(text for _, text in state.log)
+def fragments_text(fragments):
+    """Фрагмент — (стиль, текст) либо (стиль, текст, обработчик мыши): вкладки кликабельны."""
+    return "".join(fragment[1] for fragment in fragments)
+
+
+def log_text(state, screen=None):
+    return fragments_text((screen or state.main).log)
 
 
 def screen_texts(app):
@@ -77,7 +85,7 @@ def screen_texts(app):
         except Exception:
             continue
         if isinstance(value, list):
-            out.append("".join(text for _, text in value))
+            out.append(fragments_text(value))
     return out
 
 
@@ -106,7 +114,7 @@ async def main():
         buffer = app.layout.get_buffer_by_name("text-area") or app.current_buffer
         check("список команд открылся без Enter", buffer.complete_state is not None)
         count = len(buffer.complete_state.completions) if buffer.complete_state else 0
-        check("в списке команды авторизованного, без /auth", count == 8, f"их {count}")
+        check("в списке команды авторизованного, без /auth", count == 9, f"их {count}")
 
         await send(DOWN)
         check("стрелка выбирает пункт", buffer.complete_state.current_completion is not None)
@@ -184,7 +192,68 @@ async def main():
         check("в записи причина остановки и токены", record["finish_reason"] == "length" and record["usage"]["completion_tokens"] == 34)
         check("ключ в журнал не попал", "sk-test" not in json.dumps(record, ensure_ascii=False))
 
-        print("\n7. Выход")
+        print("\n7. Группа агентов")
+        profiles_dir = tmp / "profiles"
+        for name, system in (("analyst", "ты аналитик"), ("critic", "ты критик")):
+            (profiles_dir / f"{name}.json").write_text(
+                json.dumps({"name": name, "system": system, "keep_history": False}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        (profiles_dir / "lead.json").write_text(
+            json.dumps(
+                {"name": "lead", "system": "сведи ответы", "keep_history": False, "agents": ["analyst", "critic"]},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (profiles_dir / "meta.json").write_text(
+            json.dumps({"name": "meta", "prefill": "составь промпт для задачи"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        await send("/profile meta" + ENTER, pause=0.25)
+        check("заготовка профиля подставлена в строку ввода", buffer.text == "составь промпт для задачи", repr(buffer.text))
+        check("но сама не отправлена — ждём Enter", state.queue.qsize() == 0 and not state.busy)
+        await send("\x7f" * 40)
+
+        await send("/team" + ENTER, pause=0.2)
+        check("без группы /team объясняет, чего не хватает", "группа не задана" in log_text(state))
+
+        before = len(fake.calls)
+        await send("/profile lead" + ENTER, pause=0.25)
+        check("состав группы показан при выборе профиля", "● analyst" in log_text(state) and "● critic" in log_text(state))
+
+        await send("почему так?" + ENTER, pause=0.8)
+        check("экраны агентов заведены", [s.key for s in state.screens] == ["main", "analyst", "critic"], str([s.key for s in state.screens]))
+        analyst_screen = state.screens[1]
+        check("в экране агента его постановка задачи", "агент «analyst»" in log_text(state, analyst_screen) and "ты аналитик" in log_text(state, analyst_screen))
+        check("в экране агента его рассуждения и ответ", "прикидываю…" in log_text(state, analyst_screen) and '"status": "ok"' in log_text(state, analyst_screen))
+        # в главном экране — только сводка ведущего; ленты агентов остаются на своих вкладках
+        check("вывод агентов в главный экран не льётся", "агент «analyst»" not in log_text(state))
+        check("в главном экране сказано, где смотреть", "группа поднята: analyst, critic" in log_text(state))
+        check("сводка ведущего пришла в главный экран", "свожу ответы агентов (2)" in log_text(state))
+
+        agent_calls = fake.calls[before:]
+        systems = [c["messages"][0]["content"] for c in agent_calls]
+        check("каждому агенту ушла своя инструкция", "ты аналитик" in systems and "ты критик" in systems, str(systems))
+        check("агенты не видели ответов друг друга", all(len(c["messages"]) == 2 for c in agent_calls[:2]))
+        summary_call = agent_calls[-1]
+        check("ведущему ушли ответы всех агентов", summary_call["messages"][0]["content"] == "сведи ответы" and "Ответ эксперта «critic»" in summary_call["messages"][1]["content"])
+
+        check("полоса вкладок появилась", any("2 analyst" in text for text in screen_texts(app)))
+        tabs = ui.tabs_fragments([(s.title, s.status) for s in state.screens], state.active, lambda i: cli.switch_screen(state, i))
+        handler = next(f[2] for f in tabs if len(f) == 3 and "analyst" in f[1])
+        handler(MouseEvent(position=Point(0, 0), event_type=MouseEventType.MOUSE_UP, button=MouseButton.LEFT, modifiers=frozenset()))
+        check("клик по вкладке открывает экран агента", state.active == 1 and "агент «analyst»" in fragments_text(app.layout.container.content.children[0].content.text()))
+        cli.switch_screen(state, 0)
+        check("возврат на главный экран", state.active == 0)
+
+        records = [json.loads(line) for line in Path(os.environ["MYHARNESS_JOURNAL"]).read_text(encoding="utf-8").splitlines()]
+        team_records = [r for r in records if r.get("run_id")]
+        check("в журнале отмечено, кто отвечал", {r.get("agent") for r in team_records} == {"analyst", "critic", "lead"}, str([r.get("agent") for r in team_records]))
+        check("вся группа помечена одним прогоном", len({r["run_id"] for r in team_records}) == 1)
+
+        print("\n8. Выход")
         await send("/exit" + ENTER)
         await asyncio.sleep(0.15)
         check("приложение завершилось", run.done())

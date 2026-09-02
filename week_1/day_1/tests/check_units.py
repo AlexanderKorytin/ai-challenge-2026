@@ -33,7 +33,7 @@ os.environ["MYHARNESS_CONFIG_DIR"] = str(tmp / "config")
 os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
 
 from myharness import api, journal, params as params_mod, picker as picker_mod, profiles, ui  # noqa: E402
-from myharness import cli  # noqa: E402
+from myharness import cli, team  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 print("\n1. Профили")
@@ -150,6 +150,57 @@ check("keep_history=false игнорирует накопленную истор
 state.profile.keep_history = True
 msgs = cli.build_request_messages(state, "щука")
 check("keep_history=true подставляет историю", len(msgs) == 2 and msgs[1]["content"] == "старое")
+
+print("\n8. Группа агентов и заготовка ввода")
+(tmp / "profiles" / "lead.json").write_text(
+    json.dumps(
+        {"name": "lead", "system": "сведи ответы", "agents": ["analyst", 7, "critic", "  "]},
+        ensure_ascii=False,
+    ),
+    encoding="utf-8",
+)
+(tmp / "profiles" / "analyst.json").write_text(
+    json.dumps({"name": "analyst", "system": "ты аналитик", "keep_history": False}, ensure_ascii=False),
+    encoding="utf-8",
+)
+(tmp / "profiles" / "meta.md").write_text("Составь промпт для задачи про $кого\n", encoding="utf-8")
+(tmp / "profiles" / "meta.json").write_text(
+    json.dumps({"name": "meta", "prefill_file": "meta.md", "vars": {"кого": "шофёров"}}, ensure_ascii=False),
+    encoding="utf-8",
+)
+
+lead, lead_warnings = profiles.load("lead")
+check("состав группы прочитан", lead.agents == ["analyst", "critic"], str(lead.agents))
+check("мусор в составе отсеян с предупреждением", any("не имя профиля" in w for w in lead_warnings), str(lead_warnings))
+check("состав попадает в слепок для журнала", lead.snapshot().get("agents") == ["analyst", "critic"])
+check("обычный профиль остаётся без группы", profiles.load("analyst")[0].agents == [])
+
+meta, _ = profiles.load("meta")
+check("заготовка ввода прочитана из файла", meta.prefill == "Составь промпт для задачи про шофёров", repr(meta.prefill))
+check("заготовка не путается с системной инструкцией", meta.system is None)
+
+team_state = cli.State(config=Config(api_key="sk-test"), client=None, model="deepseek-v4-flash", profile=lead)
+analyst_profile, _ = profiles.load("analyst")
+first = team.ensure_screen(team_state, "analyst", analyst_profile)
+again = team.ensure_screen(team_state, "analyst", analyst_profile)
+check("экран агента заводится один раз", first is again and len(team_state.screens) == 2)
+cli.append_log(team_state, [("", "личное")], first)
+check("вывод агента идёт в его ленту, а не в главную", "личное" in "".join(t for _, t in first.log))
+check("главный экран при этом чист", "личное" not in "".join(t for _, t in team_state.main.log))
+cli.switch_screen(team_state, 1)
+check("переключение экрана меняет показываемую ленту", team_state.screen is first)
+cli.drop_agent_screens(team_state)
+check("смена профиля закрывает экраны агентов", len(team_state.screens) == 1 and team_state.active == 0)
+
+agent_messages = team.build_agent_messages(analyst_profile, first, "вопрос")
+check("агенту уходит его инструкция и вопрос", [m["role"] for m in agent_messages] == ["system", "user"])
+check("keep_history=false не копит историю агента", first.messages == [])
+summary = team.build_summary_request("задача", [("analyst", "ответ А"), ("critic", "ответ Б")])
+check("сводка несёт задачу и ответы каждого", "задача" in summary and "«analyst»" in summary and "ответ Б" in summary)
+
+tabs = ui.tabs_fragments([("главный", "done"), ("analyst", "busy")], 0, lambda index: None)
+check("вкладки подписаны и пронумерованы", "1 главный" in "".join(f[1] for f in tabs) and "2 analyst" in "".join(f[1] for f in tabs))
+check("вкладка кликабельна — на фрагменте обработчик", any(len(f) == 3 for f in tabs))
 
 print("\n8. Разбор параметров для API")
 direct, extra = api.split_params(profiles.load("s3")[0].params)

@@ -4,6 +4,15 @@
 `.md` (в JSON он превратился бы в одну строку с экранированными переносами — нечитаемо
 ни в редакторе, ни в различиях между версиями).
 
+Кроме инструкции профиль может нести заготовку ввода (`prefill` / `prefill_file`): при выборе
+профиля она подставляется в строку ввода. Нужна там, где вопрос к модели — часть самого
+приёма и всегда один и тот же: например «составь промпт для решения такой-то задачи».
+Заготовку видно до отправки, её можно поправить или стереть.
+
+Профиль со списком `agents` — ведущий группы: перечисленные в нём профили поднимаются
+как отдельные агенты, каждый со своей системной инструкцией и своим экраном, а сам ведущий
+сводит их ответы.
+
 Профили ищутся в нескольких местах, ближний перекрывает дальний:
   1. `$MYHARNESS_PROFILES`, если переменная задана;
   2. `profiles/` в каталоге запуска и выше по дереву (до домашней папки) — профили проекта:
@@ -27,6 +36,18 @@ from .config import config_dir
 DEFAULT_PROFILE_NAME = "default"
 
 
+class Substitution(Template):
+    """Подстановка $переменных с именами на любом языке.
+
+    Стандартный Template распознаёт только латиницу, поэтому `$слов` он оставлял в тексте
+    как есть — инструкция уходила в модель с долларом вместо числа, и заметить это можно
+    было только по ответу. Тихая неподстановка хуже явной ошибки, поэтому шаблон расширен
+    до любых буквенных имён.
+    """
+
+    idpattern = r"(?:[^\W\d]\w*)"
+
+
 def user_profiles_dir() -> Path:
     return config_dir() / "profiles"
 
@@ -37,19 +58,25 @@ class Profile:
     description: str = ""
     system: str | None = None  # итоговый текст инструкции (подстановки уже выполнены)
     system_file: str | None = None
+    prefill: str | None = None  # заготовка ввода: подставляется в строку ввода при выборе профиля
+    prefill_file: str | None = None
     keep_history: bool = True
+    agents: list[str] = field(default_factory=list)  # непусто — профиль ведущего группы
     vars: dict[str, Any] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     source: Path | None = None
 
     def snapshot(self) -> dict[str, Any]:
         """Слепок профиля для журнала — по нему прогон можно воспроизвести."""
-        return {
+        snapshot: dict[str, Any] = {
             "name": self.name,
             "system": self.system,
             "keep_history": self.keep_history,
             "params": dict(self.params),
         }
+        if self.agents:
+            snapshot["agents"] = list(self.agents)
+        return snapshot
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"name": self.name}
@@ -59,7 +86,13 @@ class Profile:
             data["system_file"] = self.system_file
         elif self.system is not None:
             data["system"] = self.system
+        if self.prefill_file:
+            data["prefill_file"] = self.prefill_file
+        elif self.prefill is not None:
+            data["prefill"] = self.prefill
         data["keep_history"] = self.keep_history
+        if self.agents:
+            data["agents"] = list(self.agents)
         if self.vars:
             data["vars"] = self.vars
         data.update(self.params)
@@ -120,24 +153,60 @@ def available() -> list[tuple[str, Path | None]]:
     return items
 
 
+def _agent_names(raw: Any, warnings: list[str]) -> list[str]:
+    """Состав группы: список имён профилей-агентов. Мусор в поле не должен ронять профиль —
+    отбрасываем его с предупреждением, как и неизвестные параметры."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        warnings.append("поле «agents» — не список имён профилей, группа не поднята")
+        return []
+    names: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            names.append(item.strip())
+        else:
+            warnings.append(f"состав группы: {item!r} — не имя профиля, пропущено")
+    return names
+
+
 def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | None) -> tuple[Profile, list[str]]:
     warnings: list[str] = []
-    known_meta = {"name", "description", "system", "system_file", "keep_history", "vars"}
+    known_meta = {
+        "name",
+        "description",
+        "system",
+        "system_file",
+        "prefill",
+        "prefill_file",
+        "keep_history",
+        "agents",
+        "vars",
+    }
 
-    system_text: str | None = data.get("system")
-    system_file = data.get("system_file")
-    if system_file:
-        path = (base_dir / system_file).expanduser()
+    def _text(inline_key: str, file_key: str) -> str | None:
+        value = data.get(inline_key)
+        file_name = data.get(file_key)
+        if not file_name:
+            return value
+        path = (base_dir / file_name).expanduser()
         try:
-            system_text = path.read_text(encoding="utf-8")
+            return path.read_text(encoding="utf-8")
         except OSError as exc:
             warnings.append(f"не удалось прочитать {path.name}: {exc}")
-            system_text = None
+            return None
+
+    system_text = _text("system", "system_file")
+    system_file = data.get("system_file")
+    prefill_text = _text("prefill", "prefill_file")
 
     variables = data.get("vars") or {}
-    if system_text and variables:
+    if variables:
         # safe_substitute по $имя: фигурные скобки примера JSON внутри инструкции не трогаются
-        system_text = Template(system_text).safe_substitute(variables)
+        if system_text:
+            system_text = Substitution(system_text).safe_substitute(variables)
+        if prefill_text:
+            prefill_text = Substitution(prefill_text).safe_substitute(variables)
 
     collected: dict[str, Any] = {}
     for key, value in data.items():
@@ -153,7 +222,10 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         description=data.get("description", ""),
         system=system_text.strip() if isinstance(system_text, str) else None,
         system_file=system_file,
+        prefill=prefill_text.strip() if isinstance(prefill_text, str) else None,
+        prefill_file=data.get("prefill_file"),
         keep_history=bool(data.get("keep_history", True)),
+        agents=_agent_names(data.get("agents"), warnings),
         vars=dict(variables),
         params=collected,
         source=source,
