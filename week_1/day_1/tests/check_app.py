@@ -297,15 +297,16 @@ async def main():
         check("набранное вручную заготовка не затирает", buffer.text == "своё")
         buffer.text = ""
 
-        check("мышь по умолчанию у harness", state.mouse_enabled is True)
+        check("мышь по умолчанию у терминала — текст выделяется сразу", state.mouse_enabled is False)
+        check("приложение мышь не перехватывает", app.mouse_support() is False)
         app.key_processor.feed(KeyPress(Keys.F2, "\x1bOQ"))
         app.key_processor.process_keys()
         await asyncio.sleep(0.15)
-        check("F2 отдаёт мышь терминалу — можно выделять текст", state.mouse_enabled is False)
-        check("приложение перестало перехватывать мышь", app.mouse_support() is False)
-        check("в строке состояния видно, что мышь отдана", any("мышь у терминала" in text for text in screen_texts(app)))
+        check("F2 отдаёт мышь harness — работают клики по вкладкам", state.mouse_enabled is True)
+        check("приложение начало перехватывать мышь", app.mouse_support() is True)
+        check("в строке состояния видно, что выделение недоступно", any("мышь у harness" in text for text in screen_texts(app)))
         await send("/mouse" + ENTER, pause=0.2)
-        check("/mouse возвращает мышь harness", state.mouse_enabled is True and app.mouse_support() is True)
+        check("/mouse возвращает мышь терминалу", state.mouse_enabled is False and app.mouse_support() is False)
 
         print("\n9. Выход")
         await send("/exit" + ENTER)
