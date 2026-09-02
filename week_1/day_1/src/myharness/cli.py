@@ -67,7 +67,9 @@ class State:
     known_models: list[str] = field(default_factory=lambda: list(api.FALLBACK_MODELS))
     journal_warned: bool = False
     input_buffer: Any = None  # буфер строки ввода: профиль подставляет в него заготовку
-    mouse_enabled: bool = True  # False — мышь отдана терминалу, чтобы выделять и копировать
+    # Мышь по умолчанию у терминала: выделять и копировать текст важнее, чем кликать по
+    # вкладкам — переключение экранов есть на клавишах. F2 отдаёт мышь harness и обратно.
+    mouse_enabled: bool = False
 
     @property
     def main(self) -> screens_mod.Screen:
@@ -639,16 +641,19 @@ def apply_custom_value(state: State, raw: str) -> None:
 
 
 def toggle_mouse(state: State) -> None:
-    """Полноэкранный режим забирает мышь себе, и выделить текст мышью становится нельзя —
-    терминал не видит ни нажатий, ни протяжек. Здесь мышь можно вернуть терминалу: тогда
-    выделение и копирование работают как обычно, а клики по вкладкам и прокрутка колесом
-    временно отключаются."""
+    """Мышь: терминалу или приложению.
+
+    Полноэкранное приложение, забравшее мышь, не даёт выделить текст — терминал не видит ни
+    нажатий, ни протяжек. Поэтому по умолчанию мышь остаётся у терминала: копирование должно
+    работать сразу и без команд. Взамен клики по вкладкам и прокрутка колесом не действуют —
+    их включает эта команда, а переключение экранов и без неё есть на клавишах.
+    """
     state.mouse_enabled = not state.mouse_enabled
     if state.mouse_enabled:
-        append_log(state, ui.system_fragments("мышь снова у harness: клики по вкладкам и прокрутка колесом"))
+        append_log(state, ui.system_fragments("мышь у harness: работают клики по вкладкам и прокрутка колесом"))
+        append_log(state, ui.hint_fragments("выделять текст мышью сейчас нельзя — вернуть терминалу: F2 или /mouse"))
     else:
-        append_log(state, ui.system_fragments("мышь отдана терминалу: выделяйте и копируйте текст обычным образом"))
-        append_log(state, ui.hint_fragments("вернуть мышь harness — F2 или /mouse"))
+        append_log(state, ui.system_fragments("мышь у терминала: выделяйте и копируйте текст обычным образом"))
     refresh(state)
 
 
