@@ -12,12 +12,20 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatContainer, HSplit, Window
+from prompt_toolkit.layout.containers import (
+    ConditionalContainer,
+    DynamicContainer,
+    Float,
+    FloatContainer,
+    HSplit,
+    VSplit,
+    Window,
+)
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.layout import Layout
@@ -26,6 +34,7 @@ from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
 from . import api, journal, profiles, team, ui
+from . import methods as methods_mod
 from . import params as params_mod
 from . import picker as picker_mod
 from . import screens as screens_mod
@@ -90,27 +99,40 @@ class State:
 
     @property
     def log(self) -> Fragments:
-        return self.main.log
+        return self.main.first.log
 
     @property
     def messages(self) -> list[dict]:
-        return self.main.messages
+        return self.main.first.messages
 
 
-def append_log(state: State, fragments: Fragments, screen: screens_mod.Screen | None = None) -> None:
-    """Без указания экрана вывод идёт на тот, где пользователь работает (см. State.focus)."""
-    target = screen or state.focus
-    target.log.extend(fragments)
-    target.line_count += sum(text.count("\n") for _, text in fragments)
+def target_pane(state: State, target: screens_mod.Screen | screens_mod.Pane | None) -> screens_mod.Pane:
+    """Куда писать. Без указания — первая панель экрана, где пользователь работает; экран
+    вместо панели тоже принимается: у большинства экранов панель одна."""
+    if isinstance(target, screens_mod.Pane):
+        return target
+    if isinstance(target, screens_mod.Screen):
+        return target.first
+    return state.focus.first
+
+
+def append_log(
+    state: State, fragments: Fragments, target: screens_mod.Screen | screens_mod.Pane | None = None
+) -> None:
+    pane = target_pane(state, target)
+    pane.log.extend(fragments)
+    pane.line_count += sum(text.count("\n") for _, text in fragments)
     if state.app is not None:
         state.app.invalidate()
 
 
-def truncate_log(state: State, mark: int, screen: screens_mod.Screen | None = None) -> None:
-    target = screen or state.focus
-    removed = target.log[mark:]
-    target.line_count -= sum(text.count("\n") for _, text in removed)
-    del target.log[mark:]
+def truncate_log(
+    state: State, mark: int, target: screens_mod.Screen | screens_mod.Pane | None = None
+) -> None:
+    pane = target_pane(state, target)
+    removed = pane.log[mark:]
+    pane.line_count -= sum(text.count("\n") for _, text in removed)
+    del pane.log[mark:]
     if state.app is not None:
         state.app.invalidate()
 
@@ -120,10 +142,31 @@ def switch_screen(state: State, index: int) -> None:
         return
     state.active = index
     screen = state.screen
-    screen.autoscroll = True  # переключились — показываем свежий конец ленты
+    for pane in screen.panes:
+        pane.autoscroll = True  # переключились — показываем свежий конец ленты
     if screen.interactive and screen.profile is not None:
         # набранное пользователем не затираем: заготовка подставляется только в пустую строку
         apply_prefill(state, screen.profile, only_if_empty=True)
+    refresh(state)
+
+
+def switch_pane(state: State, index: int) -> None:
+    """Панели внутри экрана перебираются по кругу: их немного, и так не надо целиться."""
+    screen = state.screen
+    if len(screen.panes) < 2:
+        return
+    screen.active_pane = index % len(screen.panes)
+    screen.pane.autoscroll = True
+    refresh(state)
+
+
+def toggle_zoom(state: State) -> None:
+    """Развернуть активную панель на весь экран и обратно: в сетке ответ читается по
+    диагонали, а вчитаться иногда нужно."""
+    screen = state.screen
+    if len(screen.panes) < 2:
+        return
+    screen.zoomed = not screen.zoomed
     refresh(state)
 
 
@@ -149,7 +192,7 @@ def build_request_messages(state: State, content: str) -> list[dict]:
     if state.profile.system:
         messages.append({"role": "system", "content": state.profile.system})
     if state.profile.keep_history:
-        messages.extend(state.messages)
+        messages.extend(state.main.first.messages)
     else:
         messages.append({"role": "user", "content": content})
     return messages
@@ -164,8 +207,8 @@ def switch_profile(state: State, name: str) -> None:
     for warning in warnings:
         append_log(state, ui.error_fragments(warning))
     # история, набранная под прежней инструкцией, исказила бы следующий ответ
-    if state.main.messages:
-        state.main.messages.clear()
+    if state.main.first.messages:
+        state.main.first.messages.clear()
         append_log(state, ui.system_fragments("история диалога очищена — профиль сменился"))
     if len(state.screens) > 1:
         drop_agent_screens(state)
@@ -179,6 +222,8 @@ def switch_profile(state: State, name: str) -> None:
     if profile.screens:
         open_work_screens(state, profile)
         return
+    if profile.methods:
+        open_method_screens(state, profile)
     apply_prefill(state, profile)
 
 
@@ -193,6 +238,17 @@ def apply_prefill(state: State, profile: Profile, *, only_if_empty: bool = False
     state.input_buffer.text = text
     state.input_buffer.cursor_position = len(text)
     append_log(state, ui.system_fragments("заготовка вопроса подставлена в строку ввода — Enter отправит её"))
+
+
+def open_method_screens(state: State, profile: Profile) -> None:
+    """Профиль-набор разворачивает вкладки способов заранее, до первого вопроса: так видно,
+    что именно будет сравниваться, ещё до того, как что-то отправлено."""
+    loaded = methods_mod.load_methods(state, profile)
+    if not loaded:
+        append_log(state, ui.error_fragments("набор способов пуст — вкладки не открыты"))
+        return
+    methods_mod.ensure_screens(state, loaded)
+    append_log(state, ui.methods_fragments([item.name for item in loaded]))
 
 
 def open_work_screens(state: State, profile: Profile) -> None:
@@ -223,18 +279,18 @@ def open_work_screens(state: State, profile: Profile) -> None:
 # ─────────────────────────────── генерация ответа ───────────────────────────────
 
 
-async def _spin(state: State, screen: screens_mod.Screen) -> None:
-    mark = len(screen.log)
+async def _spin(state: State, pane: screens_mod.Pane) -> None:
+    mark = len(pane.log)
     i = 0
     try:
         while True:
             frame = ui.SPINNER_FRAMES[i % len(ui.SPINNER_FRAMES)]
-            truncate_log(state, mark, screen)
-            append_log(state, [("class:dim", f"{frame} думаю…")], screen)
+            truncate_log(state, mark, pane)
+            append_log(state, [("class:dim", f"{frame} думаю…")], pane)
             i += 1
             await asyncio.sleep(0.08)
     except asyncio.CancelledError:
-        truncate_log(state, mark, screen)
+        truncate_log(state, mark, pane)
         raise
 
 
@@ -267,18 +323,18 @@ async def generate_response(
     request_messages: list[dict],
     user_text: str,
     *,
-    screen: screens_mod.Screen | None = None,
+    pane: screens_mod.Pane | None = None,
     profile: Profile | None = None,
     agent: str | None = None,
     run_id: str | None = None,
 ) -> Turn:
-    """Один запрос к модели с потоковым выводом в свой экран.
+    """Один запрос к модели с потоковым выводом в свою панель.
 
-    Экран и профиль задаются явно, потому что агенты группы отвечают одновременно: у каждого
+    Панель и профиль задаются явно, потому что исполнители отвечают одновременно: у каждого
     своя лента, своя системная инструкция и свои параметры, а State у них общий.
     """
     assert state.client is not None
-    target = screen or state.main
+    target = pane or state.main.first
     active_profile = profile or state.profile
     target.status = screens_mod.BUSY
     spinner_task = asyncio.create_task(_spin(state, target))
@@ -382,16 +438,18 @@ async def worker(state: State) -> None:
         lead = request.lead or state.profile
         state.busy = True
         if request.screen is not None and request.screen.profile is not None:
-            screen = request.screen
-            messages = screens_mod.build_messages(screen.profile, screen, request.content)
+            pane = request.screen.first
+            messages = screens_mod.build_messages(request.screen.profile, pane, request.content)
             task = asyncio.create_task(
-                generate_response(state, messages, request.content, screen=screen, profile=screen.profile)
+                generate_response(state, messages, request.content, pane=pane, profile=request.screen.profile)
             )
+        elif lead.methods:
+            task = asyncio.create_task(methods_mod.run_all(state, request.content, lead))
         elif lead.agents:
             task = asyncio.create_task(team.run(state, request.content, lead))
         else:
             if lead.keep_history:
-                state.main.messages.append({"role": "user", "content": request.content})
+                state.main.first.messages.append({"role": "user", "content": request.content})
             request_messages = build_request_messages(state, request.content)
             task = asyncio.create_task(generate_response(state, request_messages, request.content))
         state.current_task = task
@@ -714,7 +772,7 @@ async def handle_command(text: str, state: State) -> bool:
     elif cmd == "/mouse":
         toggle_mouse(state)
     elif cmd == "/clear":
-        state.main.messages.clear()
+        state.main.first.messages.clear()
         append_log(state, ui.system_fragments("история диалога очищена"))
     else:
         append_log(state, ui.error_fragments(f"неизвестная команда: {cmd} (см. /help)"))
@@ -812,21 +870,71 @@ class LogWindow(Window):
         return super()._mouse_handler(mouse_event)
 
 
-def build_app(state: State) -> Application:
-    output_control = FormattedTextControl(text=lambda: state.screen.log, show_cursor=False)
-    output_window = LogWindow(
-        content=output_control,
-        wrap_lines=True,
-        always_hide_cursor=True,
-        height=Dimension(weight=1),
-        on_manual_scroll=lambda: setattr(state.screen, "autoscroll", False),
-    )
-    def cursor_position() -> Point:
-        """Курсор держим в конце ленты активного экрана — на нём и стоит автопрокрутка."""
-        screen = state.screen
-        return Point(x=0, y=screen.line_count) if screen.autoscroll else Point(x=0, y=output_window.vertical_scroll)
+def pane_columns(count: int, width: int) -> int:
+    """Сколько панелей ставить в ряд. Пять экспертов в пять колонок на обычном окне дают по
+    двадцать знаков на колонку — читать невозможно, поэтому решает ширина, а не число."""
+    if count <= 1 or width < 100:
+        return 1
+    return 2 if width < 170 else 3
 
-    output_control.get_cursor_position = cursor_position
+
+def build_app(state: State) -> Application:
+    windows: dict[int, LogWindow] = {}
+
+    def pane_window(pane: screens_mod.Pane) -> LogWindow:
+        """Окно панели живёт столько же, сколько сама панель: в нём хранится прокрутка."""
+        existing = windows.get(id(pane))
+        if existing is not None:
+            return existing
+        control = FormattedTextControl(text=lambda: pane.log, show_cursor=False)
+        window = LogWindow(
+            content=control,
+            wrap_lines=True,
+            always_hide_cursor=True,
+            height=Dimension(weight=1),
+            on_manual_scroll=lambda: setattr(pane, "autoscroll", False),
+        )
+        control.get_cursor_position = lambda: (
+            Point(x=0, y=pane.line_count) if pane.autoscroll else Point(x=0, y=window.vertical_scroll)
+        )
+        windows[id(pane)] = window
+        return window
+
+    def pane_header(pane: screens_mod.Pane) -> Window:
+        return Window(
+            content=FormattedTextControl(
+                text=lambda: ui.pane_title_fragments(pane.title or pane.key, pane.status, state.screen.pane is pane)
+            ),
+            height=1,
+            style="class:pane.title",
+        )
+
+    def pane_block(pane: screens_mod.Pane, titled: bool):  # noqa: ANN202 — контейнер prompt_toolkit
+        window = pane_window(pane)
+        return HSplit([pane_header(pane), window]) if titled else window
+
+    def screen_container():  # noqa: ANN202 — контейнер prompt_toolkit
+        """Раскладка активного экрана: одна лента, развёрнутая панель или сетка панелей."""
+        screen = state.screen
+        panes = screen.panes
+        if len(panes) == 1:
+            return pane_block(panes[0], titled=False)
+        if screen.zoomed:
+            return pane_block(screen.pane, titled=True)
+        columns = pane_columns(len(panes), get_app().output.get_size().columns)
+        rows: list[Any] = []
+        for start in range(0, len(panes), columns):
+            blocks: list[Any] = []
+            for index, pane in enumerate(panes[start : start + columns]):
+                if index:
+                    blocks.append(Window(width=1, char="│", style="class:sep"))
+                blocks.append(pane_block(pane, titled=True))
+            if rows:
+                rows.append(Window(height=1, char="─", style="class:sep"))
+            rows.append(VSplit(blocks))
+        return HSplit(rows)
+
+    output_window = DynamicContainer(screen_container)
 
     input_area = TextArea(
         height=1,
@@ -926,7 +1034,8 @@ def build_app(state: State) -> Application:
         buffer.reset()
         if not state.screen.interactive:
             state.active = 0  # экран агента только для чтения — ответ придёт в главный
-        state.screen.autoscroll = True  # новое сообщение — вернуться к живому выводу
+        for pane in state.screen.panes:
+            pane.autoscroll = True  # новое сообщение — вернуться к живому выводу
         asyncio.get_running_loop().create_task(handle_submit(text, state))
 
     @kb.add("c-c", filter=~picker_active)
@@ -944,17 +1053,32 @@ def build_app(state: State) -> Application:
 
     @kb.add("pageup")
     def _scroll_up(event) -> None:  # noqa: ANN001
-        state.screen.autoscroll = False
-        output_window.vertical_scroll = max(0, output_window.vertical_scroll - 10)
+        pane = state.screen.pane
+        pane.autoscroll = False
+        window = pane_window(pane)
+        window.vertical_scroll = max(0, window.vertical_scroll - 10)
 
     @kb.add("pagedown")
     def _scroll_down(event) -> None:  # noqa: ANN001
-        state.screen.autoscroll = False
-        output_window.vertical_scroll += 10
+        pane = state.screen.pane
+        pane.autoscroll = False
+        pane_window(pane).vertical_scroll += 10
 
     @kb.add("c-end")
     def _resume_autoscroll(event) -> None:  # noqa: ANN001
-        state.screen.autoscroll = True
+        state.screen.pane.autoscroll = True
+
+    @kb.add("escape", "left", filter=~picker_active)
+    def _prev_pane(event) -> None:  # noqa: ANN001
+        switch_pane(state, state.screen.active_pane - 1)
+
+    @kb.add("escape", "right", filter=~picker_active)
+    def _next_pane(event) -> None:  # noqa: ANN001
+        switch_pane(state, state.screen.active_pane + 1)
+
+    @kb.add("f3", filter=~picker_active)
+    def _zoom_pane(event) -> None:  # noqa: ANN001
+        toggle_zoom(state)
 
     @kb.add("s-right", filter=~picker_active)
     def _next_screen(event) -> None:  # noqa: ANN001
