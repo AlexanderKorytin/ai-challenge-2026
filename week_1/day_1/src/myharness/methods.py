@@ -44,7 +44,7 @@ def chain_panes(profile: Profile) -> list[screens_mod.Pane]:
     for name in profile.screens:
         step, _ = profiles.load(name)
         step.name = name
-        panes.append(screens_mod.Pane(key=name, title=step.description or name, profile=step))
+        panes.append(screens_mod.Pane(key=name, title=step.title or name, profile=step))
     return panes
 
 
@@ -58,7 +58,7 @@ def ensure_screens(state, methods: list[Profile]) -> None:
             continue
         panes = chain_panes(profile) if profile.screens else []
         state.screens.append(
-            screens_mod.Screen(key=profile.name, title=profile.name, profile=profile, panes=panes)
+            screens_mod.Screen(key=profile.name, title=profile.title or profile.name, profile=profile, panes=panes)
         )
 
 

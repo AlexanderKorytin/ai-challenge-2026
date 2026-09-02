@@ -57,6 +57,7 @@ def user_profiles_dir() -> Path:
 class Profile:
     name: str
     description: str = ""
+    title: str = ""  # короткое имя для вкладки и заголовка панели; пусто — берётся name
     system: str | None = None  # итоговый текст инструкции (подстановки уже выполнены)
     system_file: str | None = None
     prefill: str | None = None  # заготовка ввода: подставляется в строку ввода при выборе профиля
@@ -87,6 +88,8 @@ class Profile:
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"name": self.name}
+        if self.title:
+            data["title"] = self.title
         if self.description:
             data["description"] = self.description
         if self.system_file:
@@ -185,6 +188,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
     warnings: list[str] = []
     known_meta = {
         "name",
+        "title",
         "description",
         "system",
         "system_file",
@@ -232,6 +236,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
 
     profile = Profile(
         name=data.get("name") or name,
+        title=data.get("title", ""),
         description=data.get("description", ""),
         system=system_text.strip() if isinstance(system_text, str) else None,
         system_file=system_file,

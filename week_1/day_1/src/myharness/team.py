@@ -62,13 +62,17 @@ def ensure_screens(state, lead: Profile, agents: list[Profile]) -> tuple[screens
     if board is None:
         board = screens_mod.Screen(
             key=lead.name,
-            title=lead.name,
+            title=lead.title or lead.name,
             profile=lead,
-            panes=[screens_mod.Pane(key=agent.name, title=agent.name, profile=agent) for agent in agents],
+            panes=[
+                screens_mod.Pane(key=agent.name, title=agent.title or agent.name, profile=agent) for agent in agents
+            ],
         )
         state.screens.append(board)
     if summary is None:
-        summary = screens_mod.Screen(key=lead.name + SUMMARY_SUFFIX, title=f"{lead.name} · сводка", profile=lead)
+        summary = screens_mod.Screen(
+            key=lead.name + SUMMARY_SUFFIX, title=f"{lead.title or lead.name} · сводка", profile=lead
+        )
         state.screens.append(summary)
     return board, summary
 
@@ -99,7 +103,7 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
     for agent in agents:
         pane = board.pane_by_key(agent.name)
         if pane is None:  # состав группы изменился на ходу — панель заводим на месте
-            pane = screens_mod.Pane(key=agent.name, title=agent.name, profile=agent)
+            pane = screens_mod.Pane(key=agent.name, title=agent.title or agent.name, profile=agent)
             board.panes.append(pane)
         pane.status = screens_mod.BUSY
         cli.append_log(state, ui.agent_task_fragments(agent.name, agent.name, agent.system, question), pane)
