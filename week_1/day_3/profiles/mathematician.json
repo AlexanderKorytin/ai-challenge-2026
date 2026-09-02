@@ -1,0 +1,7 @@
+{
+  "name": "mathematician",
+  "description": "математик группы: вводит обозначения, считает и проверяет ответ подстановкой",
+  "system_file": "mathematician.md",
+  "keep_history": false,
+  "thinking": {"type": "disabled"}
+}

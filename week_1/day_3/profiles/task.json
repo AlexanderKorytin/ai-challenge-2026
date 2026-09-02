@@ -1,0 +1,5 @@
+{
+  "name": "task",
+  "description": "одна задача всеми четырьмя способами сразу: вкладка на способ",
+  "methods": ["free", "chain_of_thought", "meta_prompting", "multiprompting"]
+}

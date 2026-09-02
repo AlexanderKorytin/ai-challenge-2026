@@ -277,7 +277,7 @@ async def main_async(args: argparse.Namespace) -> int:
         await client.aclose()
 
     print("\n" + metrics.table(summaries))
-    print("\nОтветы ещё не проверены — вердикты проставит судья: uv run python -m reasoning.judge")
+    print("\nОтветы рядом и целиком: uv run python -m reasoning.web")
     return 0
 
 

@@ -1,9 +1,0 @@
-{
-  "name": "judge",
-  "description": "судья: сверяет ответ модели с эталоном (json: correct/why)",
-  "system_file": "judge.md",
-  "keep_history": false,
-  "temperature": 0.0,
-  "thinking": {"type": "disabled"},
-  "response_format": {"type": "json_object"}
-}

@@ -1,18 +1,14 @@
 """Что мы считаем результатом прогона и как сводим прогоны в таблицу.
 
-Меряем три вещи, и все три нужны вместе: доля верных ответов (иначе способ не сравнить),
-разброс ответов (одна и та же формулировка может выигрывать через раз — у API нет `seed`)
-и цена — сколько запросов, токенов и секунд стоил один ответ. Способ, который точнее вчетверо
-дороже, — это результат, а не победа.
+Правильность ответов оценивает человек — он и задаёт задачу, и читает ответы. Здесь считается
+то, что глазами не увидишь: цена способа (сколько запросов, токенов и секунд стоил один ответ)
+и разброс — одна и та же формулировка может выигрывать через раз, у API нет `seed`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
-
-VERDICT_UNKNOWN = None
-
 
 AGENT = "agent"  # самостоятельный ответ на задачу — его судят наравне с итогом
 STAGE = "stage"  # промежуточный шаг (например составленный промпт) — судить нечего
@@ -30,9 +26,6 @@ class Step:
     reasoning_tokens: int = 0
     elapsed_ms: int = 0
     error: str | None = None
-    correct: bool | None = VERDICT_UNKNOWN  # вердикт судьи по ответу самого эксперта
-    verdict_why: str = ""
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -43,8 +36,6 @@ class Step:
             "reasoning_tokens": self.reasoning_tokens,
             "elapsed_ms": self.elapsed_ms,
             "error": self.error,
-            "correct": self.correct,
-            "verdict_why": self.verdict_why,
         }
 
 
@@ -60,18 +51,7 @@ class Run:
     finish_reason: str | None = None
     elapsed_ms: int = 0
     error: str | None = None
-    correct: bool | None = VERDICT_UNKNOWN  # проставляет судья, см. judge.py
-    verdict_why: str = ""
     usage: dict[str, Any] = field(default_factory=dict)  # расход последнего, итогового запроса
-
-    @property
-    def any_step_correct(self) -> bool:
-        """Нашёл ли верный ответ хоть кто-то из экспертов (или шагов цепочки).
-
-        Отдельно от итога намеренно: ведущий группы сводит ответы в таблицу и сам ничего не
-        выбирает, поэтому «группа знала ответ» и «группа его выдала» — разные вещи.
-        """
-        return any(step.correct is True for step in self.steps if step.kind == AGENT)
 
     @property
     def requests(self) -> int:
@@ -103,8 +83,6 @@ class Run:
             "finish_reason": self.finish_reason,
             "elapsed_ms": self.elapsed_ms,
             "error": self.error,
-            "correct": self.correct,
-            "verdict_why": self.verdict_why,
             "requests": self.requests,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
@@ -121,8 +99,6 @@ class Run:
             finish_reason=data.get("finish_reason"),
             elapsed_ms=data.get("elapsed_ms", 0),
             error=data.get("error"),
-            correct=data.get("correct"),
-            verdict_why=data.get("verdict_why", ""),
         )
         run.steps = [Step(**step) for step in data.get("steps", [])]
         # токены в файле уже просуммированы по шагам — раскладывать обратно незачем,
@@ -140,37 +116,25 @@ class Summary:
     method: str
     runs: int
     answered: int
-    correct: int
-    unjudged: int
     requests: int
     prompt_tokens: int
     completion_tokens: int
     reasoning_tokens: int
     elapsed_ms: int
-    steps_correct: int = 0  # прогоны, где верный ответ нашёл хотя бы один эксперт или шаг
-    has_steps: bool = False
+    steps: int = 0  # сколько всего ответов исполнителей внутри прогонов
     failures: list[str] = field(default_factory=list)
-
-    @property
-    def accuracy(self) -> float | None:
-        judged = self.answered - self.unjudged
-        return self.correct / judged if judged else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "method": self.method,
             "runs": self.runs,
             "answered": self.answered,
-            "correct": self.correct,
-            "unjudged": self.unjudged,
-            "accuracy": self.accuracy,
             "requests": self.requests,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "elapsed_ms": self.elapsed_ms,
-            "steps_correct": self.steps_correct,
-            "has_steps": self.has_steps,
+            "steps": self.steps,
             "failures": self.failures,
         }
 
@@ -181,30 +145,23 @@ def summarize(method: str, runs: list[Run]) -> Summary:
         method=method,
         runs=len(runs),
         answered=len(answered),
-        correct=sum(1 for run in answered if run.correct is True),
-        unjudged=sum(1 for run in answered if run.correct is VERDICT_UNKNOWN),
         requests=sum(run.requests for run in runs),
         prompt_tokens=sum(run.prompt_tokens for run in runs),
         completion_tokens=sum(run.completion_tokens for run in runs),
         reasoning_tokens=sum(run.reasoning_tokens for run in runs),
         elapsed_ms=sum(run.elapsed_ms for run in runs),
-        steps_correct=sum(1 for run in runs if run.any_step_correct),
-        has_steps=any(step.kind == AGENT for run in runs for step in run.steps),
+        steps=sum(1 for run in runs for step in run.steps if step.kind == AGENT),
         failures=[f"прогон {run.index}: {run.error}" for run in runs if run.error],
     )
 
 
 def table(summaries: list[Summary]) -> str:
-    """Сводка способов: точность рядом с ценой, иначе выводы получаются половинчатыми."""
-    head = f"{'способ':<30}{'верных':>10}{'в шагах':>9}{'запросов':>10}{'токенов':>12}{'сек/ответ':>11}"
+    """Сводка способов: сколько ответов дошло и чего это стоило. Правильность — за человеком."""
+    head = f"{'способ':<30}{'ответов':>9}{'запросов':>10}{'токенов':>12}{'сек/ответ':>11}"
     lines = [head, "─" * len(head)]
     for item in summaries:
-        judged = item.answered - item.unjudged
-        share = "—" if item.accuracy is None else f"{item.correct}/{judged} ({item.accuracy * 100:.0f}%)"
-        in_steps = f"{item.steps_correct}/{item.runs}" if item.has_steps else "—"
         per_answer = item.elapsed_ms / item.answered / 1000 if item.answered else 0.0
         tokens = item.prompt_tokens + item.completion_tokens
-        lines.append(
-            f"{item.method:<30}{share:>10}{in_steps:>9}{item.requests:>10}{tokens:>12}{per_answer:>11.1f}"
-        )
+        answered = f"{item.answered}/{item.runs}"
+        lines.append(f"{item.method:<30}{answered:>9}{item.requests:>10}{tokens:>12}{per_answer:>11.1f}")
     return "\n".join(lines)
