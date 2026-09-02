@@ -1,6 +1,9 @@
 {
   "name": "free",
+  "title": "без инструкций",
   "description": "способ 1: прямой вопрос без единой инструкции",
   "keep_history": false,
-  "thinking": {"type": "disabled"}
+  "thinking": {
+    "type": "disabled"
+  }
 }

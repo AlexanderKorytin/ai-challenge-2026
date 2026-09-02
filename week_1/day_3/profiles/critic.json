@@ -1,7 +1,10 @@
 {
   "name": "critic",
+  "title": "критик",
   "description": "критик группы: работает на опровержение очевидного ответа",
   "system_file": "critic.md",
   "keep_history": false,
-  "thinking": {"type": "disabled"}
+  "thinking": {
+    "type": "disabled"
+  }
 }

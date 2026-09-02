@@ -1,7 +1,10 @@
 {
   "name": "linguist",
+  "title": "лингвист",
   "description": "знаток русского языка: разбирает условие как текст — синонимы, формы, игра слов",
   "system_file": "linguist.md",
   "keep_history": false,
-  "thinking": {"type": "disabled"}
+  "thinking": {
+    "type": "disabled"
+  }
 }

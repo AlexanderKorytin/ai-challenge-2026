@@ -1,6 +1,9 @@
 {
   "name": "meta_prompting_solve",
+  "title": "решение по промпту",
   "description": "шаг 2 — вставьте составленный промпт вместе с текстом задачи: модель решит её",
   "keep_history": false,
-  "thinking": {"type": "disabled"}
+  "thinking": {
+    "type": "disabled"
+  }
 }
