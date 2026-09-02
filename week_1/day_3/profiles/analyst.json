@@ -1,0 +1,7 @@
+{
+  "name": "analyst",
+  "description": "аналитик группы: разбирает условие по пунктам",
+  "system_file": "analyst.md",
+  "keep_history": false,
+  "thinking": {"type": "disabled"}
+}

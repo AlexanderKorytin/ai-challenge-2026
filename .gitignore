@@ -19,3 +19,7 @@ node_modules/
 
 # Журнал прогонов myharness — рабочие данные, не код
 myharness-journal.jsonl
+
+# Результаты прогонов — рабочие данные, не код (в дне 3 там же условие задачи и эталон)
+week_1/day_2/data/
+week_1/day_3/data/

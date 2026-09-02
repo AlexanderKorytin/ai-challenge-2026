@@ -1,0 +1,7 @@
+{
+  "name": "skeptic",
+  "description": "специалист по критическому мышлению: ищет невысказанные допущения",
+  "system_file": "skeptic.md",
+  "keep_history": false,
+  "thinking": {"type": "disabled"}
+}

@@ -1,0 +1,7 @@
+{
+  "name": "meta_prompting_ask",
+  "description": "шаг 1 — вставьте логическую задачу: модель составит промпт для её решения",
+  "system_file": "meta_prompting_ask.md",
+  "keep_history": false,
+  "thinking": {"type": "disabled"}
+}

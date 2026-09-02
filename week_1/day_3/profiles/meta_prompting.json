@@ -1,0 +1,5 @@
+{
+  "name": "meta_prompting",
+  "description": "способ 3: модель сама составляет промпт, затем этим промптом решает задачу",
+  "screens": ["meta_prompting_ask", "meta_prompting_solve"]
+}

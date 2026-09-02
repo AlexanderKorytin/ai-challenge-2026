@@ -1,0 +1,17 @@
+[project]
+name = "reasoning"
+version = "0.1.0"
+description = "Одна логическая задача четырьмя способами промптинга: замер и сравнение"
+requires-python = ">=3.11"
+dependencies = [
+    "myharness",
+]
+
+[tool.uv]
+# Проект не собирается в пакет: модули берутся из рабочего каталога. Так запуск не зависит
+# от .pth-файлов — в облачной папке macOS помечает их скрытыми, а Python скрытые .pth
+# игнорирует, и editable-установка молча перестаёт работать.
+package = false
+
+[tool.uv.sources]
+myharness = { path = "../day_1" }

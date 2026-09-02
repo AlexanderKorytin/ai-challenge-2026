@@ -1,0 +1,7 @@
+{
+  "name": "chain_of_thought_nothinking",
+  "description": "контрольная клетка: та же инструкция, но встроенные рассуждения выключены",
+  "system_file": "chain_of_thought.md",
+  "keep_history": false,
+  "thinking": {"type": "disabled"}
+}

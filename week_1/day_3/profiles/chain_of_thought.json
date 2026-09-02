@@ -1,0 +1,8 @@
+{
+  "name": "chain_of_thought",
+  "description": "способ 2: инструкция «решай пошагово» при включённых рассуждениях модели",
+  "system_file": "chain_of_thought.md",
+  "keep_history": false,
+  "thinking": {"type": "enabled"},
+  "reasoning_effort": "high"
+}

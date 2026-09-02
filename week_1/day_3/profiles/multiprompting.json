@@ -1,0 +1,8 @@
+{
+  "name": "multiprompting",
+  "description": "способ 4: четыре эксперта отвечают независимо, ведущий сводит их ответы",
+  "system_file": "multiprompting.md",
+  "keep_history": false,
+  "thinking": {"type": "disabled"},
+  "agents": ["analyst", "skeptic", "critic", "linguist"]
+}
