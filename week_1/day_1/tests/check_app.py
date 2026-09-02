@@ -67,8 +67,11 @@ def fragments_text(fragments):
     return "".join(fragment[1] for fragment in fragments)
 
 
-def log_text(state, screen=None):
-    return fragments_text((screen or state.main).log)
+def log_text(state, target=None):
+    """Лента экрана (его первой панели) или конкретной панели."""
+    target = target or state.main
+    pane = target.first if hasattr(target, "first") else target
+    return fragments_text(pane.log)
 
 
 def screen_texts(app):
@@ -224,14 +227,17 @@ async def main():
         check("состав группы показан при выборе профиля", "● analyst" in log_text(state) and "● critic" in log_text(state))
 
         await send("почему так?" + ENTER, pause=0.8)
-        check("экраны агентов заведены", [s.key for s in state.screens] == ["main", "analyst", "critic"], str([s.key for s in state.screens]))
-        analyst_screen = state.screens[1]
-        check("в экране агента его постановка задачи", "агент «analyst»" in log_text(state, analyst_screen) and "ты аналитик" in log_text(state, analyst_screen))
-        check("в экране агента его рассуждения и ответ", "прикидываю…" in log_text(state, analyst_screen) and '"status": "ok"' in log_text(state, analyst_screen))
-        # в главном экране — только сводка ведущего; ленты агентов остаются на своих вкладках
+        check("экраны группы заведены", [s.key for s in state.screens] == ["main", "lead", "lead:summary"], str([s.key for s in state.screens]))
+        board = state.screens[1]
+        summary_screen = state.screens[2]
+        check("у каждого эксперта своя панель", [p.key for p in board.panes] == ["analyst", "critic"], str([p.key for p in board.panes]))
+        analyst_pane = board.panes[0]
+        check("в панели эксперта его постановка задачи", "агент «analyst»" in log_text(state, analyst_pane) and "ты аналитик" in log_text(state, analyst_pane))
+        check("в панели эксперта его рассуждения и ответ", "прикидываю…" in log_text(state, analyst_pane) and '"status": "ok"' in log_text(state, analyst_pane))
+        check("ответ соседа в чужую панель не попадает", "ты критик" not in log_text(state, analyst_pane))
         check("вывод агентов в главный экран не льётся", "агент «analyst»" not in log_text(state))
         check("в главном экране сказано, где смотреть", "группа поднята: analyst, critic" in log_text(state))
-        check("сводка ведущего пришла в главный экран", "свожу ответы агентов (2)" in log_text(state))
+        check("сводка ведущего — на своей вкладке", "свожу ответы агентов (2)" in log_text(state, summary_screen))
 
         agent_calls = fake.calls[before:]
         systems = [c["messages"][0]["content"] for c in agent_calls]
@@ -240,11 +246,11 @@ async def main():
         summary_call = agent_calls[-1]
         check("ведущему ушли ответы всех агентов", summary_call["messages"][0]["content"] == "сведи ответы" and "Ответ эксперта «critic»" in summary_call["messages"][1]["content"])
 
-        check("полоса вкладок появилась", any("2 analyst" in text for text in screen_texts(app)))
+        check("полоса вкладок появилась", any("2 lead" in text for text in screen_texts(app)))
         tabs = ui.tabs_fragments([(s.title, s.status) for s in state.screens], state.active, lambda i: cli.switch_screen(state, i))
-        handler = next(f[2] for f in tabs if len(f) == 3 and "analyst" in f[1])
+        handler = next(f[2] for f in tabs if len(f) == 3 and f[1].strip().endswith("lead"))
         handler(MouseEvent(position=Point(0, 0), event_type=MouseEventType.MOUSE_UP, button=MouseButton.LEFT, modifiers=frozenset()))
-        check("клик по вкладке открывает экран агента", state.active == 1 and "агент «analyst»" in fragments_text(app.layout.container.content.children[0].content.text()))
+        check("клик по вкладке открывает экран группы", state.active == 1 and state.screen is board)
         cli.switch_screen(state, 0)
         check("возврат на главный экран", state.active == 0)
 
@@ -308,7 +314,48 @@ async def main():
         await send("/mouse" + ENTER, pause=0.2)
         check("/mouse возвращает мышь терминалу", state.mouse_enabled is False and app.mouse_support() is False)
 
-        print("\n9. Выход")
+        print("\n9. Набор способов: один вопрос — все подходы сразу")
+        (profiles_dir / "plain.json").write_text(
+            json.dumps({"name": "plain", "system": "отвечай прямо", "keep_history": False}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (profiles_dir / "task.json").write_text(
+            json.dumps({"name": "task", "methods": ["plain", "two_steps", "lead"]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        await send("/profile task" + ENTER, pause=0.3)
+        keys = [s.key for s in state.screens]
+        check("вкладки способов открыты сразу, до вопроса", keys == ["main", "plain", "two_steps", "lead", "lead:summary"], str(keys))
+        check("остались на главном экране — вопрос вводится здесь", state.active == 0)
+        check("в главном сказано, что задача уйдёт во все способы", "способы: plain, two_steps, lead" in log_text(state))
+
+        before = len(fake.calls)
+        await send("как из рубашки сделать птицу?" + ENTER, pause=1.2)
+        plain_screen, chain_screen, board = state.screens[1], state.screens[2], state.screens[3]
+        check("простой способ ответил на своей вкладке", '"status": "ok"' in log_text(state, plain_screen))
+        check("у цепочки панель на каждый шаг", [p.key for p in chain_screen.panes] == ["step_ask", "step_solve"], str([p.key for p in chain_screen.panes]))
+        solve_pane = chain_screen.panes[1]
+        check("второй шаг получил ответ первого автоматически", '"status": "ok"' in log_text(state, solve_pane) and "как из рубашки" in log_text(state, solve_pane))
+        solve_calls = [c for c in fake.calls[before:] if c["messages"][-1]["content"].count("как из рубашки") == 1 and "{" in c["messages"][-1]["content"]]
+        check("в запрос второго шага вошёл текст первого", bool(solve_calls), "промпт первого шага во второй запрос не попал")
+        check("у группы панели по экспертам", [p.key for p in board.panes] == ["analyst", "critic"], str([p.key for p in board.panes]))
+        check("эксперты отвечали в свои панели", all('"status": "ok"' in log_text(state, pane) for pane in board.panes))
+        check("сводка ведущего на своей вкладке", "свожу ответы агентов" in log_text(state, state.screens[4]))
+
+        cli.switch_screen(state, 3)
+        check("панель по умолчанию первая", state.screen.active_pane == 0)
+        cli.switch_pane(state, 1)
+        check("Alt+стрелка переводит на соседнюю панель", state.screen.pane.key == "critic")
+        cli.switch_pane(state, 2)
+        check("панели перебираются по кругу", state.screen.pane.key == "analyst")
+        cli.toggle_zoom(state)
+        check("F3 разворачивает панель на весь экран", state.screen.zoomed is True)
+        cli.toggle_zoom(state)
+        check("и возвращает сетку", state.screen.zoomed is False)
+        cli.switch_screen(state, 0)
+
+        print("\n10. Выход")
         await send("/exit" + ENTER)
         await asyncio.sleep(0.15)
         check("приложение завершилось", run.done())

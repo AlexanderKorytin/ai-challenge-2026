@@ -38,6 +38,9 @@ STYLE = Style.from_dict(
         "tabs.done": "bg:#2c313a #98c379",
         "tabs.error": "bg:#2c313a #e06c75",
         "tabs.hint": "bg:#2c313a #5c6370 italic",
+        # заголовки панелей внутри экрана
+        "pane.title": "bg:#2c313a #7f8896",
+        "pane.title.active": "bg:#3e4451 #ffffff bold",
         "agent": "#c678dd bold",
         "meta": "#5c6370",
         "meta.warn": "#e5c07b",
@@ -179,6 +182,24 @@ def tabs_fragments(items: list[tuple[str, str]], active: int, on_click: Callable
         out.append(("class:tabs", "│"))
     out.append(("class:tabs.hint", "  Alt+N или Shift+←/→ — переключить экран"))
     out.append(("class:tabs", " "))
+    return out
+
+
+def pane_title_fragments(title: str, status: str, active: bool) -> Fragments:
+    """Заголовок панели: чьи это ответы и что с ними сейчас. Активная панель подсвечена —
+    её прокручивают и разворачивают."""
+    mark, _ = STATUS_MARKS.get(status, STATUS_MARKS[screens_mod.IDLE])
+    style = "class:pane.title.active" if active else "class:pane.title"
+    return [(style, f" {'▸ ' if active else ''}{title} {mark}")]
+
+
+def methods_fragments(names: list[str]) -> Fragments:
+    """Сообщение о том, что профиль развернул набор способов по вкладкам."""
+    out: Fragments = [("class:agent", f"● способы: {', '.join(names)}"), ("", "\n")]
+    out.append(("class:dim", "  задайте задачу здесь — она уйдёт во все способы сразу"))
+    out.append(("", "\n"))
+    out.append(("class:dim", "  вкладки: Alt+N или Shift+←/→ · панели внутри вкладки: Alt+←/→ · F3 — развернуть"))
+    out.append(("", "\n"))
     return out
 
 
@@ -348,6 +369,11 @@ def help_fragments() -> Fragments:
         "\n"
         "Профиль со списком screens раскладывает приём по вкладкам: у каждого экрана своя\n"
         "инструкция и своя заготовка ввода, и ввод уходит в тот экран, который открыт.\n"
+        "Профиль со списком methods — набор способов: заданный в главном экране вопрос уходит\n"
+        "во все способы сразу, каждый отвечает на своей вкладке.\n"
+        "\n"
+        "Внутри вкладки может быть несколько панелей — шаги приёма или ответы экспертов рядом.\n"
+        "Alt+←/→ переходят между панелями, F3 разворачивает панель на весь экран и обратно.\n"
         "\n"
         "Мышь по умолчанию принадлежит терминалу: текст выделяется и копируется как обычно.\n"
         "F2 или /mouse отдают мышь harness — тогда работают клики по вкладкам и прокрутка\n"

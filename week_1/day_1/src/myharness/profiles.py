@@ -64,6 +64,7 @@ class Profile:
     keep_history: bool = True
     agents: list[str] = field(default_factory=list)  # непусто — профиль ведущего группы
     screens: list[str] = field(default_factory=list)  # непусто — набор рабочих экранов
+    methods: list[str] = field(default_factory=list)  # непусто — набор способов решения
     vars: dict[str, Any] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     source: Path | None = None
@@ -80,6 +81,8 @@ class Profile:
             snapshot["agents"] = list(self.agents)
         if self.screens:
             snapshot["screens"] = list(self.screens)
+        if self.methods:
+            snapshot["methods"] = list(self.methods)
         return snapshot
 
     def to_dict(self) -> dict[str, Any]:
@@ -99,6 +102,8 @@ class Profile:
             data["agents"] = list(self.agents)
         if self.screens:
             data["screens"] = list(self.screens)
+        if self.methods:
+            data["methods"] = list(self.methods)
         if self.vars:
             data["vars"] = self.vars
         data.update(self.params)
@@ -188,6 +193,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "keep_history",
         "agents",
         "screens",
+        "methods",
         "vars",
     }
 
@@ -234,6 +240,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         keep_history=bool(data.get("keep_history", True)),
         agents=_profile_names(data.get("agents"), "agents", warnings),
         screens=_profile_names(data.get("screens"), "screens", warnings),
+        methods=_profile_names(data.get("methods"), "methods", warnings),
         vars=dict(variables),
         params=collected,
         source=source,
