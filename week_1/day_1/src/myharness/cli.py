@@ -204,7 +204,12 @@ def open_work_screens(state: State, profile: Profile) -> None:
         if step.name == profiles.DEFAULT_PROFILE_NAME and name != profiles.DEFAULT_PROFILE_NAME:
             append_log(state, ui.error_fragments(f"экран «{name}» пропущен: профиль не найден"))
             continue
-        state.screens.append(screens_mod.Screen(key=name, title=name, profile=step, interactive=True))
+        screen = screens_mod.Screen(key=name, title=name, profile=step, interactive=True)
+        state.screens.append(screen)
+        # описание профиля — вводная для шага («вставьте промпт с первого экрана»). Держим её
+        # в ленте, а не в строке ввода: заготовка ввода ушла бы в модель вместе с вопросом.
+        if step.description:
+            append_log(state, ui.system_fragments(step.description), screen)
         opened.append(name)
     if not opened:
         append_log(state, ui.error_fragments("рабочие экраны не открыты: профили не найдены"))

@@ -258,6 +258,7 @@ async def main():
             json.dumps(
                 {
                     "name": "step_ask",
+                    "description": "вставьте логическую задачу",
                     "system": "составь промпт",
                     "prefill": "вставьте логическую задачу",
                     "keep_history": False,
@@ -279,6 +280,7 @@ async def main():
         check("рабочие экраны открыты вместо экранов группы", [s.key for s in state.screens] == ["main", "step_ask", "step_solve"], str([s.key for s in state.screens]))
         check("сразу открыт первый шаг", state.active == 1)
         check("заготовка первого шага в строке ввода", buffer.text == "вставьте логическую задачу", repr(buffer.text))
+        check("вводная шага написана в его ленте", "вставьте логическую задачу" in log_text(state, state.screens[1]))
 
         before = len(fake.calls)
         await send("\x7f" * 40 + "задача про шофёров" + ENTER, pause=0.5)
