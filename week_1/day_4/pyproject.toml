@@ -1,0 +1,30 @@
+[project]
+name = "temperature"
+version = "0.1.0"
+description = "Один вопрос при трёх температурах: страница прогона и сравнения"
+requires-python = ">=3.11"
+dependencies = [
+    "myharness",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.uv]
+# Проект не собирается в пакет: модули берутся из рабочего каталога. Так запуск не зависит
+# от .pth-файлов — в облачной папке macOS помечает их скрытыми, а Python скрытые .pth
+# игнорирует, и editable-установка молча перестаёт работать.
+package = false
+
+[tool.uv.sources]
+myharness = { path = "../day_1" }
+
+[tool.pytest.ini_options]
+# Проект не собирается в пакет (package = false), поэтому каталог с модулями надо назвать явно.
+# Без этого проверки находят `temperature` только при запуске формой `python -m pytest`,
+# которая сама кладёт текущий каталог в пути поиска, а простой `pytest` падает на импорте.
+pythonpath = ["."]
