@@ -28,7 +28,7 @@ from myharness import api
 from myharness.config import load as load_config
 
 from temperature import grid
-from temperature.questions import QUESTIONS, REPEATS, by_id
+from temperature.questions import QUESTIONS, REPEATS, TEMPERATURES, by_id
 
 # --- настройки приложения -----------------------------------------------------
 
@@ -44,8 +44,9 @@ PAGE_PATH = Path(__file__).with_name("page.html")
 ЗАГЛУШКА_СТРАНИЦЫ = """<!doctype html>
 <meta charset="utf-8">
 <title>Температура</title>
-<h1>страница ещё не написана</h1>
-<p>Ожидается файл <code>temperature/page.html</code> рядом с модулем.</p>
+<h1>страница не прочиталась</h1>
+<p>Ожидается файл <code>temperature/page.html</code> рядом с модулем.
+Проверьте, на месте ли он и хватает ли прав на чтение.</p>
 """
 
 #: Метка конца потока результатов. Отдельный объект, а не `None`: `None` — законное
@@ -262,6 +263,17 @@ def вопросы() -> list[dict[str, str]]:
         {"id": в.id, "title": в.title, "text": в.text, "answer_kind": в.answer_kind}
         for в in QUESTIONS
     ]
+
+
+@app.get("/settings")
+def настройки() -> dict:
+    """Температуры и число прогонов — оттуда же, откуда их берёт прогон.
+
+    Страница рисует столбцы по этому ряду, а не по своему списку. Иначе правка
+    `TEMPERATURES` в `questions.py` оставила бы на странице старые столбцы, и каждая
+    клетка молча падала бы в прочерк — отказ без единого сообщения.
+    """
+    return {"temperatures": list(TEMPERATURES), "repeats": REPEATS}
 
 
 @app.get("/run")

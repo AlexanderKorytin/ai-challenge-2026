@@ -21,6 +21,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
@@ -281,8 +282,20 @@ def записи_вопроса(path: Path = DATA_PATH) -> list[dict]:
                 запись = json.loads(строка)
             except json.JSONDecodeError:
                 continue
-            if запись.get("question_id") == ВОПРОС and запись.get("status") == "ok":
-                отобранные.append(запись)
+            if not isinstance(запись, dict):
+                continue
+            if запись.get("question_id") != ВОПРОС or запись.get("status") != "ok":
+                continue
+            # Температура и номер прогона идут в подписи строк и в сводку. Запись без них
+            # или с чужим типом уронила бы разбор на выводе, уже после оплаченной сборки,
+            # поэтому такие отсеиваются здесь — как это делает и `grid.collected_repeats`.
+            if not isinstance(запись.get("temperature"), (int, float)):
+                continue
+            if not isinstance(запись.get("repetition"), int) or isinstance(
+                запись.get("repetition"), bool
+            ):
+                continue
+            отобранные.append(запись)
     return отобранные
 
 
@@ -376,4 +389,7 @@ def отчёт(path: Path = DATA_PATH) -> None:
 
 
 if __name__ == "__main__":
-    отчёт()
+    # Путь к журналу можно назвать доводом: рядом с рабочим `data/grid.jsonl` живут
+    # отложенные прогоны (например `data/grid-проба.jsonl`), и разбирать их правкой кода
+    # неудобно.
+    отчёт(Path(sys.argv[1]) if len(sys.argv) > 1 else DATA_PATH)
