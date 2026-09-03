@@ -192,4 +192,9 @@ Android Studio):
 ## Ссылки
 
 - **Видео**: https://drive.google.com/file/d/1awtYdwN7zlHut6w_L2p31gnjUIsHjXsJ/view?usp=drive_link
-- **Снимок кода дня**: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/c6403ca833c0bc79e7f5d6a541a86085bf258cb6/week_1/day_4
+- **Код дня**: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/day4-temperature/week_1/day_4
+
+Ссылка ведёт на ветку дня целиком, а не на отдельную фиксацию: фиксация не может содержать
+ссылку на саму себя, и снимок по хэшу показывал бы состояние на шаг раньше — без ссылок и
+выводов. Ветка `day4-temperature` после сдачи не меняется, поэтому это тот же снимок, но
+в законченном виде.
