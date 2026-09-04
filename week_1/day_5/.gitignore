@@ -1,0 +1,5 @@
+# Окружение и кэши проекта дня
+.venv/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
