@@ -1,4 +1,4 @@
-"""Прогон одной клетки опыта, замер времени и запись итога в журнал.
+"""Прогон одной клетки опыта, замер времени, вердикт и запись итога в журнал.
 
 Клетка — это пара «модель + режим рассуждений» (`models.cells`), прогон — один запрос
 к API по вопросу дня. Модуль умеет ровно две вещи: сходить в API за ответом и собрать
@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from models import pricing
-from models.cells import CELLS, QUESTION_TEXT, Cell, cell_params
+from models.cells import CELLS, QUESTION_TEXT, Cell, cell_params, extract_verdict
 
 # --- настройки прогона --------------------------------------------------------
 
@@ -113,6 +113,12 @@ class CellResult:
     cell_id: str
     repetition: int
     answer: str = ""
+    #: Первое слово ответа, приведённое к «да» или «нет», либо `None`, если вердикта в
+    #: ответе не нашлось. `None` — это не сбой, а наблюдение: модель не выполнила
+    #: требование формы, и по столбцам таких случаев видно, кому оно далось хуже.
+    #: На `status` вердикт не влияет: клетка, ответившая не по форме, остаётся
+    #: полноправной в замерах времени и денег — она ведь ответила, и за неё заплачено.
+    verdict: str | None = None
     finish_reason: str | None = None
     usage: dict = field(default_factory=dict)
     ttft_ms: int | None = None  # до первого события любого рода
@@ -191,6 +197,7 @@ def build_record(result: CellResult, cell: Cell, params: dict) -> dict:
         "question_text": QUESTION_TEXT,
         "params": params,
         "answer": result.answer,
+        "verdict": result.verdict,
         "finish_reason": result.finish_reason,
         "usage": result.usage,
         "ttft_ms": result.ttft_ms,
@@ -411,6 +418,12 @@ async def run_cell(
             итог.ttfa_ms = int((первый_ответ - начало) * 1000)
         итог.total_ms = int((конец - начало) * 1000)
         итог.answer = "".join(куски)
+        # Вердикт достаётся здесь, сразу после склейки: разметка перестала быть чтением
+        # глазами и стала измерением, а измеряемая величина обязана лежать в той же
+        # записи журнала, что и ответ, из которого она получена. Достань её потом
+        # страница или сводка — они разбирали бы текст по своим правилам, и два разбора
+        # разошлись бы молча.
+        итог.verdict = extract_verdict(итог.answer)
         итог.attempts = попытка + 1
         итог.tokens_per_sec = _скорость(итог)
         if рассуждения and not cell.thinking:
