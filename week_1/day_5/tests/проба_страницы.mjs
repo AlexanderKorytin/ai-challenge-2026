@@ -81,7 +81,11 @@ const настройки = {
     { id: "pro_think", title: "pro с рассуждениями", role: "сильная", model: "deepseek-v4-pro", thinking: true },
   ],
   repeats: 5,
-  question: "Мне нужно помыть машину…",
+  // Настоящий текст вопроса дня, дословно: страница обязана показывать длинный вопрос
+  // целиком, а не обрезать его.
+  question: "Я сижу дома на 19 этаже мне нужно помыть машину. Она на подземной парковке дома. "
+    + "Автомойка находится в 100 метрах от дома. Погода отличная, а на дорогах большие пробки "
+    + "и ехать нужно через развязку 4 километра. Как лучше добраться — пешком или на машине",
 };
 
 const пустаяСводка = {
@@ -91,6 +95,7 @@ const пустаяСводка = {
       cell_id: к.id, title: к.title, role: к.role, model: к.model, thinking: к.thinking,
       n: 0, errors: 0,
       ttft_ms: { median: null, min: null, max: null },
+      ttfa_ms: { median: null, min: null, max: null },
       total_ms: { median: null, min: null, max: null },
       tokens_per_sec: { median: null, min: null, max: null },
       tokens: { cache_hit: 0, cache_miss: 0, output: 0, reasoning: 0 },
@@ -102,6 +107,8 @@ const пустаяСводка = {
 
 const полнаяСводка = JSON.parse(JSON.stringify(пустаяСводка));
 полнаяСводка.summary.cells[0].n = 5;
+полнаяСводка.summary.cells[0].ttft_ms = { median: 310, min: 290, max: 360 };
+полнаяСводка.summary.cells[0].ttfa_ms = { median: 420, min: 390, max: 480 };
 полнаяСводка.summary.cells[0].total_ms = { median: 1900, min: 1700, max: 2400 };
 полнаяСводка.summary.cells[0].tokens_per_sec = { median: 168.9, min: 150, max: 180 };
 полнаяСводка.summary.cells[0].tokens = { cache_hit: 0, cache_miss: 200, output: 1250, reasoning: 0 };
@@ -110,6 +117,10 @@ const полнаяСводка = JSON.parse(JSON.stringify(пустаяСвод�
 полнаяСводка.summary.cells[0].time_ratio = 1;
 полнаяСводка.summary.cells[3].n = 4;
 полнаяСводка.summary.cells[3].errors = 1;
+// Клетка с рассуждениями: первый токен приходит быстро, а первое слово ответа — только
+// после всего рассуждения. Ради этой разницы столбцы и стоят рядом.
+полнаяСводка.summary.cells[3].ttft_ms = { median: 1400, min: 1200, max: 1900 };
+полнаяСводка.summary.cells[3].ttfa_ms = { median: 7200, min: 6100, max: 9300 };
 полнаяСводка.summary.cells[3].total_ms = { median: 9800, min: 8000, max: 12000 };
 полнаяСводка.summary.cells[3].tokens = { cache_hit: 40, cache_miss: 160, output: 4200, reasoning: 3100 };
 полнаяСводка.summary.cells[3].cost = 0.041;
@@ -278,10 +289,25 @@ const телоСводки = реестр.get("тело-сводки");
 проверить("четыре строки сводки", телоСводки.children.length === 4);
 const базовая = телоСводки.children[0].textContent;
 проверить("базовая клетка помечена", базовая.includes("(базовая)"), базовая);
-проверить("медиана с разбросом", базовая.includes("1.9 с (1.7 с–2.4 с)"), базовая);
+проверить("медиана полного времени с разбросом", базовая.includes("1.9 с (1.7 с–2.4 с)"), базовая);
+проверить("до первого токена в сводке", базовая.includes("310 мс (290 мс–360 мс)"), базовая);
+проверить("до первого слова ответа в сводке", базовая.includes("420 мс (390 мс–480 мс)"), базовая);
 const сильная = телоСводки.children[3].textContent;
 проверить("отношения показаны", сильная.includes("15.77×") && сильная.includes("5.16×"), сильная);
 проверить("рассуждения выделены", сильная.includes("3100"));
+// Первый токен через 1.4 с, первое слово ответа только через 7.2 с — ради этой разницы
+// два столбца и стоят рядом; одним «временем ответа» её не описать.
+проверить("три времени клетки с рассуждениями различимы",
+  сильная.includes("1.4 с (1.2 с–1.9 с)") && сильная.includes("7.2 с (6.1 с–9.3 с)")
+  && сильная.includes("9.8 с (8.0 с–12.0 с)"), сильная);
+const заголовкиСводки = реестр.get("шапка-сводки").children[0];
+проверить("двенадцать столбцов сводки", заголовкиСводки.children.length === 12);
+проверить("подписи времён не спутать",
+  заголовкиСводки.children[3].textContent.startsWith("до первого токена")
+  && заголовкиСводки.children[4].textContent.startsWith("до первого слова ответа")
+  && заголовкиСводки.children[5].textContent.startsWith("полное время"));
+проверить("у каждого времени пояснение «медиана (мин–макс)»",
+  заголовкиСводки.найти("пояснение").length === 4);
 const средняя = телоСводки.children[1].textContent;
 проверить("пустая медиана — прочерк", средняя.includes("—"), средняя);
 проверить("примечание о пустом журнале убрано", примечание.hidden === true);
@@ -296,12 +322,47 @@ await new Promise((r) => setTimeout(r, 3300));
   вывод.textContent === "## Вывод\n\nСлабая клетка справилась.", вывод.textContent);
 проверить("опрос сам возобновился после прогона", обращения.length > обращенийДоПрогона + 1);
 
-console.log("\n13. сбой прогона сообщением, а не клеткой");
+console.log("\n13. повторное нажатие дописывает прогоны, а не перезаписывает");
+// Потеря собранного — это потеря уже оплаченных ответов: за прогоны 1–5 деньги списаны,
+// и второе нажатие обязано дописать 6–10, а не начать таблицу заново.
+переключить(0);
 кнопка.listeners.click[0]();
-потоки[1].onmessage({ data: JSON.stringify({ kind: "error", message: "ключ не задан: запустите myharness и выполните /auth" }) });
+проверить("строка «прогон 1» осталась на месте",
+  тело.children[0].children[0].textContent === "прогон 1");
+проверить("её ответ не стёрт",
+  тело.children[0].children[1].textContent.includes("Пешком — сто метров."));
+проверить("к ней дописались пять строк ожидания", тело.children.length === 6);
+
+// Заодно случай, на котором страница расходилась с сервером: вложенное поле пришло
+// пустым, а плоское заполнено. Выбирать надо по годности значения, а не по наличию
+// ключа, иначе клетка покажет ноль, а сводка внизу той же страницы — настоящее число.
+потоки[1].onmessage({ data: JSON.stringify({
+  kind: "cell", cell_id: "flash_think", repetition: 6, answer: "На машине.",
+  usage: { prompt_tokens: 40, completion_tokens: 800, total_tokens: 840,
+    prompt_cache_hit_tokens: 40, prompt_cache_miss_tokens: 0,
+    completion_tokens_details: { reasoning_tokens: null }, reasoning_tokens: 512 },
+  ttft_ms: 1400, ttfa_ms: 7200, total_ms: 9800, tokens_per_sec: 81.6,
+  attempts: 1, cost: 0.0021, finish_reason: "stop", status: "ok", error: null,
+}) });
+проверить("появилась строка «прогон 6»",
+  тело.children[1].children[0].textContent === "прогон 6", тело.children[1].children[0].textContent);
+проверить("прогон 1 по-прежнему первый и целый",
+  тело.children[0].children[0].textContent === "прогон 1"
+  && тело.children[0].children[1].textContent.includes("Пешком — сто метров."));
+переключить(2);
+проверить("негодное вложенное поле не затирает плоское",
+  тело.children[1].children[2].textContent.includes("из них рассуждения512"),
+  тело.children[1].children[2].textContent);
+потоки[1].onmessage({ data: JSON.stringify({ kind: "done", collected: 10 }) });
+проверить("второй поток закрыт", потоки[1].закрыт === true);
+проверить("обе строки прогонов остались", тело.children.length === 2);
+
+console.log("\n14. сбой прогона сообщением, а не клеткой");
+кнопка.listeners.click[0]();
+потоки[2].onmessage({ data: JSON.stringify({ kind: "error", message: "ключ не задан: запустите myharness и выполните /auth" }) });
 проверить("сообщение показано", реестр.get("сообщение").hidden === false
   && реестр.get("сообщение").textContent.includes("ключ не задан"));
-проверить("второй поток закрыт", потоки[1].закрыт === true);
+проверить("третий поток закрыт", потоки[2].закрыт === true);
 
 console.log(провалы.length ? "\nПРОВАЛЕНО: " + провалы.length : "\nвсе проверки прошли");
 process.exit(провалы.length ? 1 : 0);
