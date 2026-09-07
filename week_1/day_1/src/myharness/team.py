@@ -107,6 +107,8 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
             board.panes.append(pane)
         pane.status = screens_mod.BUSY
         cli.append_log(state, ui.agent_task_fragments(agent.name, agent.name, agent.system, question), pane)
+        if agent.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
+            pane.messages.append({"role": "user", "content": question})
         tasks.append(
             cli.generate_response(
                 state,

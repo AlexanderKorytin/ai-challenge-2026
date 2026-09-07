@@ -1,0 +1,36 @@
+Сверка двух сборок сообщений — cli.build_request_messages и screens.build_messages
+==============================================================================
+
+Случай 1. keep_history=False, история пуста
+  профиль: system='ты помощник', keep_history=False
+  история на входе: []
+  вопрос: 'сколько будет два плюс два'
+  cli.build_request_messages: [{"role": "system", "content": "ты помощник"}, {"role": "user", "content": "сколько будет два плюс два"}]
+  screens.build_messages:     [{"role": "system", "content": "ты помощник"}, {"role": "user", "content": "сколько будет два плюс два"}]
+  вердикт: совпали
+
+Случай 2. keep_history=True, история пуста
+  профиль: system='ты помощник', keep_history=True
+  история на входе: []
+  вопрос: 'сколько будет два плюс два'
+  cli.build_request_messages: [{"role": "system", "content": "ты помощник"}, {"role": "user", "content": "сколько будет два плюс два"}]
+  screens.build_messages:     [{"role": "system", "content": "ты помощник"}, {"role": "user", "content": "сколько будет два плюс два"}]
+  вердикт: совпали
+
+Случай 3. keep_history=True, в истории одна пара «вопрос — ответ»
+  профиль: system='ты помощник', keep_history=True
+  история на входе: [{"role": "user", "content": "как тебя зовут"}, {"role": "assistant", "content": "меня зовут помощник"}]
+  вопрос: 'сколько будет два плюс два'
+  cli.build_request_messages: [{"role": "system", "content": "ты помощник"}, {"role": "user", "content": "как тебя зовут"}, {"role": "assistant", "content": "меня зовут помощник"}, {"role": "user", "content": "сколько будет два плюс два"}]
+  screens.build_messages:     [{"role": "system", "content": "ты помощник"}, {"role": "user", "content": "как тебя зовут"}, {"role": "assistant", "content": "меня зовут помощник"}, {"role": "user", "content": "сколько будет два плюс два"}]
+  вердикт: совпали
+
+Случай 4. system=None, keep_history=True, в истории одна пара
+  профиль: system=None, keep_history=True
+  история на входе: [{"role": "user", "content": "как тебя зовут"}, {"role": "assistant", "content": "меня зовут помощник"}]
+  вопрос: 'сколько будет два плюс два'
+  cli.build_request_messages: [{"role": "user", "content": "как тебя зовут"}, {"role": "assistant", "content": "меня зовут помощник"}, {"role": "user", "content": "сколько будет два плюс два"}]
+  screens.build_messages:     [{"role": "user", "content": "как тебя зовут"}, {"role": "assistant", "content": "меня зовут помощник"}, {"role": "user", "content": "сколько будет два плюс два"}]
+  вердикт: совпали
+
+Итог: совпали на всех четырёх случаях

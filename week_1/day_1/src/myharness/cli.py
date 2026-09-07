@@ -439,6 +439,8 @@ async def worker(state: State) -> None:
         state.busy = True
         if request.screen is not None and request.screen.profile is not None:
             pane = request.screen.first
+            if request.screen.profile.keep_history:  # историю панели ведёт вызывающий
+                pane.messages.append({"role": "user", "content": request.content})
             messages = screens_mod.build_messages(request.screen.profile, pane, request.content)
             task = asyncio.create_task(
                 generate_response(state, messages, request.content, pane=pane, profile=request.screen.profile)

@@ -99,12 +99,15 @@ def main_screen() -> Screen:
 def build_messages(profile: Profile, pane: Pane, content: str) -> list[dict]:
     """Сообщения одного запроса: инструкция исполнителя, его история (если профиль её держит)
     и новый ввод. Одинаково для агента группы и для рабочего экрана — разница только в том,
-    кто набирает текст."""
+    кто набирает текст.
+
+    Функция только читает: историю панели она не меняет. Когда профиль историю держит, вопрос
+    в `pane.messages` дописывает вызывающий — до вызова, ровно как это делает `cli.worker`
+    для главного экрана. Иначе две одинаковые с виду сборки расходятся побочным действием."""
     messages: list[dict] = []
     if profile.system:
         messages.append({"role": "system", "content": profile.system})
     if profile.keep_history:
-        pane.messages.append({"role": "user", "content": content})
         messages.extend(pane.messages)
     else:
         messages.append({"role": "user", "content": content})

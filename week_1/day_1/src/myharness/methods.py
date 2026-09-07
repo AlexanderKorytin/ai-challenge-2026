@@ -77,6 +77,8 @@ async def run_chain(state, screen: screens_mod.Screen, profile: Profile, questio
         content = question if index == 0 else f"{carried.strip()}\n\n{question}"
         pane.status = screens_mod.BUSY
         cli.append_log(state, ui.agent_task_fragments(pane.key, step.name, step.system, content), pane)
+        if step.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
+            pane.messages.append({"role": "user", "content": content})
         turn = await cli.generate_response(
             state,
             screens_mod.build_messages(step, pane, content),
@@ -96,6 +98,8 @@ async def run_single(state, screen: screens_mod.Screen, profile: Profile, questi
     pane = screen.first
     pane.status = screens_mod.BUSY
     cli.append_log(state, ui.user_fragments(question), pane)
+    if profile.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
+        pane.messages.append({"role": "user", "content": question})
     await cli.generate_response(
         state,
         screens_mod.build_messages(profile, pane, question),
