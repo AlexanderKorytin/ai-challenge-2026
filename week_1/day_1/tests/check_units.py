@@ -33,7 +33,7 @@ os.environ["MYHARNESS_CONFIG_DIR"] = str(tmp / "config")
 os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
 
 from myharness import api, journal, params as params_mod, picker as picker_mod, profiles, ui  # noqa: E402
-from myharness import cli, screens, team  # noqa: E402
+from myharness import cli, team  # noqa: E402
 from myharness.agent import Agent
 from myharness.config import Config  # noqa: E402
 
@@ -223,9 +223,9 @@ check("переключение экрана меняет показываему
 cli.drop_agent_screens(team_state)
 check("смена профиля закрывает экраны группы", len(team_state.screens) == 1 and team_state.active == 0)
 
-agent_messages = screens.build_messages(analyst_profile, analyst_pane, "вопрос")
+agent_messages = analyst_pane.agent.build_messages("вопрос")
 check("агенту уходит его инструкция и вопрос", [m["role"] for m in agent_messages] == ["system", "user"])
-check("keep_history=false не копит историю агента", analyst_pane.messages == [])
+check("keep_history=false не копит историю агента", analyst_pane.agent.history() == [])
 check(
     "у панели эксперта есть свой собеседник",
     analyst_pane.agent is not None

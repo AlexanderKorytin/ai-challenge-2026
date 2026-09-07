@@ -16,11 +16,11 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from uuid import uuid4
 
 from . import output, profiles, ui
 from . import screens as screens_mod
-from .agent import Agent
 from .profiles import Profile
 
 DEFAULT_LEAD_INSTRUCTION = (
@@ -30,6 +30,21 @@ DEFAULT_LEAD_INSTRUCTION = (
 )
 
 SUMMARY_SUFFIX = ":summary"
+
+
+def summary_profile(lead: Profile) -> Profile:
+    """Профиль, с которым ведущий сводит ответы: тот же самый, но с запасной инструкцией.
+
+    Собеседник собирает запрос сам, из своего профиля. Значит и запасное правило сведения
+    обязано лежать в профиле, а не подставляться мимо него при ручной сборке сообщений: иначе
+    у ведущего снова два разных входа — один для сводки, другой для всего остального.
+
+    Копия, а не правка на месте: `lead` — это ещё и профиль, выбранный пользователем командой
+    `/profile`, и дописанная в него инструкция утекла бы и в главный экран, и в файл профиля
+    при сохранении."""
+    if lead.system:
+        return lead
+    return replace(lead, system=DEFAULT_LEAD_INSTRUCTION)
 
 
 def load_agents(state, lead: Profile) -> list[Profile]:
@@ -64,23 +79,21 @@ def ensure_screens(state, lead: Profile, agents: list[Profile]) -> tuple[screens
             title=lead.title or lead.name,
             profile=lead,
             panes=[
-                screens_mod.Pane(
-                    key=expert.name,
-                    title=expert.title or expert.name,
-                    profile=expert,
-                    agent=Agent(expert.name, expert),
-                )
+                screens_mod.Pane(key=expert.name, title=expert.title or expert.name, profile=expert)
                 for expert in agents
             ],
         )
         state.screens.append(board)
     if summary is None:
+        # Панель задаём сами, а не отдаём `Screen.__post_init__`: её профиль — не сам `lead`,
+        # а `summary_profile(lead)`, с запасной инструкцией сведения. Собеседника по этому
+        # профилю панель заводит уже без нас.
         summary = screens_mod.Screen(
-            key=lead.name + SUMMARY_SUFFIX, title=f"{lead.title or lead.name} · сводка", profile=lead
+            key=lead.name + SUMMARY_SUFFIX,
+            title=f"{lead.title or lead.name} · сводка",
+            profile=lead,
+            panes=[screens_mod.Pane(key=lead.name + SUMMARY_SUFFIX, profile=summary_profile(lead))],
         )
-        # Панель сводки делает `Screen.__post_init__`, поэтому собеседника ведущего кладём
-        # следом: сводит ответы экспертов он, значит и память сводки принадлежит ему.
-        summary.first.agent = Agent(lead.name, lead)
         state.screens.append(summary)
     return board, summary
 
@@ -111,28 +124,11 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
     for expert in agents:  # здесь `expert` — ПРОФИЛЬ эксперта, а не собеседник `Agent`
         pane = board.pane_by_key(expert.name)
         if pane is None:  # состав группы изменился на ходу — панель заводим на месте
-            pane = screens_mod.Pane(
-                key=expert.name,
-                title=expert.title or expert.name,
-                profile=expert,
-                agent=Agent(expert.name, expert),
-            )
+            pane = screens_mod.Pane(key=expert.name, title=expert.title or expert.name, profile=expert)
             board.panes.append(pane)
         pane.status = screens_mod.BUSY
         output.append_log(state, ui.agent_task_fragments(expert.name, expert.name, expert.system, question), pane)
-        if expert.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
-            pane.messages.append({"role": "user", "content": question})
-        tasks.append(
-            cli.generate_response(
-                state,
-                screens_mod.build_messages(expert, pane, question),
-                question,
-                pane=pane,
-                profile=expert,
-                agent=expert.name,
-                run_id=run_id,
-            )
-        )
+        tasks.append(cli.run_turn(state, pane.agent, question, pane=pane, agent_name=expert.name, run_id=run_id))
     turns = await asyncio.gather(*tasks)
 
     answers = [(expert.name, turn.text) for expert, turn in zip(agents, turns, strict=True) if turn.ok and turn.text]
@@ -144,20 +140,17 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
         return
 
     output.append_log(state, ui.team_summary_label_fragments(len(answers)), summary_screen)
-    instruction = lead.system or DEFAULT_LEAD_INSTRUCTION
     if not lead.system:
+        # Запасную инструкцию уже несёт профиль собеседника сводки (`summary_profile`) —
+        # здесь только говорим об этом вслух, чтобы подмена не была молчаливой.
         output.append_log(
             state, ui.system_fragments("у ведущего нет своей инструкции — свожу по общему правилу"), summary_screen
         )
-    await cli.generate_response(
+    await cli.run_turn(
         state,
-        [
-            {"role": "system", "content": instruction},
-            {"role": "user", "content": build_summary_request(question, answers)},
-        ],
-        question,
+        summary_screen.first.agent,
+        build_summary_request(question, answers),
         pane=summary_screen.first,
-        profile=lead,
-        agent="lead",
+        agent_name="lead",
         run_id=run_id,
     )

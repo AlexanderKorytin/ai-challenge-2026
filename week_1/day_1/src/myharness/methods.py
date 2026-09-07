@@ -19,7 +19,6 @@ import asyncio
 
 from . import output, profiles, team, ui
 from . import screens as screens_mod
-from .agent import Agent
 from .profiles import Profile
 
 
@@ -43,7 +42,7 @@ def chain_panes(profile: Profile) -> list[screens_mod.Pane]:
     for name in profile.screens:
         step, _ = profiles.load(name)
         step.name = name
-        panes.append(screens_mod.Pane(key=name, title=step.title or name, profile=step, agent=Agent(name, step)))
+        panes.append(screens_mod.Pane(key=name, title=step.title or name, profile=step))
     return panes
 
 
@@ -56,13 +55,12 @@ def ensure_screens(state, methods: list[Profile]) -> None:
         if any(screen.key == profile.name for screen in state.screens):
             continue
         panes = chain_panes(profile) if profile.screens else []
+        # Собеседников не расставляем: у обычного способа панель делает `Screen.__post_init__`
+        # по профилю способа, у цепочки — `chain_panes` по профилю шага, и в обоих случаях
+        # агента заводит сама панель.
         screen = screens_mod.Screen(
             key=profile.name, title=profile.title or profile.name, profile=profile, panes=panes
         )
-        if screen.first.agent is None:
-            # У обычного способа панель делает `Screen.__post_init__` — собеседника кладём
-            # следом; у цепочки собеседники по шагам уже расставил `chain_panes`.
-            screen.first.agent = Agent(profile.name, profile)
         state.screens.append(screen)
 
 
@@ -81,15 +79,7 @@ async def run_chain(state, screen: screens_mod.Screen, profile: Profile, questio
         content = question if index == 0 else f"{carried.strip()}\n\n{question}"
         pane.status = screens_mod.BUSY
         output.append_log(state, ui.agent_task_fragments(pane.key, step.name, step.system, content), pane)
-        if step.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
-            pane.messages.append({"role": "user", "content": content})
-        turn = await cli.generate_response(
-            state,
-            screens_mod.build_messages(step, pane, content),
-            content,
-            pane=pane,
-            profile=step,
-        )
+        turn = await cli.run_turn(state, pane.agent, content, pane=pane)
         if not turn.ok:
             output.append_log(state, ui.error_fragments("шаг не дал ответа — цепочка прервана"), pane)
             return
@@ -102,15 +92,7 @@ async def run_single(state, screen: screens_mod.Screen, profile: Profile, questi
     pane = screen.first
     pane.status = screens_mod.BUSY
     output.append_log(state, ui.user_fragments(question), pane)
-    if profile.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
-        pane.messages.append({"role": "user", "content": question})
-    await cli.generate_response(
-        state,
-        screens_mod.build_messages(profile, pane, question),
-        question,
-        pane=pane,
-        profile=profile,
-    )
+    await cli.run_turn(state, pane.agent, question, pane=pane)
 
 
 async def run_all(state, question: str, holder: Profile) -> None:

@@ -7,7 +7,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
@@ -33,7 +32,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
-from . import api, journal, profiles, team, ui
+from . import api, profiles, team, ui
 from . import methods as methods_mod
 from . import params as params_mod
 from . import picker as picker_mod
@@ -102,10 +101,6 @@ class State:
         return self.main.first.log
 
     @property
-    def messages(self) -> list[dict]:
-        return self.main.first.messages
-
-    @property
     def main_agent(self) -> Agent:
         """Собеседник главного экрана — тот, с кем разговаривает пользователь."""
         return self.main.first.agent
@@ -160,19 +155,6 @@ def drop_agent_screens(state: State) -> None:
 # ─────────────────────────────── профиль и запрос ───────────────────────────────
 
 
-def build_request_messages(state: State, content: str) -> list[dict]:
-    """Системная инструкция всегда первая: так её видно отдельно от ввода пользователя,
-    и так же работает кэширование общего начала запроса на стороне DeepSeek."""
-    messages: list[dict] = []
-    if state.profile.system:
-        messages.append({"role": "system", "content": state.profile.system})
-    if state.profile.keep_history:
-        messages.extend(state.main.first.messages)
-    else:
-        messages.append({"role": "user", "content": content})
-    return messages
-
-
 def switch_profile(state: State, name: str) -> None:
     profile, warnings = profiles.load(name)
     state.profile = profile
@@ -181,9 +163,13 @@ def switch_profile(state: State, name: str) -> None:
     save_config(state.config)
     for warning in warnings:
         append_log(state, ui.error_fragments(warning))
-    # история, набранная под прежней инструкцией, исказила бы следующий ответ
-    if state.main.first.messages:
-        state.main.first.messages.clear()
+    # История, набранная под прежней инструкцией, исказила бы следующий ответ. Забыть её
+    # мало: у собеседника главного экрана сменились и инструкция, и параметры — значит это
+    # уже другой собеседник. Смотрим на прежнюю память ДО замены, иначе сообщение об очистке
+    # появилось бы и при первой смене профиля на пустом разговоре.
+    had_history = bool(state.main_agent.history())
+    state.main.first.agent = Agent(screens_mod.MAIN_KEY, profile)
+    if had_history:
         append_log(state, ui.system_fragments("история диалога очищена — профиль сменился"))
     if len(state.screens) > 1:
         drop_agent_screens(state)
@@ -237,10 +223,9 @@ def open_work_screens(state: State, profile: Profile) -> None:
         if step.name == profiles.DEFAULT_PROFILE_NAME and name != profiles.DEFAULT_PROFILE_NAME:
             append_log(state, ui.error_fragments(f"экран «{name}» пропущен: профиль не найден"))
             continue
+        # Панель рабочего экрана делает `Screen.__post_init__`, а собеседника — сама панель
+        # по своему профилю: у каждого шага приёма своя ветка разговора, значит и своя память.
         screen = screens_mod.Screen(key=name, title=name, profile=step, interactive=True)
-        # Панель рабочего экрана делает `Screen.__post_init__` — собеседника кладём следом:
-        # у каждого шага приёма своя ветка разговора, значит и своя память.
-        screen.first.agent = Agent(name, step)
         state.screens.append(screen)
         # описание профиля — вводная для шага («вставьте промпт с первого экрана»). Держим её
         # в ленте, а не в строке ввода: заготовка ввода ушла бы в модель вместе с вопросом.
@@ -257,8 +242,15 @@ def open_work_screens(state: State, profile: Profile) -> None:
 # ─────────────────────────────── генерация ответа ───────────────────────────────
 
 
-async def _spin(state: State, pane: screens_mod.Pane) -> None:
+async def _spin(state: State, pane: screens_mod.Pane, marks: dict[str, Any] | None = None) -> None:
+    """Счётчик ожидания: крутится в своей строке, пока не пришло первое событие потока.
+
+    Место, откуда счётчик начал писать, кладём в общую с отрисовкой памятку `marks`: гасит
+    счётчик синхронный `draw_event`, дождаться отмены задачи он не может, поэтому стирает
+    строку сам — и ему нужно знать, докуда обрезать ленту."""
     mark = len(pane.log)
+    if marks is not None:
+        marks["spin_mark"] = mark
     i = 0
     try:
         while True:
@@ -268,125 +260,117 @@ async def _spin(state: State, pane: screens_mod.Pane) -> None:
             i += 1
             await asyncio.sleep(0.08)
     except asyncio.CancelledError:
-        truncate_log(state, mark, pane)
+        # Обрезаем ленту только если её ещё не обрезал тот, кто нас погасил. Обрезать второй
+        # раз нельзя: к этому моменту под тем же отступом уже лежит напечатанный ответ, и
+        # `truncate_log` снёс бы его.
+        if marks is None or not marks.get("spin_cleared"):
+            truncate_log(state, mark, pane)
         raise
 
 
-async def generate_response(
+def _stop_spinner(state: State, pane: screens_mod.Pane, marks: dict[str, Any]) -> None:
+    """Погасить счётчик ожидания и стереть его строку — ровно один раз за обмен.
+
+    Отменяем задачу без ожидания: зовут отсюда и из синхронного `draw_event`, а дождаться
+    отмены можно только из корутины — это делает `run_turn` в своём `finally`."""
+    if marks.get("spin_cleared"):
+        return
+    marks["spin_cleared"] = True
+    task = marks.get("spin_task")
+    if task is not None and not task.done():
+        task.cancel()
+    mark = marks.get("spin_mark")
+    if mark is not None:
+        truncate_log(state, mark, pane)
+
+
+def draw_event(state: State, pane: screens_mod.Pane, event: api.StreamEvent, marks: dict) -> None:
+    """Нарисовать одно событие потока. Единственный обработчик на все режимы.
+
+    `marks` — память между событиями одного обмена: погашен ли счётчик ожидания, напечатан
+    ли ярлык рассуждений, напечатан ли ярлык ответа. Без неё ярлыки печатались бы перед
+    каждым куском текста.
+    """
+    _stop_spinner(state, pane, marks)
+    if event.kind == "meta":
+        return
+    if event.kind == "reasoning":
+        if not marks.get("reasoning"):
+            append_log(state, ui.reasoning_label_fragments(), pane)
+            marks["reasoning"] = True
+        append_log(state, [("class:dim", event.text)], pane)
+        return
+    if not marks.get("answer"):
+        if marks.get("reasoning"):
+            append_log(state, [("", "\n")], pane)
+        append_log(state, ui.answer_label_fragments(), pane)
+        marks["answer"] = True
+    append_log(state, [("", event.text)], pane)
+
+
+async def run_turn(
     state: State,
-    request_messages: list[dict],
-    user_text: str,
+    agent_obj: Agent,
+    content: str,
     *,
-    pane: screens_mod.Pane | None = None,
-    profile: Profile | None = None,
-    agent: str | None = None,
+    pane: screens_mod.Pane,
+    agent_name: str | None = None,
     run_id: str | None = None,
 ) -> Turn:
-    """Один запрос к модели с потоковым выводом в свою панель.
+    """Обмен агента с моделью, показанный в панели.
 
-    Панель и профиль задаются явно, потому что исполнители отвечают одновременно: у каждого
-    своя лента, своя системная инструкция и свои параметры, а State у них общий.
+    Разделение обязанностей: разговор целиком — за агентом (память, сборка запроса, запись
+    в журнал), показ целиком — здесь (счётчик ожидания, ярлыки, строка расхода, сообщение
+    об ошибке). Панель задаётся явно, потому что исполнители отвечают одновременно: у
+    каждого своя лента, а `State` у них общий.
     """
     assert state.client is not None
-    target = pane or state.main.first
-    active_profile = profile or state.profile
-    target.status = screens_mod.BUSY
-    spinner_task = asyncio.create_task(_spin(state, target))
+    pane.status = screens_mod.BUSY
+    marks: dict[str, Any] = {}
+    marks["spin_task"] = spinner_task = asyncio.create_task(_spin(state, pane, marks))
 
-    async def clear_spinner() -> None:
-        if not spinner_task.done():
-            spinner_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await spinner_task
+    def on_event(event: api.StreamEvent) -> None:
+        draw_event(state, pane, event, marks)
 
-    reasoning_started = False
-    answer_started = False
-    answer_text = ""
-    reasoning_text = ""
-    finish_reason: str | None = None
-    usage: dict[str, Any] = {}
-    status = "error"
-    error_text: str | None = None
-    started = time.monotonic()
+    turn: Turn | None = None
     try:
-        async for event in state.client.stream_chat(state.model, request_messages, active_profile.params):
-            await clear_spinner()
-            if event.kind == "meta":
-                finish_reason = event.finish_reason
-                usage = event.usage
-                continue
-            if event.kind == "reasoning":
-                if not reasoning_started:
-                    append_log(state, ui.reasoning_label_fragments(), target)
-                    reasoning_started = True
-                reasoning_text += event.text
-                append_log(state, [("class:dim", event.text)], target)
-            else:
-                if not answer_started:
-                    if reasoning_started:
-                        append_log(state, [("", "\n")], target)
-                    append_log(state, ui.answer_label_fragments(), target)
-                    answer_started = True
-                append_log(state, [("", event.text)], target)
-                answer_text += event.text
-        status = "ok"
-    except asyncio.CancelledError:
-        await clear_spinner()
-        status = "cancelled"
-        raise
-    except Exception as exc:  # сеть, лимиты, ошибки API — не роняем harness
-        await clear_spinner()
-        error_text = str(exc)
-        append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {exc}"), target)
+        turn = await agent_obj.exchange(
+            state.client,
+            state.model,
+            content,
+            on_event=on_event,
+            agent=agent_name,
+            run_id=run_id,
+        )
     finally:
-        await clear_spinner()
-        elapsed = time.monotonic() - started
-        target.status = screens_mod.DONE if status == "ok" else screens_mod.ERROR
-        if reasoning_started or answer_started:
-            append_log(state, [("", "\n")], target)
-        if status == "ok":
-            append_log(state, ui.meta_fragments(finish_reason, usage, elapsed, active_profile.name), target)
-            if finish_reason == "length":
+        # Счётчик мог не получить ни одного события (мгновенная ошибка, отмена) — гасим и
+        # здесь, а дождаться его отмены можно только отсюда: `draw_event` синхронный.
+        _stop_spinner(state, pane, marks)
+        with suppress(asyncio.CancelledError):
+            await spinner_task
+        pane.status = screens_mod.DONE if (turn is not None and turn.ok) else screens_mod.ERROR
+        if turn is not None and not turn.ok and turn.error:
+            # `Turn.error` бывает и не сетевой: агент кладёт сюда сбой отрисовки, но только
+            # при удавшемся обмене. Поэтому про DeepSeek говорим лишь когда обмен не удался —
+            # иначе пользователь пойдёт чинить связь, которая исправна.
+            append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {turn.error}"), pane)
+        if marks.get("reasoning") or marks.get("answer"):
+            append_log(state, [("", "\n")], pane)
+        if turn is not None and turn.ok:
+            append_log(
+                state,
+                ui.meta_fragments(turn.finish_reason, turn.usage, turn.elapsed_ms / 1000, agent_obj.profile.name),
+                pane,
+            )
+            if turn.finish_reason == "length":
                 append_log(
                     state,
                     ui.hint_fragments("ответ упёрся в max_tokens — увеличьте лимит: /set max_tokens"),
-                    target,
+                    pane,
                 )
-        if status == "ok" and answer_text and active_profile.keep_history:
-            target.messages.append({"role": "assistant", "content": answer_text})
-        elif active_profile.keep_history and target.messages and target.messages[-1]["role"] == "user":
-            # ответ не получен (ошибка/отмена) — не оставляем в истории вопрос без ответа
-            target.messages.pop()
-        entry: dict[str, Any] = {
-            "status": status,
-            "model": state.model,
-            "profile": active_profile.snapshot(),
-            "query": user_text,
-            "messages": request_messages,
-            "response": answer_text or None,
-            "reasoning": reasoning_text or None,
-            "finish_reason": finish_reason,
-            "usage": usage or None,
-            "elapsed_ms": int(elapsed * 1000),
-            "error": error_text,
-        }
-        if agent:
-            entry["agent"] = agent
-        if run_id:
-            entry["run_id"] = run_id
-        # промежуточная форма: на шаге 22 запись в журнал уедет внутрь агента, и здесь
-        # останется одно предупреждение о том, что журнал не пишется
-        journal_error = journal.append(entry)
-        warn_journal(state, journal_error)
-    return Turn(
-        status=status,
-        text=answer_text,
-        reasoning=reasoning_text,
-        finish_reason=finish_reason,
-        usage=usage,
-        elapsed_ms=int((time.monotonic() - started) * 1000),
-        error=error_text,
-    )
+        if turn is not None:
+            warn_journal(state, turn.journal_error)
+    return turn
 
 
 async def worker(state: State) -> None:
@@ -396,21 +380,16 @@ async def worker(state: State) -> None:
         state.busy = True
         if request.screen is not None and request.screen.profile is not None:
             pane = request.screen.first
-            if request.screen.profile.keep_history:  # историю панели ведёт вызывающий
-                pane.messages.append({"role": "user", "content": request.content})
-            messages = screens_mod.build_messages(request.screen.profile, pane, request.content)
-            task = asyncio.create_task(
-                generate_response(state, messages, request.content, pane=pane, profile=request.screen.profile)
-            )
+            task = asyncio.create_task(run_turn(state, pane.agent, request.content, pane=pane))
         elif lead.methods:
             task = asyncio.create_task(methods_mod.run_all(state, request.content, lead))
         elif lead.agents:
             task = asyncio.create_task(team.run(state, request.content, lead))
         else:
-            if lead.keep_history:
-                state.main.first.messages.append({"role": "user", "content": request.content})
-            request_messages = build_request_messages(state, request.content)
-            task = asyncio.create_task(generate_response(state, request_messages, request.content))
+            # Вопрос в память не дописываем: памятью владеет агент, и кладёт он туда только
+            # отвеченную пару — иначе после сетевого сбоя в истории остался бы вопрос,
+            # на который никто не отвечал.
+            task = asyncio.create_task(run_turn(state, state.main_agent, request.content, pane=state.main.first))
         state.current_task = task
         try:
             await task
@@ -733,7 +712,7 @@ async def handle_command(text: str, state: State) -> bool:
     elif cmd == "/mouse":
         toggle_mouse(state)
     elif cmd == "/clear":
-        state.main.first.messages.clear()
+        state.main_agent.forget()
         append_log(state, ui.system_fragments("история диалога очищена"))
     else:
         append_log(state, ui.error_fragments(f"неизвестная команда: {cmd} (см. /help)"))
