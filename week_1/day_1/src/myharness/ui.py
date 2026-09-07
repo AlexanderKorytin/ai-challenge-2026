@@ -127,7 +127,7 @@ def banner_fragments(model: str, authorized: bool, profile: str) -> Fragments:
 
 
 def status_fragments(
-    model: str, authorized: bool, profile: str, profile_dirty: bool, mouse_enabled: bool = False
+    model: str, authorized: bool, profile: str, profile_dirty: bool, mouse_enabled: bool = True
 ) -> Fragments:
     """Живая строка состояния внизу экрана. Шапка печатается один раз и остаётся историей,
     а здесь всегда актуальное: после /auth статус меняется сразу, без перезапуска."""
@@ -142,8 +142,8 @@ def status_fragments(
     out.append(("class:status.value", profile))
     if profile_dirty:
         out.append(("class:status.bad", " (изменён)"))
-    if mouse_enabled:
-        out.append(("class:status.bad", "  ·  мышь у harness — выделение недоступно (F2)"))
+    if not mouse_enabled:
+        out.append(("class:status.bad", "  ·  мышь отдана терминалу — клики не действуют (F2)"))
     out.append(("class:status", " "))
     return out
 

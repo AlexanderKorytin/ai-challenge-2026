@@ -5,6 +5,5 @@
   "system_file": "kotlin_meta.md",
   "prefill": "функция сортировки пузырьком на Kotlin",
   "keep_history": false,
-  "temperature": 0.3,
-  "max_tokens": 2500
+  "temperature": 0.3
 }

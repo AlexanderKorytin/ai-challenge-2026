@@ -75,9 +75,10 @@ class State:
     known_models: list[str] = field(default_factory=lambda: list(api.FALLBACK_MODELS))
     journal_warned: bool = False
     input_buffer: Any = None  # буфер строки ввода: профиль подставляет в него заготовку
-    # Мышь по умолчанию у терминала: выделять и копировать текст важнее, чем кликать по
-    # вкладкам — переключение экранов есть на клавишах. F2 отдаёт мышь harness и обратно.
-    mouse_enabled: bool = False
+    # Мышь включена всегда: клики и выделение текста уживаются, если не просить у терминала
+    # отслеживание перетаскивания (см. click_only_mouse). Команда /mouse оставлена аварийным
+    # выходом для терминала, который так не умеет.
+    mouse_enabled: bool = True
 
     @property
     def main(self) -> screens_mod.Screen:
@@ -511,19 +512,17 @@ def apply_custom_value(state: State, raw: str) -> None:
 
 
 def toggle_mouse(state: State) -> None:
-    """Мышь: терминалу или приложению.
+    """Аварийный выход: вернуть мышь терминалу целиком.
 
-    Полноэкранное приложение, забравшее мышь, не даёт выделить текст — терминал не видит ни
-    нажатий, ни протяжек. Поэтому по умолчанию мышь остаётся у терминала: копирование должно
-    работать сразу и без команд. Взамен клики по вкладкам и прокрутка колесом не действуют —
-    их включает эта команда, а переключение экранов и без неё есть на клавишах.
+    Обычно этого не требуется — клики и выделение текста уживаются (см. `click_only_mouse`).
+    Команда оставлена на случай терминала, который отслеживание нажатий понимает, а выделение
+    при нём всё равно отдаёт приложению.
     """
     state.mouse_enabled = not state.mouse_enabled
     if state.mouse_enabled:
-        append_log(state, ui.system_fragments("мышь у harness: работают клики по вкладкам и прокрутка колесом"))
-        append_log(state, ui.hint_fragments("выделять текст мышью сейчас нельзя — вернуть терминалу: F2 или /mouse"))
+        append_log(state, ui.system_fragments("мышь у harness: клики по вкладкам, панелям и строкам списка"))
     else:
-        append_log(state, ui.system_fragments("мышь у терминала: выделяйте и копируйте текст обычным образом"))
+        append_log(state, ui.system_fragments("мышь целиком у терминала: клики в harness не действуют"))
     refresh(state)
 
 
@@ -780,6 +779,38 @@ def pane_columns(count: int, width: int) -> int:
     return 2 if width < 170 else 3
 
 
+def app_output():  # noqa: ANN201 — тип вывода приходит из prompt_toolkit
+    from prompt_toolkit.application.current import get_app_session
+
+    return get_app_session().output
+
+
+def click_only_mouse(output) -> None:  # noqa: ANN001
+    """Просить у терминала только нажатия мыши, без отслеживания перетаскивания.
+
+    prompt_toolkit включает мышь одним куском: `1000h` (нажатия), `1003h` (любое движение),
+    `1015h` и `1006h` (расширенные ответы). Губителен здесь `1003h` — пока он поднят, терминал
+    отдаёт приложению и протяжку тоже, а значит выделить текст мышью нельзя. Отсюда и родился
+    прежний переключатель «или клики, или копирование».
+
+    Выбор ложный. Оставив только `1000h` и `1006h`, приложение получает клики по вкладкам,
+    панелям и строкам списка, а протяжка остаётся терминалу — выделение и копирование работают
+    как обычно, без единой команды.
+    """
+    if getattr(output, "_click_only", False):
+        return
+    output._click_only = True
+
+    def enable() -> None:
+        output.write_raw("\x1b[?1000h\x1b[?1006h")
+
+    def disable() -> None:
+        output.write_raw("\x1b[?1006l\x1b[?1000l")
+
+    output.enable_mouse_support = enable
+    output.disable_mouse_support = disable
+
+
 def build_app(state: State) -> Application:
     windows: dict[int, LogWindow] = {}
 
@@ -996,6 +1027,7 @@ def build_app(state: State) -> Application:
         def _goto_screen(event, index=number - 1) -> None:  # noqa: ANN001
             switch_screen(state, index)
 
+    click_only_mouse(app_output())
     app = Application(
         layout=layout,
         key_bindings=kb,

@@ -37,6 +37,12 @@ from .config import config_dir
 
 DEFAULT_PROFILE_NAME = "default"
 
+# Раскладка цепочки шагов: панелями рядом на одной вкладке либо вкладкой на шаг.
+LAYOUT_PANES = "panes"
+LAYOUT_TABS = "tabs"
+LAYOUTS = (LAYOUT_PANES, LAYOUT_TABS)
+DEFAULT_LAYOUT = LAYOUT_PANES
+
 
 class Substitution(Template):
     """Подстановка $переменных с именами на любом языке.
@@ -68,6 +74,8 @@ class Profile:
     history_window: int = DEFAULT_WINDOW_PAIRS
     agents: list[str] = field(default_factory=list)  # непусто — профиль ведущего группы
     screens: list[str] = field(default_factory=list)  # непусто — набор рабочих экранов
+    # как разложены шаги цепочки: "panes" — панелями рядом, "tabs" — вкладкой на шаг
+    layout: str = DEFAULT_LAYOUT
     methods: list[str] = field(default_factory=list)  # непусто — набор способов решения
     vars: dict[str, Any] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
@@ -86,6 +94,7 @@ class Profile:
             snapshot["agents"] = list(self.agents)
         if self.screens:
             snapshot["screens"] = list(self.screens)
+            snapshot["layout"] = self.layout
         if self.methods:
             snapshot["methods"] = list(self.methods)
         return snapshot
@@ -110,6 +119,7 @@ class Profile:
             data["agents"] = list(self.agents)
         if self.screens:
             data["screens"] = list(self.screens)
+            data["layout"] = self.layout
         if self.methods:
             data["methods"] = list(self.methods)
         if self.vars:
@@ -218,6 +228,34 @@ def _history_window(raw: Any, warnings: list[str]) -> int:
     return raw
 
 
+def _layout(raw: Any, screens: list[str], warnings: list[str]) -> str:
+    """Раскладка шагов цепочки: «panes» — панелями рядом на одной вкладке, «tabs» — вкладкой
+    на шаг. Умолчание — панели: так поведение прежних профилей не меняется от появления поля.
+
+    Мусор отбрасываем с предупреждением, как и в `_history_window`: молча подставленное
+    умолчание сделало бы поведение необъяснимым. Логическое значение сюда не проходит само —
+    оно не строка, — но названо в сообщении наравне с прочим мусором.
+
+    Раскладывать нечего, если шагов нет: `layout` у профиля без `screens` — почти всегда
+    поле, положенное не в тот профиль, и промолчать об этом значит оставить человека с
+    настройкой, которая ничего не делает.
+    """
+    if raw is None:
+        return DEFAULT_LAYOUT
+    if not screens:
+        warnings.append(
+            "поле «layout» имеет смысл только у профиля-цепочки со списком «screens» — не применено"
+        )
+        return DEFAULT_LAYOUT
+    if not isinstance(raw, str) or raw not in LAYOUTS:
+        warnings.append(
+            f"поле «layout»: {raw!r} — ожидалось «{LAYOUT_PANES}» или «{LAYOUT_TABS}», "
+            f"взято умолчание «{DEFAULT_LAYOUT}»"
+        )
+        return DEFAULT_LAYOUT
+    return raw
+
+
 def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | None) -> tuple[Profile, list[str]]:
     warnings: list[str] = []
     known_meta = {
@@ -233,6 +271,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "agents",
         "screens",
         "methods",
+        "layout",
         "vars",
     }
 
@@ -269,6 +308,8 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         else:
             warnings.append(f"неизвестный параметр «{key}» — пропущен")
 
+    screen_names = _profile_names(data.get("screens"), "screens", warnings)
+
     profile = Profile(
         name=data.get("name") or name,
         title=data.get("title", ""),
@@ -280,7 +321,8 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         keep_history=bool(data.get("keep_history", True)),
         history_window=_history_window(data.get("history_window"), warnings),
         agents=_profile_names(data.get("agents"), "agents", warnings),
-        screens=_profile_names(data.get("screens"), "screens", warnings),
+        screens=screen_names,
+        layout=_layout(data.get("layout"), screen_names, warnings),
         methods=_profile_names(data.get("methods"), "methods", warnings),
         vars=dict(variables),
         params=collected,

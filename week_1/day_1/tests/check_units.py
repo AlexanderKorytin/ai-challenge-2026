@@ -98,6 +98,40 @@ for мусор in ("три", True, -1, 2.5):
 check("окно памяти попадает в слепок для журнала", оконный.snapshot().get("history_window") == 3, str(оконный.snapshot()))
 check("окно памяти сохраняется в файл профиля", оконный.to_dict().get("history_window") == 3, str(оконный.to_dict()))
 
+# Раскладка цепочки. Умолчание — панели рядом на одной вкладке, «tabs» разводит шаги по
+# отдельным вкладкам. Мусор отбрасываем с предупреждением по тому же правилу, что и окно
+# памяти. Поле имеет смысл только у профиля-цепочки: у профиля без «screens» раскладывать
+# нечего, и молчать об этом нельзя — человек написал то, что не сработает.
+(tmp / "profiles" / "chain_tabs.json").write_text(
+    json.dumps({"name": "chain_tabs", "screens": ["a", "b"], "layout": "tabs"}, ensure_ascii=False),
+    encoding="utf-8",
+)
+вкладками, _ = profiles.load("chain_tabs")
+check("layout = tabs прочитан", вкладками.layout == "tabs", вкладками.layout)
+check("умолчание раскладки — панели рядом", profile.layout == "panes", profile.layout)
+for мусор in (2, "колонки", True):
+    (tmp / "profiles" / "layout_bad.json").write_text(
+        json.dumps({"name": "layout_bad", "screens": ["a"], "layout": мусор}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    плохой, плохие = profiles.load("layout_bad")
+    check(
+        f"layout = {мусор!r} отвергнут с предупреждением",
+        плохой.layout == "panes" and any("layout" in w for w in плохие),
+        f"{плохой.layout} / {плохие}",
+    )
+(tmp / "profiles" / "layout_alone.json").write_text(
+    json.dumps({"name": "layout_alone", "layout": "tabs"}, ensure_ascii=False), encoding="utf-8"
+)
+одинокий, одинокие = profiles.load("layout_alone")
+check(
+    "layout без screens — предупреждение: раскладывать нечего",
+    одинокий.layout == "panes" and any("layout" in w and "screens" in w for w in одинокие),
+    str(одинокие),
+)
+check("раскладка попадает в слепок для журнала", вкладками.snapshot().get("layout") == "tabs", str(вкладками.snapshot()))
+check("раскладка сохраняется в файл профиля", вкладками.to_dict().get("layout") == "tabs", str(вкладками.to_dict()))
+
 missing, warns = profiles.load("нет-такого")
 check("несуществующий профиль → default + предупреждение", missing.name == "default" and bool(warns))
 

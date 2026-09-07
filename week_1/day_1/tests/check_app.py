@@ -364,16 +364,20 @@ async def main():
         check("набранное вручную заготовка не затирает", buffer.text == "своё")
         buffer.text = ""
 
-        check("мышь по умолчанию у терминала — текст выделяется сразу", state.mouse_enabled is False)
-        check("приложение мышь не перехватывает", app.mouse_support() is False)
+        # Поведение изменено осознанно: мышь у harness всегда. Прежний переключатель «или клики,
+        # или выделение» опирался на ложный выбор — губило выделение отслеживание перетаскивания
+        # (1003h), а не сами клики. Приложение просит у терминала только нажатия, поэтому клики
+        # и выделение текста уживаются без команд.
+        check("мышь у harness сразу — клики работают без команд", state.mouse_enabled is True)
+        check("приложение перехватывает мышь с самого начала", app.mouse_support() is True)
+        check("строка состояния молчит, пока всё в порядке", not any("отдана терминалу" in text for text in screen_texts(app)))
         app.key_processor.feed(KeyPress(Keys.F2, "\x1bOQ"))
         app.key_processor.process_keys()
         await asyncio.sleep(0.15)
-        check("F2 отдаёт мышь harness — работают клики по вкладкам", state.mouse_enabled is True)
-        check("приложение начало перехватывать мышь", app.mouse_support() is True)
-        check("в строке состояния видно, что выделение недоступно", any("мышь у harness" in text for text in screen_texts(app)))
+        check("F2 — аварийный выход: мышь целиком терминалу", state.mouse_enabled is False and app.mouse_support() is False)
+        check("о потере кликов сказано в строке состояния", any("отдана терминалу" in text for text in screen_texts(app)))
         await send("/mouse" + ENTER, pause=0.2)
-        check("/mouse возвращает мышь терминалу", state.mouse_enabled is False and app.mouse_support() is False)
+        check("/mouse возвращает мышь harness", state.mouse_enabled is True and app.mouse_support() is True)
 
         print("\n9. Набор способов: один вопрос — все подходы сразу")
         (profiles_dir / "plain.json").write_text(
@@ -478,7 +482,71 @@ async def main():
         )
         cli.switch_screen(state, 0)
 
-        print("\n11. Выход")
+        print("\n11. Цепочка вкладками: каждый шаг на своей вкладке")
+        # Раскладка панелями (раздел 9) остаётся умолчанием — здесь профиль цепочки просит
+        # «tabs», и те же самые шаги должны разъехаться по отдельным вкладкам, не потеряв
+        # передачу работы между собой.
+        (profiles_dir / "tab_ask.json").write_text(
+            json.dumps(
+                {"name": "tab_ask", "title": "постановка", "system": "составь промпт", "keep_history": False},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (profiles_dir / "tab_solve.json").write_text(
+            json.dumps({"name": "tab_solve", "title": "решение", "keep_history": False}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (profiles_dir / "two_tabs.json").write_text(
+            json.dumps(
+                {"name": "two_tabs", "title": "по вкладкам", "screens": ["tab_ask", "tab_solve"], "layout": "tabs"},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (profiles_dir / "task_tabs.json").write_text(
+            json.dumps({"name": "task_tabs", "methods": ["plain", "two_tabs"]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        await send("/profile task_tabs" + ENTER, pause=0.3)
+        keys = [s.key for s in state.screens]
+        check(
+            "у цепочки с layout=tabs по вкладке на шаг, ключ несёт имя цепочки",
+            keys == ["main", "plain", "two_tabs:tab_ask", "two_tabs:tab_solve"],
+            str(keys),
+        )
+        titles = [s.title for s in state.screens[2:]]
+        check("заголовки вкладок различимы и взяты у профилей шагов", titles == ["постановка", "решение"], str(titles))
+        check(
+            "вкладки шагов только на просмотр — ввод уходит в главный экран",
+            all(not s.interactive for s in state.screens[2:]) and state.active == 0,
+        )
+
+        before = len(fake.calls)
+        await send("как из рубашки сделать птицу?" + ENTER, pause=1.2)
+        ask_tab, solve_tab = state.screens[2], state.screens[3]
+        check(
+            "каждый шаг ответил в свою вкладку",
+            '"status": "ok"' in log_text(state, ask_tab) and '"status": "ok"' in log_text(state, solve_tab),
+            log_text(state, solve_tab),
+        )
+        solve_calls = [
+            c
+            for c in fake.calls[before:]
+            if c["messages"][-1]["content"].count("как из рубашки") == 1 and "{" in c["messages"][-1]["content"]
+        ]
+        check("в запрос второго шага вошёл ответ первого", bool(solve_calls), "ответ первого шага во второй запрос не попал")
+
+        await send("а обратно?" + ENTER, pause=1.2)
+        check(
+            "повторный вопрос новых вкладок не заводит",
+            [s.key for s in state.screens] == keys,
+            str([s.key for s in state.screens]),
+        )
+        cli.switch_screen(state, 0)
+
+        print("\n12. Выход")
         await send("/exit" + ENTER)
         await asyncio.sleep(0.15)
         check("приложение завершилось", run.done())

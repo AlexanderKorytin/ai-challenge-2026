@@ -4,6 +4,5 @@
   "description": "заготовка для наряда: один профиль, разный стиль через подстановку",
   "system_file": "kotlin_style.md",
   "keep_history": false,
-  "temperature": 0.2,
-  "max_tokens": 3000
+  "temperature": 0.2
 }
