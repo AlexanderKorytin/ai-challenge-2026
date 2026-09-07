@@ -173,8 +173,15 @@ def available() -> list[tuple[str, Path | None]]:
 
 
 def _profile_names(raw: Any, field_name: str, warnings: list[str]) -> list[str]:
-    """Список имён профилей (состав группы или набор рабочих экранов). Мусор в поле не должен
-    ронять профиль — отбрасываем его с предупреждением, как и неизвестные параметры."""
+    """Список имён профилей (состав группы, набор рабочих экранов или набор способов). Мусор в
+    поле не должен ронять профиль — отбрасываем его с предупреждением, как и неизвестные
+    параметры.
+
+    Повторы имён отбрасываем там же и по тому же правилу. Оставить их нельзя: одно имя дважды
+    означает два запроса ОДНОМУ собеседнику — две одинаковые пары в его памяти, две ленты в
+    одной панели и двойная цена за тот же ответ. Схлопнуть молча тоже нельзя: повтор — это
+    почти всегда опечатка в профиле, и человек должен о ней услышать. Порядок первого появления
+    сохраняется: по нему расставлены вкладки и панели."""
     if raw is None:
         return []
     if not isinstance(raw, list):
@@ -182,10 +189,14 @@ def _profile_names(raw: Any, field_name: str, warnings: list[str]) -> list[str]:
         return []
     names: list[str] = []
     for item in raw:
-        if isinstance(item, str) and item.strip():
-            names.append(item.strip())
-        else:
+        if not isinstance(item, str) or not item.strip():
             warnings.append(f"поле «{field_name}»: {item!r} — не имя профиля, пропущено")
+            continue
+        name = item.strip()
+        if name in names:
+            warnings.append(f"поле «{field_name}»: «{name}» указан повторно — второе упоминание пропущено")
+            continue
+        names.append(name)
     return names
 
 

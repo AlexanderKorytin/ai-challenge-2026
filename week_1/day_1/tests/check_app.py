@@ -231,6 +231,28 @@ async def main():
             repr(second["messages"][1]["content"]),
         )
 
+        print("\n6b. Обрезка памяти видна пользователю")
+        # Молчаливая обрезка недопустима: первая же потерянная отсылка («сделай короче», а
+        # сокращать уже нечего) будет отлажена пользователем как «модель поглупела». Поле
+        # `dropped_pairs` само по себе ничего не значит — важно, что о нём СКАЗАНО в ленте.
+        # ОТКУДА ЧИСЛА: окно — 1 пара, запас обрезки — 5, значит порог 1 + 5 = 6 пар. Кладём
+        # в память ровно шесть пар и задаём вопрос: обрезка выбрасывает весь запас — 5 пар.
+        (profiles_dir / "forgetful.json").write_text(
+            json.dumps(
+                {"name": "forgetful", "system": "помни немного", "keep_history": True, "history_window": 1},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        await send("/profile forgetful" + ENTER, pause=0.25)
+        for номер in range(6):
+            state.main_agent.remember(f"старый вопрос {номер}", f"старый ответ {номер}")
+        mark = len(state.main.first.log)
+        await send("свежий вопрос" + ENTER, pause=0.4)
+        свежее = fragments_text(state.main.first.log[mark:])
+        check("про обрезку памяти сказано в ленте", "память обрезана" in свежее, свежее[-200:])
+        check("названо, сколько пар выброшено", "выброшено 5 пар" in свежее, свежее[-200:])
+
         print("\n7. Группа агентов")
         profiles_dir = tmp / "profiles"
         for name, system in (("analyst", "ты аналитик"), ("critic", "ты критик")):

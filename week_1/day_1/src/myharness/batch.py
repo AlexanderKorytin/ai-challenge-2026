@@ -36,7 +36,7 @@ from typing import Any
 from uuid import uuid4
 
 from . import api, config, profiles
-from .agent import Agent, Turn
+from .agent import Agent, Turn, usage_tokens
 from .profiles import Profile, Substitution
 
 # Восемь одновременных запросов — компромисс, а не круглое число: у DeepSeek предел частоты
@@ -262,16 +262,6 @@ async def run_order(order: Order, client, *, on_line) -> list[Turn]:
     return turns
 
 
-def _tokens(usage: dict[str, Any]) -> int:
-    """Расход токенов из ответа API. Поставщик отдаёт итог не всегда — тогда складываем сами."""
-    if not usage:
-        return 0
-    total = usage.get("total_tokens")
-    if isinstance(total, int):
-        return total
-    return int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0)
-
-
 def summary_lines(order: Order, turns: list[Turn]) -> list[str]:
     """Сводка по наряду — списком строк, готовых к печати.
 
@@ -282,7 +272,11 @@ def summary_lines(order: Order, turns: list[Turn]) -> list[str]:
     tokens_total = 0
     ok_count = 0
     for task, turn in zip(order.tasks, turns, strict=True):
-        tokens = _tokens(turn.usage)
+        # Счёт токенов — один на весь harness (`agent.usage_tokens`). Своя копия правила
+        # здесь уже была и считала иначе: она складывала слагаемые через `int()` и падала,
+        # если сервер клал в `usage` строку вместо числа, — то есть роняла сводку по уже
+        # выполненному и оплаченному наряду.
+        tokens = usage_tokens(turn.usage)
         tokens_total += tokens
         if turn.ok:
             ok_count += 1

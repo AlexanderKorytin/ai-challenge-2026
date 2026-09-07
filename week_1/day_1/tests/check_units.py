@@ -1,7 +1,10 @@
 """Проверки без обращения к DeepSeek: профили, журнал, параметры, панель выбора, дополнения."""
 
+import argparse
 import ast
 import asyncio
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -37,7 +40,7 @@ os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
 
 from myharness import api, journal, params as params_mod, picker as picker_mod, profiles, ui  # noqa: E402
 from myharness import batch, cli, screens as screens_mod, team  # noqa: E402
-from myharness.agent import Agent, usage_tokens
+from myharness.agent import Agent, Turn, usage_tokens
 from myharness.config import Config  # noqa: E402
 
 print("\n1. Профили")
@@ -82,7 +85,7 @@ check("профиль виден в списке", any(n == "s3" for n, _ in pro
 оконный, _ = profiles.load("window")
 check("history_window прочитан", оконный.history_window == 3, str(оконный.history_window))
 check("умолчание окна — десять пар", profile.history_window == 10, str(profile.history_window))
-for мусор in ("три", -1, 2.5):
+for мусор in ("три", True, -1, 2.5):
     (tmp / "profiles" / "window_bad.json").write_text(
         json.dumps({"name": "window_bad", "history_window": мусор}, ensure_ascii=False), encoding="utf-8"
     )
@@ -257,6 +260,45 @@ check(
     and analyst_pane.agent.name == analyst_profile.name
     and analyst_pane.agent.history() == [],
 )
+# И-2. Повтор имени в составе группы или в наборе способов. Молча схлопнуть нельзя — это
+# опечатка в профиле, и о ней надо сказать; оставить как есть тоже нельзя — одно имя дважды
+# означает два запроса ОДНОМУ собеседнику: две одинаковые пары в его памяти, две ленты в одной
+# панели и двойная цена за один и тот же ответ.
+(tmp / "profiles" / "critic.json").write_text(
+    json.dumps({"name": "critic", "system": "ты критик", "keep_history": False}, ensure_ascii=False),
+    encoding="utf-8",
+)
+(tmp / "profiles" / "twins.json").write_text(
+    json.dumps(
+        {"name": "twins", "agents": ["analyst", "critic", "analyst"], "methods": ["free", "free"]},
+        ensure_ascii=False,
+    ),
+    encoding="utf-8",
+)
+близнецы, близнецовые = profiles.load("twins")
+check(
+    "повтор в составе группы отброшен, порядок первого появления сохранён",
+    близнецы.agents == ["analyst", "critic"],
+    str(близнецы.agents),
+)
+check(
+    "про повтор в составе сказано вслух",
+    any("agents" in w and "analyst" in w and "повтор" in w for w in близнецовые),
+    "; ".join(близнецовые),
+)
+check("повтор в наборе способов отброшен", близнецы.methods == ["free"], str(близнецы.methods))
+check(
+    "про повтор способа тоже сказано",
+    any("methods" in w and "free" in w and "повтор" in w for w in близнецовые),
+    "; ".join(близнецовые),
+)
+исполнители = team.load_agents(team_state, близнецы)
+check(
+    "состав из трёх имён с повтором даёт двух исполнителей",
+    [профиль.name for профиль in исполнители] == ["analyst", "critic"],
+    str([профиль.name for профиль in исполнители]),
+)
+
 summary = team.build_summary_request("задача", [("analyst", "ответ А"), ("critic", "ответ Б")])
 check("сводка несёт задачу и ответы каждого", "задача" in summary and "«analyst»" in summary and "ответ Б" in summary)
 
@@ -469,6 +511,25 @@ check(
     "".join(e.text for e in поточный.events if e.kind == "reasoning") == наблюдаемый.reasoning,
     repr(наблюдаемый.reasoning),
 )
+# Запись обмена обязана быть полной: без неё прогон не воспроизвести и не сверить — по одному
+# тексту ответа не видно ни что спросили, ни какой моделью, ни с какими параметрами.
+check(
+    "в записи обмена лежит то, что фактически ушло в модель",
+    наблюдаемый.request_messages == поточный.calls[0]["messages"],
+    str(наблюдаемый.request_messages),
+)
+check("в записи обмена названа модель", наблюдаемый.model == "deepseek-v4-flash", repr(наблюдаемый.model))
+check(
+    "в записи обмена лежит слепок профиля на момент запроса",
+    наблюдаемый.profile_snapshot == поток.snapshot() and наблюдаемый.profile_snapshot.get("name") == "s3",
+    str(наблюдаемый.profile_snapshot),
+)
+check(
+    "слепок несёт инструкцию и параметры запроса",
+    наблюдаемый.profile_snapshot.get("system") == поток.system
+    and наблюдаемый.profile_snapshot.get("params") == поток.params,
+    str(наблюдаемый.profile_snapshot),
+)
 
 
 def падающая_отрисовка(event):
@@ -485,6 +546,14 @@ check(
     "ошибка отрисовки не выдаётся за сетевой сбой",
     кривой.ok is True and "DeepSeek" not in (кривой.error or ""),
     f"{кривой.status} / {кривой.error!r}",
+)
+# Одного «обмен удался, про DeepSeek не сказано» мало: этому условию отвечает и пустая ошибка,
+# то есть полное молчание о том, что ответ получен, но на экран не попал. Пользователь при таком
+# молчании видит пустую панель и не знает, повторять ли запрос, — поэтому текст обязан быть.
+check(
+    "про несостоявшийся показ ответа сказано прямо",
+    bool(кривой.error) and "показать" in кривой.error and "панель закрыта" in кривой.error,
+    repr(кривой.error),
 )
 
 
@@ -515,6 +584,93 @@ check(
     "отменённый прогон всё равно записан",
     len(после_отмены) == до_отмены_журнал + 1 and json.loads(после_отмены[-1])["status"] == "cancelled",
     после_отмены[-1],
+)
+
+# Шаг 25. `/clear` посреди идущего обмена. Команды harness исполняются немедленно, мимо
+# очереди, — значит `forget()` приходит в середину обмена. Обмен, чью память успели забыть,
+# свой результат в память возвращать НЕ ИМЕЕТ ПРАВА: пользователь увидел «история диалога
+# очищена», сменил тему и обязан получить чистый разговор, а не пару от прежнего.
+async def забыть_посреди_обмена(агент):
+    ворота = asyncio.Event()  # держим поток на полуслове, пока не позовём forget()
+    клиент = StubClient(gate=ворота)
+    задача = asyncio.create_task(агент.exchange(клиент, "deepseek-v4-flash", "вопрос на полуслове"))
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if клиент.calls:
+            break
+    агент.forget()
+    сразу = len(агент.history())
+    ворота.set()  # отпускаем поток: обмен дойдёт до конца уже после забывания
+    await задача
+    return сразу, len(агент.history())
+
+
+забывчивый_профиль, _ = profiles.load("s3")
+забывчивый_профиль.keep_history = True
+забывчивый = Agent("забывчивый", забывчивый_профиль)
+сразу_после, после_обмена = asyncio.run(забыть_посреди_обмена(забывчивый))
+check("forget() чистит память сразу", сразу_после == 0, str(сразу_после))
+check(
+    "обмен, чью память забыли, пару назад не кладёт",
+    после_обмена == 0,
+    f"в памяти {после_обмена} сообщений",
+)
+# И обратное утверждение: без вмешательства память по-прежнему пополняется — иначе «починка»
+# свелась бы к тому, что память не пополняется никогда.
+asyncio.run(забывчивый.exchange(StubClient(), "deepseek-v4-flash", "вопрос после очистки"))
+check("обмен без вмешательства память пополняет", len(забывчивый.history()) == 2, str(забывчивый.history()))
+
+print("\n10a. Ведущий группы сводит разово")
+
+# Ведущему на вход приходит уже готовый текст — задача и ответы экспертов, — и помнить
+# прошлые заседания ему незачем. Помнил бы — каждый следующий прогон тащил бы в САМЫЙ
+# дорогой запрос инструмента весь предыдущий: и ответы экспертов, и прежнюю сводку.
+# ОТКУДА ЧИСЛО: разовый запрос сводки — это инструкция ведущего плюс текст со всеми
+# ответами, то есть ровно 2 сообщения, сколько бы прогонов ни было до него.
+(tmp / "profiles" / "solo.json").write_text(
+    json.dumps({"name": "solo", "system": "ты одиночка", "keep_history": False}, ensure_ascii=False),
+    encoding="utf-8",
+)
+(tmp / "profiles" / "chief.json").write_text(
+    # keep_history не задан — значит true, как у обычного профиля пользователя: именно на
+    # таком профиле копившаяся сводка и вылезла.
+    json.dumps({"name": "chief", "system": "сведи ответы экспертов", "agents": ["solo"]}, ensure_ascii=False),
+    encoding="utf-8",
+)
+шеф, _ = profiles.load("chief")
+check("у профиля ведущего история включена, как у любого профиля", шеф.keep_history is True)
+шеф_состояние = cli.State(config=Config(api_key="sk-test"), client=StubClient(), model="deepseek-v4-flash", profile=шеф)
+asyncio.run(team.run(шеф_состояние, "вопрос первого заседания", шеф))
+asyncio.run(team.run(шеф_состояние, "вопрос второго заседания", шеф))
+сводки = [
+    вызов for вызов in шеф_состояние.client.calls
+    if вызов["messages"][0]["content"] == "сведи ответы экспертов"
+]
+check("сводка собиралась на каждом прогоне", len(сводки) == 2, str(len(сводки)))
+check(
+    "второй прогон не тащит в сводку первый",
+    len(сводки[1]["messages"]) == 2,
+    str([m["role"] for m in сводки[1]["messages"]]),
+)
+check(
+    "в запросе сводки только инструкция и материал",
+    [m["role"] for m in сводки[1]["messages"]] == ["system", "user"],
+    str([m["role"] for m in сводки[1]["messages"]]),
+)
+check("профиль пользователя правкой не задет", шеф.keep_history is True and шеф.system == "сведи ответы экспертов")
+
+# Тот же профиль сводки, но у ведущего нет своей инструкции: подставляется запасная — и
+# разовость от этого не зависит (раньше при непустой инструкции возвращался сам профиль).
+безмолвный, _ = profiles.load("chief")
+безмолвный.system = None
+сводный = team.summary_profile(безмолвный)
+check("без своей инструкции берётся запасная", сводный.system == team.DEFAULT_LEAD_INSTRUCTION, str(сводный.system))
+check("запасная инструкция не пишется в сам профиль ведущего", безмолвный.system is None)
+check("профиль сводки — всегда копия", сводный is not безмолвный and team.summary_profile(шеф) is not шеф)
+check(
+    "сводка не помнит прошлых заседаний в обоих случаях",
+    сводный.keep_history is False and team.summary_profile(шеф).keep_history is False,
+    f"{сводный.keep_history} / {team.summary_profile(шеф).keep_history}",
 )
 
 print("\n11. Изоляция агента")
@@ -865,6 +1021,25 @@ check(
 )
 check("итоговая строка считает ответивших", "ответили 2 из 3" in сводка[-1], сводка[-1])
 
+# И-7. Счёт токенов — одно правило в одном месте. Своя копия правила в пакетном режиме
+# считала иначе и падала на строке вместо числа: сервер отдаёт `usage` как есть, и ронять на
+# нём сводку по уже выполненному наряду недопустимо — работа сделана и оплачена.
+check("счёт токенов в наряде — та же функция, что у агента", batch.usage_tokens is usage_tokens)
+check("второй функции подсчёта в наряде не осталось", not hasattr(batch, "_tokens"))
+одиночный_наряд, _ = batch.load_order(
+    наряд(
+        {"tasks": [{"agent": "один", "profile": "expert", "vars": {"область": "физика"}, "ask": "вопрос"}]},
+        "tokens.json",
+    )
+)
+# ОТКУДА ЧИСЛО: в `usage` пришла строка вместо числа во входных токенах — по правилу агента
+# нечисловое слагаемое просто не считается, остаются 3 выходных.
+кривой_расход = batch.summary_lines(
+    одиночный_наряд,
+    [Turn(status="ok", usage={"prompt_tokens": "двенадцать", "completion_tokens": 3})],
+)
+check("строка вместо числа в usage не роняет сводку", "израсходовано 3 токенов" in кривой_расход[-1], кривой_расход[-1])
+
 
 # Ветка, которую иначе не достать. Сетевые сбои `exchange` ловит сам и возвращает `Turn`,
 # поэтому до `gather` исключение долетает только из кода ВОКРУГ обмена — например, из
@@ -886,6 +1061,149 @@ check(
     устойчивые[1].error == "обработчик строк сорвался",
     str(устойчивые[1].error),
 )
+
+# Мусор в поле «concurrency». Отдельной строкой отсеивается `bool`: в Python он подкласс
+# `int`, и `true` иначе прошло бы как «один запрос за раз» — наряд выполнялся бы по одному
+# заданию, и нигде бы об этом не говорилось.
+for мусор in ("два", True, 0, -1, 2.5):
+    кривая, кривые_предупреждения = batch.load_order(
+        наряд(
+            {
+                "concurrency": мусор,
+                "tasks": [{"agent": "один", "profile": "expert", "vars": {"область": "физика"}, "ask": "вопрос"}],
+            },
+            "bad-concurrency.json",
+        )
+    )
+    check(
+        f"concurrency = {мусор!r} отвергнут с предупреждением",
+        кривая.concurrency == 8 and any("concurrency" in строка for строка in кривые_предупреждения),
+        f"{кривая.concurrency} / {кривые_предупреждения}",
+    )
+
+# Задание без имени работу не теряет — имя лишь метка в журнале и в сводке. Но молчать нельзя:
+# без предупреждения человек не поймёт, откуда в сводке взялось имя, которого он не писал.
+безымянный, безымянные = batch.load_order(
+    наряд(
+        {"tasks": [{"profile": "expert", "vars": {"область": "физика"}, "ask": "вопрос"}]},
+        "no-name.json",
+    )
+)
+check("задание без имени не выброшено", len(безымянный.tasks) == 1, str(len(безымянный.tasks)))
+check("ему назначено имя по порядковому номеру", безымянный.tasks[0].agent == "задание 1", безымянный.tasks[0].agent)
+check(
+    "о назначенном имени предупреждено",
+    any("нет имени" in строка and "задание 1" in строка for строка in безымянные),
+    "; ".join(безымянные),
+)
+
+print("\n13a. Точка входа пакетного режима")
+
+# Код возврата наряда читают расписания и оболочки: молчаливый ноль на сорванном наряде
+# означает, что о сбое никто не узнает. Ключи `--model` и `--concurrency` — единственный способ
+# прогнать один и тот же наряд другой моделью или мягче по частоте, и они обязаны доходить до
+# запроса, а не оставаться украшением справки.
+
+
+class НарядныйКлиент:
+    """Подставной DeepSeek для точки входа: помнит, какой моделью его звали и сколько запросов
+    шло разом. Слово «падать» в вопросе превращает ответ в сбой."""
+
+    последний = None
+
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.модели = []
+        self.сейчас = 0
+        self.пик = 0
+        self.закрыт = False
+        НарядныйКлиент.последний = self
+
+    async def stream_chat(self, model, messages, params=None):
+        self.модели.append(model)
+        self.сейчас += 1
+        self.пик = max(self.пик, self.сейчас)
+        try:
+            await asyncio.sleep(0.02)
+            if "падать" in messages[-1]["content"]:
+                raise RuntimeError("сеть упала")
+            yield api.StreamEvent("content", "ответ")
+            yield api.StreamEvent("meta", finish_reason="stop", usage={"total_tokens": 5})
+        finally:
+            self.сейчас -= 1
+
+    async def aclose(self):
+        self.закрыт = True
+
+
+def выполнить_наряд(путь, *, model=None, concurrency=None):
+    """Точка входа целиком, с подставным клиентом. Возвращает код возврата и напечатанное."""
+    вывод = io.StringIO()
+    настоящий = batch.api.DeepSeekClient
+    batch.api.DeepSeekClient = НарядныйКлиент
+    try:
+        with contextlib.redirect_stdout(вывод):
+            код = asyncio.run(
+                batch.main(argparse.Namespace(batch=str(путь), model=model, concurrency=concurrency))
+            )
+    finally:
+        batch.api.DeepSeekClient = настоящий
+    return код, вывод.getvalue()
+
+
+# Ключ пакетному режиму приходит из файла настроек — своего он не спрашивает. Каталог настроек
+# уведён во временный ещё в начале файла, настоящий ключ пользователя не задет.
+(tmp / "config").mkdir(parents=True, exist_ok=True)
+(tmp / "config" / "config.json").write_text(
+    json.dumps({"api_key": "sk-проверочный", "model": "deepseek-v4-flash", "profile": "default"}, ensure_ascii=False),
+    encoding="utf-8",
+)
+
+удачный_путь = наряд(
+    {
+        "model": "deepseek-v4-flash",
+        "concurrency": 4,
+        "tasks": [
+            {"agent": "первый", "profile": "expert", "vars": {"область": "физика"}, "ask": "вопрос"},
+            {"agent": "второй", "profile": "expert", "vars": {"область": "химия"}, "ask": "ещё вопрос"},
+            {"agent": "третий", "profile": "expert", "vars": {"область": "биология"}, "ask": "и ещё"},
+        ],
+    },
+    "entry-ok.json",
+)
+код_успеха, вывод_успеха = выполнить_наряд(удачный_путь)
+check("наряд, где ответили все, даёт код 0", код_успеха == 0, str(код_успеха))
+check("сводка напечатана", "ответили 3 из 3" in вывод_успеха, вывод_успеха)
+check("клиент закрыт после наряда", НарядныйКлиент.последний.закрыт is True)
+
+сорванный_путь = наряд(
+    {
+        "model": "deepseek-v4-flash",
+        "tasks": [
+            {"agent": "первый", "profile": "expert", "vars": {"область": "физика"}, "ask": "вопрос"},
+            {"agent": "падающий", "profile": "expert", "vars": {"область": "химия"}, "ask": "вопрос падать"},
+        ],
+    },
+    "entry-fail.json",
+)
+код_сбоя, вывод_сбоя = выполнить_наряд(сорванный_путь)
+check("сорвавшееся задание даёт ненулевой код возврата", код_сбоя != 0, str(код_сбоя))
+check("остальные задания при этом выполнены", "ответили 1 из 2" in вывод_сбоя, вывод_сбоя)
+
+# ОТКУДА ЧИСЛА: в самом наряде записаны модель `deepseek-v4-flash` и одновременность 4.
+# Ключи командной строки обязаны их перебить — иначе прогнать тот же наряд другой моделью
+# или мягче по частоте нельзя.
+код_ключей, вывод_ключей = выполнить_наряд(удачный_путь, model="deepseek-v4-pro", concurrency=1)
+клиент_ключей = НарядныйКлиент.последний
+check("наряд с ключами выполнен", код_ключей == 0, str(код_ключей))
+check(
+    "--model перебил модель наряда в самом запросе",
+    set(клиент_ключей.модели) == {"deepseek-v4-pro"},
+    str(set(клиент_ключей.модели)),
+)
+check("--model виден и в сводке", "модель deepseek-v4-pro" in вывод_ключей, вывод_ключей.splitlines()[-2:])
+check("--concurrency ограничил одновременность до одного", клиент_ключей.пик == 1, str(клиент_ключей.пик))
+check("--concurrency виден и в сводке", "одновременно 1" in вывод_ключей, вывод_ключей.splitlines()[-2:])
 
 # И то же утверждение об изоляции, что в разделе 11, — теперь про сам пакетный режим.
 # Чистый процесс: этот файл импортирует `cli`, значит в собственном `sys.modules`

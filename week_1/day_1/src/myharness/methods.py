@@ -64,11 +64,14 @@ def ensure_screens(state, methods: list[Profile]) -> None:
         state.screens.append(screen)
 
 
-async def run_chain(state, screen: screens_mod.Screen, profile: Profile, question: str) -> None:
+async def run_chain(state, screen: screens_mod.Screen, question: str) -> None:
     """Цепочка шагов: то, что ответил предыдущий шаг, становится началом запроса следующего.
 
     Человеку тут копировать нечего — промпт переносится сам, и обе половины видны рядом.
-    """
+
+    Профиля способа здесь нет намеренно: инструкцию и собеседника каждого шага несёт его
+    собственная панель (`pane.profile`, `pane.agent`). Второй источник той же правды в
+    аргументах только вводил бы в заблуждение — на выполнение он не влиял никак."""
     carried = ""
     for index, pane in enumerate(screen.panes):
         step = pane.profile
@@ -84,7 +87,8 @@ async def run_chain(state, screen: screens_mod.Screen, profile: Profile, questio
         carried = turn.text
 
 
-async def run_single(state, screen: screens_mod.Screen, profile: Profile, question: str) -> None:
+async def run_single(state, screen: screens_mod.Screen, question: str) -> None:
+    """Обычный способ: один запрос, одна лента. Профиль, как и у цепочки, берётся у панели."""
     pane = screen.first
     pane.status = screens_mod.BUSY
     output.append_log(state, ui.user_fragments(question), pane)
@@ -107,7 +111,7 @@ async def run_all(state, question: str, holder: Profile) -> None:
         if profile.agents:
             tasks.append(team.run(state, question, profile, announce=False))
         elif profile.screens:
-            tasks.append(run_chain(state, screen, profile, question))
+            tasks.append(run_chain(state, screen, question))
         else:
-            tasks.append(run_single(state, screen, profile, question))
+            tasks.append(run_single(state, screen, question))
     await asyncio.gather(*tasks)
