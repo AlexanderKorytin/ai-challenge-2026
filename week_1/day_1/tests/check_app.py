@@ -195,6 +195,42 @@ async def main():
         check("в записи причина остановки и токены", record["finish_reason"] == "length" and record["usage"]["completion_tokens"] == 34)
         check("ключ в журнал не попал", "sk-test" not in json.dumps(record, ensure_ascii=False))
 
+        print("\n6a. История разговора")
+        # Профиль с накоплением истории: два вопроса подряд обязаны попасть в один разговор.
+        profiles_dir = tmp / "profiles"
+        (profiles_dir / "talky.json").write_text(
+            json.dumps({"name": "talky", "system": "болтай", "keep_history": True}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        await send("/profile talky" + ENTER, pause=0.25)
+        before = len(fake.calls)
+        await send("первый вопрос" + ENTER, pause=0.4)
+        await send("второй вопрос" + ENTER, pause=0.4)
+        first, second = fake.calls[before], fake.calls[before + 1]
+        # Подставной клиент всегда отдаёт содержимое ответа, значит после первого обмена
+        # в истории лежит ровно одна пара «вопрос — ответ» = 2 сообщения. Системная
+        # инструкция кладётся поверх истории и в саму историю не входит.
+        check(
+            "в первый запрос ушли только инструкция и вопрос",
+            len(first["messages"]) == 2,
+            str([m["role"] for m in first["messages"]]),
+        )
+        check(
+            "во второй запрос ушла история предыдущего обмена",
+            len(second["messages"]) == 4,
+            str([m["role"] for m in second["messages"]]),
+        )
+        check(
+            "роли второго запроса идут по порядку",
+            [m["role"] for m in second["messages"]] == ["system", "user", "assistant", "user"],
+            str([m["role"] for m in second["messages"]]),
+        )
+        check(
+            "в истории лежит первый вопрос, а не второй",
+            second["messages"][1]["content"] == "первый вопрос",
+            repr(second["messages"][1]["content"]),
+        )
+
         print("\n7. Группа агентов")
         profiles_dir = tmp / "profiles"
         for name, system in (("analyst", "ты аналитик"), ("critic", "ты критик")):
