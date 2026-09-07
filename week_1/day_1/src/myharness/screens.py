@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # только для подсказок типов — на импорт профилей экраны не завязаны
+    from .agent import Agent
     from .profiles import Profile
 
 Fragments = list[tuple[str, str]]
@@ -35,7 +36,12 @@ ERROR = "error"
 
 @dataclass
 class Pane:
-    """Лента вывода: то, что раньше было экраном целиком."""
+    """Лента вывода: то, что раньше было экраном целиком.
+
+    У панели появился собеседник (`agent`), потому что панель — это место отрисовки, а
+    разговор ей не принадлежит: память и правила сборки запроса — дело агента, панель лишь
+    показывает то, что из этого вышло. Пока поля `agent` и `messages` сосуществуют, хозяйкой
+    памяти остаётся `messages`; агент заведён, но ещё простаивает."""
 
     key: str
     title: str = ""
@@ -44,7 +50,9 @@ class Pane:
     autoscroll: bool = True
     status: str = IDLE
     profile: Profile | None = None  # чей это вывод: инструкция исполнителя и его параметры
+    # Прежняя память разговора: действует до перевода вызовов на агента, удаляется в блоке З.
     messages: list[dict] = field(default_factory=list)
+    agent: Agent | None = None  # собеседник этой панели: его память, его инструкция
 
 
 @dataclass

@@ -19,6 +19,7 @@ import asyncio
 
 from . import output, profiles, team, ui
 from . import screens as screens_mod
+from .agent import Agent
 from .profiles import Profile
 
 
@@ -42,7 +43,7 @@ def chain_panes(profile: Profile) -> list[screens_mod.Pane]:
     for name in profile.screens:
         step, _ = profiles.load(name)
         step.name = name
-        panes.append(screens_mod.Pane(key=name, title=step.title or name, profile=step))
+        panes.append(screens_mod.Pane(key=name, title=step.title or name, profile=step, agent=Agent(name, step)))
     return panes
 
 
@@ -55,9 +56,14 @@ def ensure_screens(state, methods: list[Profile]) -> None:
         if any(screen.key == profile.name for screen in state.screens):
             continue
         panes = chain_panes(profile) if profile.screens else []
-        state.screens.append(
-            screens_mod.Screen(key=profile.name, title=profile.title or profile.name, profile=profile, panes=panes)
+        screen = screens_mod.Screen(
+            key=profile.name, title=profile.title or profile.name, profile=profile, panes=panes
         )
+        if screen.first.agent is None:
+            # У обычного способа панель делает `Screen.__post_init__` — собеседника кладём
+            # следом; у цепочки собеседники по шагам уже расставил `chain_panes`.
+            screen.first.agent = Agent(profile.name, profile)
+        state.screens.append(screen)
 
 
 async def run_chain(state, screen: screens_mod.Screen, profile: Profile, question: str) -> None:

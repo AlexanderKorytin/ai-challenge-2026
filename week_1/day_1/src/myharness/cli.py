@@ -38,7 +38,7 @@ from . import methods as methods_mod
 from . import params as params_mod
 from . import picker as picker_mod
 from . import screens as screens_mod
-from .agent import Turn
+from .agent import Agent, Turn
 from .api import DeepSeekClient
 from .config import Config
 from .config import load as load_config
@@ -104,6 +104,17 @@ class State:
     @property
     def messages(self) -> list[dict]:
         return self.main.first.messages
+
+    @property
+    def main_agent(self) -> Agent:
+        """Собеседник главного экрана — тот, с кем разговаривает пользователь."""
+        return self.main.first.agent
+
+    def __post_init__(self) -> None:
+        # Панель главного экрана заводит `screens.main_screen()`, профиля у неё нет, а
+        # собеседник нужен: главный разговор ведёт он. Заводим здесь, а не в `_main`, чтобы
+        # у любого состояния — в том числе собранного проверками — главный агент был на месте.
+        self.main.first.agent = Agent(screens_mod.MAIN_KEY, self.profile)
 
 
 def switch_screen(state: State, index: int) -> None:
@@ -227,6 +238,9 @@ def open_work_screens(state: State, profile: Profile) -> None:
             append_log(state, ui.error_fragments(f"экран «{name}» пропущен: профиль не найден"))
             continue
         screen = screens_mod.Screen(key=name, title=name, profile=step, interactive=True)
+        # Панель рабочего экрана делает `Screen.__post_init__` — собеседника кладём следом:
+        # у каждого шага приёма своя ветка разговора, значит и своя память.
+        screen.first.agent = Agent(name, step)
         state.screens.append(screen)
         # описание профиля — вводная для шага («вставьте промпт с первого экрана»). Держим её
         # в ленте, а не в строке ввода: заготовка ввода ушла бы в модель вместе с вопросом.

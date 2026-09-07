@@ -226,6 +226,12 @@ check("смена профиля закрывает экраны группы", 
 agent_messages = screens.build_messages(analyst_profile, analyst_pane, "вопрос")
 check("агенту уходит его инструкция и вопрос", [m["role"] for m in agent_messages] == ["system", "user"])
 check("keep_history=false не копит историю агента", analyst_pane.messages == [])
+check(
+    "у панели эксперта есть свой собеседник",
+    analyst_pane.agent is not None
+    and analyst_pane.agent.name == analyst_profile.name
+    and analyst_pane.agent.history() == [],
+)
 summary = team.build_summary_request("задача", [("analyst", "ответ А"), ("critic", "ответ Б")])
 check("сводка несёт задачу и ответы каждого", "задача" in summary and "«analyst»" in summary and "ответ Б" in summary)
 

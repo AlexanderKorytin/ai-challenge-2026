@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from . import output, profiles, ui
 from . import screens as screens_mod
+from .agent import Agent
 from .profiles import Profile
 
 DEFAULT_LEAD_INSTRUCTION = (
@@ -63,7 +64,13 @@ def ensure_screens(state, lead: Profile, agents: list[Profile]) -> tuple[screens
             title=lead.title or lead.name,
             profile=lead,
             panes=[
-                screens_mod.Pane(key=agent.name, title=agent.title or agent.name, profile=agent) for agent in agents
+                screens_mod.Pane(
+                    key=expert.name,
+                    title=expert.title or expert.name,
+                    profile=expert,
+                    agent=Agent(expert.name, expert),
+                )
+                for expert in agents
             ],
         )
         state.screens.append(board)
@@ -71,6 +78,9 @@ def ensure_screens(state, lead: Profile, agents: list[Profile]) -> tuple[screens
         summary = screens_mod.Screen(
             key=lead.name + SUMMARY_SUFFIX, title=f"{lead.title or lead.name} · сводка", profile=lead
         )
+        # Панель сводки делает `Screen.__post_init__`, поэтому собеседника ведущего кладём
+        # следом: сводит ответы экспертов он, значит и память сводки принадлежит ему.
+        summary.first.agent = Agent(lead.name, lead)
         state.screens.append(summary)
     return board, summary
 
@@ -95,33 +105,38 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
 
     board, summary_screen = ensure_screens(state, lead, agents)
     if announce:
-        output.append_log(state, ui.team_start_fragments([agent.name for agent in agents]))
+        output.append_log(state, ui.team_start_fragments([expert.name for expert in agents]))
 
     tasks = []
-    for agent in agents:
-        pane = board.pane_by_key(agent.name)
+    for expert in agents:  # здесь `expert` — ПРОФИЛЬ эксперта, а не собеседник `Agent`
+        pane = board.pane_by_key(expert.name)
         if pane is None:  # состав группы изменился на ходу — панель заводим на месте
-            pane = screens_mod.Pane(key=agent.name, title=agent.title or agent.name, profile=agent)
+            pane = screens_mod.Pane(
+                key=expert.name,
+                title=expert.title or expert.name,
+                profile=expert,
+                agent=Agent(expert.name, expert),
+            )
             board.panes.append(pane)
         pane.status = screens_mod.BUSY
-        output.append_log(state, ui.agent_task_fragments(agent.name, agent.name, agent.system, question), pane)
-        if agent.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
+        output.append_log(state, ui.agent_task_fragments(expert.name, expert.name, expert.system, question), pane)
+        if expert.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
             pane.messages.append({"role": "user", "content": question})
         tasks.append(
             cli.generate_response(
                 state,
-                screens_mod.build_messages(agent, pane, question),
+                screens_mod.build_messages(expert, pane, question),
                 question,
                 pane=pane,
-                profile=agent,
-                agent=agent.name,
+                profile=expert,
+                agent=expert.name,
                 run_id=run_id,
             )
         )
     turns = await asyncio.gather(*tasks)
 
-    answers = [(agent.name, turn.text) for agent, turn in zip(agents, turns, strict=True) if turn.ok and turn.text]
-    failed = [agent.name for agent, turn in zip(agents, turns, strict=True) if not (turn.ok and turn.text)]
+    answers = [(expert.name, turn.text) for expert, turn in zip(agents, turns, strict=True) if turn.ok and turn.text]
+    failed = [expert.name for expert, turn in zip(agents, turns, strict=True) if not (turn.ok and turn.text)]
     for name in failed:
         output.append_log(state, ui.error_fragments(f"агент «{name}» ответа не дал — в сводку не попал"), summary_screen)
     if not answers:
