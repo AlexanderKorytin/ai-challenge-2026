@@ -266,6 +266,179 @@ check(
     str(agent.history()),
 )
 
+print("\n10. Обмен агента с моделью")
+
+
+class StubClient:
+    """Подставной DeepSeek: отдаёт заданные события и запоминает, с чем его позвали.
+
+    Управляемее, чем FakeClient из check_app.py: набор событий задаётся снаружи, вместо
+    ответа можно бросить заданное исключение, а между событиями — ждать переданные
+    «ворота» (`asyncio.Event`). Последнее нужно проверке отмены: пока ворота закрыты,
+    поток стоит на полуслове, и обмен успевают отменить."""
+
+    def __init__(self, events=None, error=None, gate=None):
+        self.events = (
+            list(events)
+            if events is not None
+            else [
+                api.StreamEvent("reasoning", "прикидываю…"),
+                api.StreamEvent("content", "щука"),
+                api.StreamEvent("meta", finish_reason="stop", usage={"prompt_tokens": 12, "completion_tokens": 3}),
+            ]
+        )
+        self.error = error
+        self.gate = gate
+        self.calls = []
+
+    async def stream_chat(self, model, messages, params=None):
+        self.calls.append({"model": model, "messages": [dict(m) for m in messages], "params": dict(params or {})})
+        if self.error is not None:
+            raise self.error
+        for index, event in enumerate(self.events):
+            if index and self.gate is not None:
+                await self.gate.wait()
+            yield event
+
+
+def journal_lines():
+    return Path(os.environ["MYHARNESS_JOURNAL"]).read_text(encoding="utf-8").strip().splitlines()
+
+
+# Шаг 17. Два обмена подряд копят память.
+# ОТКУДА ЧИСЛА: подставной клиент отдаёт содержимое, значит каждый успешный обмен кладёт
+# в память ровно одну пару = 2 сообщения; два обмена = 4. Во второй запрос уходит
+# инструкция + пара из памяти + новый вопрос = 4.
+диалоговый, _ = profiles.load("s3")
+диалоговый.keep_history = True
+беседа = Agent("беседа", диалоговый)
+пара_обменов = StubClient()
+asyncio.run(беседа.exchange(пара_обменов, "deepseek-v4-flash", "вопрос 1"))
+asyncio.run(беседа.exchange(пара_обменов, "deepseek-v4-flash", "вопрос 2"))
+check("после двух обменов в памяти две пары", len(беседа.history()) == 4, str(беседа.history()))
+check(
+    "роли идут парами",
+    [m["role"] for m in беседа.history()] == ["user", "assistant", "user", "assistant"],
+    str([m["role"] for m in беседа.history()]),
+)
+check(
+    "во второй запрос ушла память первого",
+    len(пара_обменов.calls[1]["messages"]) == 4,
+    str(пара_обменов.calls[1]["messages"]),
+)
+
+# Шаг 18. Сбой не оставляет следа в памяти.
+до_сбоя = len(беседа.history())
+сбойный = asyncio.run(
+    беседа.exchange(StubClient(error=RuntimeError("сеть упала")), "deepseek-v4-flash", "вопрос 3")
+)
+check("сбой не выдаётся за успех", сбойный.ok is False, сбойный.status)
+check("состояние прогона названо", сбойный.status == "error", сбойный.status)
+check("текст ошибки сохранён", "сеть упала" in (сбойный.error or ""), repr(сбойный.error))
+check("неотвеченный вопрос в памяти не осел", len(беседа.history()) == до_сбоя, str(беседа.history()))
+
+# Шаг 19. Пустой ответ — не успех.
+до_пустого = len(беседа.history())
+пустой = asyncio.run(
+    беседа.exchange(
+        StubClient(events=[api.StreamEvent("meta", finish_reason="stop", usage={})]),
+        "deepseek-v4-flash",
+        "вопрос 4",
+    )
+)
+check("пустой ответ не считается успехом", пустой.ok is False, f"{пустой.status} / {пустой.error!r}")
+check("пустой ответ в память не попадает", len(беседа.history()) == до_пустого, str(беседа.history()))
+
+# Шаг 22. Запись в журнал — при любом исходе, силами самого агента.
+одиночный_профиль, _ = profiles.load("s3")  # keep_history=False — память здесь не при чём
+писарь = Agent("писарь", одиночный_профиль)
+до_журнала = len(journal_lines())
+asyncio.run(писарь.exchange(StubClient(), "deepseek-v4-flash", "вопрос без имени"))
+после_журнала = journal_lines()
+check("один обмен — одна запись", len(после_журнала) == до_журнала + 1, f"{до_журнала} → {len(после_журнала)}")
+без_имени = json.loads(после_журнала[-1])
+asyncio.run(
+    писарь.exchange(StubClient(), "deepseek-v4-flash", "вопрос с именем", agent="аналитик", run_id="прогон-1")
+)
+с_именем = json.loads(journal_lines()[-1])
+check(
+    "имя исполнителя и прогон появляются только когда переданы",
+    "agent" not in без_имени
+    and "run_id" not in без_имени
+    and с_именем.get("agent") == "аналитик"
+    and с_именем.get("run_id") == "прогон-1",
+    f"{без_имени} / {с_именем}",
+)
+check("ключ в журнал не попадает", "sk-" not in json.dumps(с_именем, ensure_ascii=False))
+
+# Шаг 23. Порядок событий, склейка кусков и ошибка отрисовки.
+роды = []
+поточный = StubClient()
+поток, _ = profiles.load("s3")
+наблюдаемый = asyncio.run(
+    Agent("наблюдатель", поток).exchange(
+        поточный, "deepseek-v4-flash", "вопрос", on_event=lambda event: роды.append(event.kind)
+    )
+)
+check("события приходят в своём порядке", роды == ["reasoning", "content", "meta"], str(роды))
+check(
+    "склейка кусков равна ответу",
+    "".join(e.text for e in поточный.events if e.kind == "content") == наблюдаемый.text,
+    repr(наблюдаемый.text),
+)
+check(
+    "рассуждения собраны отдельно",
+    "".join(e.text for e in поточный.events if e.kind == "reasoning") == наблюдаемый.reasoning,
+    repr(наблюдаемый.reasoning),
+)
+
+
+def падающая_отрисовка(event):
+    raise RuntimeError("панель закрыта")
+
+
+кривой_профиль, _ = profiles.load("s3")
+кривой = asyncio.run(
+    Agent("кривой", кривой_профиль).exchange(
+        StubClient(), "deepseek-v4-flash", "вопрос", on_event=падающая_отрисовка
+    )
+)
+check(
+    "ошибка отрисовки не выдаётся за сетевой сбой",
+    кривой.ok is True and "DeepSeek" not in (кривой.error or ""),
+    f"{кривой.status} / {кривой.error!r}",
+)
+
+
+# Шаг 24. Отмена по Ctrl+C: наверх пробрасывается, память цела, запись в журнале есть.
+async def отменить_обмен(агент):
+    ворота = asyncio.Event()  # так и не открываем: поток замирает после первого события
+    клиент = StubClient(gate=ворота)
+    задача = asyncio.create_task(агент.exchange(клиент, "deepseek-v4-flash", "вопрос на полуслове"))
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if клиент.calls:
+            break
+    задача.cancel()
+    try:
+        await задача
+    except asyncio.CancelledError:
+        return True
+    return False
+
+
+до_отмены_память = len(беседа.history())
+до_отмены_журнал = len(journal_lines())
+поймано = asyncio.run(отменить_обмен(беседа))
+check("отмена пробрасывается наверх", поймано is True)
+check("память при отмене не испорчена", len(беседа.history()) == до_отмены_память, str(беседа.history()))
+после_отмены = journal_lines()
+check(
+    "отменённый прогон всё равно записан",
+    len(после_отмены) == до_отмены_журнал + 1 and json.loads(после_отмены[-1])["status"] == "cancelled",
+    после_отмены[-1],
+)
+
 print()
 if failures:
     print(f"ПРОВАЛЕНО: {len(failures)} — " + "; ".join(failures))

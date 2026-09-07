@@ -11,9 +11,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import api, journal
 from .profiles import Profile
 
 
@@ -96,3 +100,102 @@ class Agent:
             messages.extend(dict(m) for m in self._messages)
         messages.append({"role": "user", "content": content})
         return messages
+
+    async def exchange(
+        self,
+        client,
+        model: str,
+        content: str,
+        *,
+        on_event: Callable[[api.StreamEvent], None] | None = None,
+        agent: str | None = None,
+        run_id: str | None = None,
+    ) -> Turn:
+        """Обмен с моделью: отправить вопрос, собрать поток ответа, записать прогон."""
+        request_messages = self.build_messages(content)
+        answer_text = ""
+        reasoning_text = ""
+        finish_reason: str | None = None
+        usage: dict[str, Any] = {}
+        status = "error"
+        error_text: str | None = None
+        render_error: str | None = None
+        started = time.monotonic()
+        try:
+            async for event in client.stream_chat(model, request_messages, self.profile.params):
+                if on_event is not None:
+                    try:
+                        on_event(event)
+                    except Exception as exc:
+                        # `on_event` — это отрисовка, она живёт СНАРУЖИ агента. Выпусти её
+                        # исключение отсюда — и оно попадёт в общий обработчик ошибок обмена
+                        # ниже, а пользователь увидит «ошибка запроса к DeepSeek» при
+                        # полностью живой сети: прямая ложь, из-за которой он пойдёт чинить
+                        # то, что не сломано. Проглотить совсем тоже нельзя — причину
+                        # запоминаем и отдаём в `Turn.error`, но только если обмен в
+                        # остальном удался, и текстом, где нет слова DeepSeek.
+                        render_error = f"ответ получен, но показать его не удалось: {exc}"
+                if event.kind == "meta":
+                    finish_reason = event.finish_reason
+                    usage = event.usage
+                    continue
+                if event.kind == "reasoning":
+                    reasoning_text += event.text
+                else:
+                    answer_text += event.text
+            status = "ok"
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
+        except Exception as exc:  # сеть, лимиты, ошибки API — не роняем harness
+            error_text = str(exc)
+        finally:
+            elapsed = time.monotonic() - started
+            snapshot = self.profile.snapshot()
+            if status == "ok" and not answer_text:
+                # Поток дошёл до конца, а ответа нет. Наверх обязан уйти внятный отказ,
+                # а не бодрое «успех» с пустой строкой, которую вызывающий покажет
+                # пользователю как ответ модели.
+                status = "error"
+                error_text = "модель вернула пустой ответ"
+            if status == "ok":
+                if render_error:
+                    error_text = render_error
+                # Пара кладётся ТОЛЬКО через `remember` — второй точки записи в память нет.
+                if self.profile.keep_history:
+                    self.remember(content, answer_text)
+            # При любом неуспехе память не трогаем вовсе: вопроса там нет, `build_messages`
+            # его туда не клал, — вычищать нечего.
+            entry: dict[str, Any] = {
+                "status": status,
+                "model": model,
+                "profile": snapshot,
+                "query": content,
+                "messages": request_messages,
+                "response": answer_text or None,
+                "reasoning": reasoning_text or None,
+                "finish_reason": finish_reason,
+                "usage": usage or None,
+                "elapsed_ms": int(elapsed * 1000),
+                "error": error_text,
+            }
+            if agent:
+                entry["agent"] = agent
+            if run_id:
+                entry["run_id"] = run_id
+            journal_error = journal.append(entry)
+            turn = Turn(
+                status=status,
+                text=answer_text,
+                reasoning=reasoning_text,
+                finish_reason=finish_reason,
+                usage=usage,
+                elapsed_ms=int(elapsed * 1000),
+                error=error_text,
+                request_messages=request_messages,
+                model=model,
+                profile_snapshot=snapshot,
+                dropped_pairs=0,
+                journal_error=journal_error,
+            )
+        return turn
