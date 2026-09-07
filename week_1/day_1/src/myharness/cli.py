@@ -38,6 +38,7 @@ from . import methods as methods_mod
 from . import params as params_mod
 from . import picker as picker_mod
 from . import screens as screens_mod
+from .agent import Turn
 from .api import DeepSeekClient
 from .config import Config
 from .config import load as load_config
@@ -255,23 +256,6 @@ async def _spin(state: State, pane: screens_mod.Pane) -> None:
     except asyncio.CancelledError:
         truncate_log(state, mark, pane)
         raise
-
-
-@dataclass
-class Turn:
-    """Итог одного обмена с моделью — тем, кто позвал: тексту ответа и цене."""
-
-    status: str
-    text: str = ""
-    reasoning: str = ""
-    finish_reason: str | None = None
-    usage: dict[str, Any] = field(default_factory=dict)
-    elapsed_ms: int = 0
-    error: str | None = None
-
-    @property
-    def ok(self) -> bool:
-        return self.status == "ok"
 
 
 async def generate_response(

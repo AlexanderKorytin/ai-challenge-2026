@@ -34,6 +34,7 @@ os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
 
 from myharness import api, journal, params as params_mod, picker as picker_mod, profiles, ui  # noqa: E402
 from myharness import cli, screens, team  # noqa: E402
+from myharness.agent import Agent
 from myharness.config import Config  # noqa: E402
 
 print("\n1. Профили")
@@ -140,16 +141,36 @@ state.picker.choose()
 check("параметр снимается", "temperature" not in state.profile.params)
 
 print("\n7. Сборка запроса")
-state.profile, _ = profiles.load("s3")
-msgs = cli.build_request_messages(state, "щука")
-check("системная инструкция первая", msgs[0]["role"] == "system")
-check("без истории — только система и вопрос", len(msgs) == 2 and msgs[1]["content"] == "щука")
-state.messages.append({"role": "user", "content": "старое"})
-msgs = cli.build_request_messages(state, "щука")
-check("keep_history=false игнорирует накопленную историю", len(msgs) == 2)
-state.profile.keep_history = True
-msgs = cli.build_request_messages(state, "щука")
-check("keep_history=true подставляет историю", len(msgs) == 2 and msgs[1]["content"] == "старое")
+# Числа взяты из правил, а не из наблюдения: системная инструкция кладётся поверх памяти
+# и в саму память не входит; remember кладёт ровно два сообщения; новый вопрос
+# дописывается в конец один раз. Отсюда 2, 2, 4 и 1.
+без_истории, _ = profiles.load("s3")  # keep_history=False
+одиночка = Agent("одиночка", без_истории)
+msgs = одиночка.build_messages("щука")
+check(
+    "инструкция идёт первой, истории нет",
+    [m["role"] for m in msgs] == ["system", "user"] and msgs[-1]["content"] == "щука",
+    str(msgs),
+)
+
+с_историей, _ = profiles.load("s3")
+с_историей.keep_history = True
+собеседник = Agent("собеседник", с_историей)
+msgs = собеседник.build_messages("щука")
+check("пустая история не добавляет сообщений", [m["role"] for m in msgs] == ["system", "user"], str(msgs))
+
+собеседник.remember("старое", "ответ на старое")
+msgs = собеседник.build_messages("щука")
+check(
+    "непустая история подставляется целиком",
+    [m["role"] for m in msgs] == ["system", "user", "assistant", "user"],
+    str(msgs),
+)
+check(
+    "новый вопрос попадает в запрос ровно один раз",
+    sum(1 for m in msgs if m["content"] == "щука") == 1,
+    str(msgs),
+)
 
 print("\n8. Группа агентов и заготовка ввода")
 (tmp / "profiles" / "lead.json").write_text(
@@ -225,6 +246,25 @@ print("\n8. Разбор параметров для API")
 direct, extra = api.split_params(profiles.load("s3")[0].params)
 check("thinking и reasoning_effort уходят в extra_body", "thinking" in extra and "thinking" not in direct)
 check("response_format уходит прямым аргументом", direct.get("response_format") == {"type": "json_object"})
+
+print("\n9. Агент")
+agent_profile, _ = profiles.load("s3")
+agent = Agent("советник", agent_profile)
+check("новый агент помнит своё имя", agent.name == "советник", agent.name)
+check("память нового агента пуста", agent.history() == [], str(agent.history()))
+# история отдаётся копией: иначе любой снаружи незаметно перепишет память агента
+снимок = agent.history()
+снимок.append({"role": "user", "content": "подброшено"})
+check("история отдаётся копией", agent.history() == [], str(agent.history()))
+agent.remember("вопрос", "ответ")
+check(
+    "готовая пара кладётся в память",
+    agent.history() == [
+        {"role": "user", "content": "вопрос"},
+        {"role": "assistant", "content": "ответ"},
+    ],
+    str(agent.history()),
+)
 
 print()
 if failures:
