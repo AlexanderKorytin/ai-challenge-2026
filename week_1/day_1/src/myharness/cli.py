@@ -37,12 +37,12 @@ from . import methods as methods_mod
 from . import params as params_mod
 from . import picker as picker_mod
 from . import screens as screens_mod
-from .agent import Agent, Turn
+from .agent import Agent
 from .api import DeepSeekClient
 from .config import Config
 from .config import load as load_config
 from .config import save as save_config
-from .output import Fragments, append_log, refresh, truncate_log, warn_journal
+from .output import Fragments, append_log, refresh, run_turn
 from .profiles import Profile
 
 
@@ -239,138 +239,7 @@ def open_work_screens(state: State, profile: Profile) -> None:
     switch_screen(state, 1)
 
 
-# ─────────────────────────────── генерация ответа ───────────────────────────────
-
-
-async def _spin(state: State, pane: screens_mod.Pane, marks: dict[str, Any] | None = None) -> None:
-    """Счётчик ожидания: крутится в своей строке, пока не пришло первое событие потока.
-
-    Место, откуда счётчик начал писать, кладём в общую с отрисовкой памятку `marks`: гасит
-    счётчик синхронный `draw_event`, дождаться отмены задачи он не может, поэтому стирает
-    строку сам — и ему нужно знать, докуда обрезать ленту."""
-    mark = len(pane.log)
-    if marks is not None:
-        marks["spin_mark"] = mark
-    i = 0
-    try:
-        while True:
-            frame = ui.SPINNER_FRAMES[i % len(ui.SPINNER_FRAMES)]
-            truncate_log(state, mark, pane)
-            append_log(state, [("class:dim", f"{frame} думаю…")], pane)
-            i += 1
-            await asyncio.sleep(0.08)
-    except asyncio.CancelledError:
-        # Обрезаем ленту только если её ещё не обрезал тот, кто нас погасил. Обрезать второй
-        # раз нельзя: к этому моменту под тем же отступом уже лежит напечатанный ответ, и
-        # `truncate_log` снёс бы его.
-        if marks is None or not marks.get("spin_cleared"):
-            truncate_log(state, mark, pane)
-        raise
-
-
-def _stop_spinner(state: State, pane: screens_mod.Pane, marks: dict[str, Any]) -> None:
-    """Погасить счётчик ожидания и стереть его строку — ровно один раз за обмен.
-
-    Отменяем задачу без ожидания: зовут отсюда и из синхронного `draw_event`, а дождаться
-    отмены можно только из корутины — это делает `run_turn` в своём `finally`."""
-    if marks.get("spin_cleared"):
-        return
-    marks["spin_cleared"] = True
-    task = marks.get("spin_task")
-    if task is not None and not task.done():
-        task.cancel()
-    mark = marks.get("spin_mark")
-    if mark is not None:
-        truncate_log(state, mark, pane)
-
-
-def draw_event(state: State, pane: screens_mod.Pane, event: api.StreamEvent, marks: dict) -> None:
-    """Нарисовать одно событие потока. Единственный обработчик на все режимы.
-
-    `marks` — память между событиями одного обмена: погашен ли счётчик ожидания, напечатан
-    ли ярлык рассуждений, напечатан ли ярлык ответа. Без неё ярлыки печатались бы перед
-    каждым куском текста.
-    """
-    _stop_spinner(state, pane, marks)
-    if event.kind == "meta":
-        return
-    if event.kind == "reasoning":
-        if not marks.get("reasoning"):
-            append_log(state, ui.reasoning_label_fragments(), pane)
-            marks["reasoning"] = True
-        append_log(state, [("class:dim", event.text)], pane)
-        return
-    if not marks.get("answer"):
-        if marks.get("reasoning"):
-            append_log(state, [("", "\n")], pane)
-        append_log(state, ui.answer_label_fragments(), pane)
-        marks["answer"] = True
-    append_log(state, [("", event.text)], pane)
-
-
-async def run_turn(
-    state: State,
-    agent_obj: Agent,
-    content: str,
-    *,
-    pane: screens_mod.Pane,
-    agent_name: str | None = None,
-    run_id: str | None = None,
-) -> Turn:
-    """Обмен агента с моделью, показанный в панели.
-
-    Разделение обязанностей: разговор целиком — за агентом (память, сборка запроса, запись
-    в журнал), показ целиком — здесь (счётчик ожидания, ярлыки, строка расхода, сообщение
-    об ошибке). Панель задаётся явно, потому что исполнители отвечают одновременно: у
-    каждого своя лента, а `State` у них общий.
-    """
-    assert state.client is not None
-    pane.status = screens_mod.BUSY
-    marks: dict[str, Any] = {}
-    marks["spin_task"] = spinner_task = asyncio.create_task(_spin(state, pane, marks))
-
-    def on_event(event: api.StreamEvent) -> None:
-        draw_event(state, pane, event, marks)
-
-    turn: Turn | None = None
-    try:
-        turn = await agent_obj.exchange(
-            state.client,
-            state.model,
-            content,
-            on_event=on_event,
-            agent=agent_name,
-            run_id=run_id,
-        )
-    finally:
-        # Счётчик мог не получить ни одного события (мгновенная ошибка, отмена) — гасим и
-        # здесь, а дождаться его отмены можно только отсюда: `draw_event` синхронный.
-        _stop_spinner(state, pane, marks)
-        with suppress(asyncio.CancelledError):
-            await spinner_task
-        pane.status = screens_mod.DONE if (turn is not None and turn.ok) else screens_mod.ERROR
-        if turn is not None and not turn.ok and turn.error:
-            # `Turn.error` бывает и не сетевой: агент кладёт сюда сбой отрисовки, но только
-            # при удавшемся обмене. Поэтому про DeepSeek говорим лишь когда обмен не удался —
-            # иначе пользователь пойдёт чинить связь, которая исправна.
-            append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {turn.error}"), pane)
-        if marks.get("reasoning") or marks.get("answer"):
-            append_log(state, [("", "\n")], pane)
-        if turn is not None and turn.ok:
-            append_log(
-                state,
-                ui.meta_fragments(turn.finish_reason, turn.usage, turn.elapsed_ms / 1000, agent_obj.profile.name),
-                pane,
-            )
-            if turn.finish_reason == "length":
-                append_log(
-                    state,
-                    ui.hint_fragments("ответ упёрся в max_tokens — увеличьте лимит: /set max_tokens"),
-                    pane,
-                )
-        if turn is not None:
-            warn_journal(state, turn.journal_error)
-    return turn
+# ─────────────────────────────── очередь запросов ───────────────────────────────
 
 
 async def worker(state: State) -> None:
@@ -1068,13 +937,6 @@ async def repl(state: State) -> None:
             await state.client.aclose()
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="myharness", description="Терминальный harness для DeepSeek API")
-    parser.add_argument("--profile", help="профиль генерации, применяемый при старте")
-    parser.add_argument("--model", help="модель DeepSeek")
-    return parser.parse_args(argv)
-
-
 def silence_transport_noise(loop: asyncio.AbstractEventLoop) -> None:
     """Глушит одно конкретное сообщение httpcore2 2.12: при обрыве ответа по max_tokens
     тело остаётся недочитанным, и закрытие потока печатает «generator didn't stop after
@@ -1097,9 +959,13 @@ def silence_transport_noise(loop: asyncio.AbstractEventLoop) -> None:
     loop.set_exception_handler(handler)
 
 
-async def _main(argv: list[str] | None = None) -> None:
+async def _main(args: argparse.Namespace) -> None:
+    """Поднять интерфейс на уже разобранных ключах.
+
+    Ключи сюда приходят готовыми (их разбирает точка входа пакета) и здесь не разбираются
+    заново: второй разбор — это второе место, где живут имена и значения по умолчанию, и
+    расходятся такие места молча."""
     silence_transport_noise(asyncio.get_running_loop())
-    args = parse_args(argv)
     cfg = load_config()
     profile_name = args.profile or os.environ.get("MYHARNESS_PROFILE") or cfg.profile
     profile, warnings = profiles.load(profile_name)
@@ -1112,6 +978,6 @@ async def _main(argv: list[str] | None = None) -> None:
     await repl(state)
 
 
-def main() -> None:
+def main(args: argparse.Namespace) -> None:
     with suppress(KeyboardInterrupt):
-        asyncio.run(_main())
+        asyncio.run(_main(args))

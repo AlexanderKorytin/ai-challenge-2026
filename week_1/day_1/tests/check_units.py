@@ -1,8 +1,10 @@
 """Проверки без обращения к DeepSeek: профили, журнал, параметры, панель выбора, дополнения."""
 
+import ast
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -444,6 +446,53 @@ check(
     len(после_отмены) == до_отмены_журнал + 1 and json.loads(после_отмены[-1])["status"] == "cancelled",
     после_отмены[-1],
 )
+
+print("\n11. Изоляция агента")
+
+# Главное свойство дня — разговор с моделью не тянет за собой интерфейс. Утверждаем это
+# проверкой, а не обещанием в описании: обещание молча перестаёт быть правдой после первого
+# же «просто добавлю сюда импорт».
+
+# Смотреть в собственный sys.modules нельзя: сам этот файл импортирует `cli`, значит
+# `prompt_toolkit` в нём уже загружен и проверка была бы всегда «зелёной». Нужен чистый
+# процесс, ничего, кроме `myharness.agent`, не импортировавший.
+КОД_ПРОБЫ = (
+    "import sys, myharness.agent; "
+    "print(','.join(sorted(m for m in sys.modules if m.startswith('prompt_toolkit'))))"
+)
+проба = subprocess.run(
+    [sys.executable, "-c", КОД_ПРОБЫ],
+    capture_output=True,
+    text=True,
+    check=False,  # ненулевой код возврата разбираем сами, ниже, — он тоже сбой проверки
+)
+подтянутое = проба.stdout.strip()
+check(
+    "импорт myharness.agent не тянет интерфейс",
+    проба.returncode == 0 and not подтянутое,
+    подтянутое or проба.stderr.strip(),
+)
+
+# Второе утверждение — про сам текст `agent.py`: каких имён в его импортах быть не должно.
+# Разбираем через `ast`, а не поиском по строкам: в модуле эти имена упоминаются в
+# пояснениях («показ целиком — в output»), и поиск по строкам споткнулся бы о комментарий,
+# объявив нарушением то, что нарушением не является.
+ЗАПРЕЩЁННЫЕ = {"cli", "screens", "team", "methods", "output", "ui", "prompt_toolkit"}
+
+исходник = Path(__file__).resolve().parents[1] / "src" / "myharness" / "agent.py"
+дерево = ast.parse(исходник.read_text(encoding="utf-8"))
+импортированное = set()
+for узел in ast.walk(дерево):
+    if isinstance(узел, ast.Import):
+        импортированное.update(псевдоним.name.split(".")[0] for псевдоним in узел.names)
+    elif isinstance(узел, ast.ImportFrom):
+        if узел.module:
+            импортированное.add(узел.module.split(".")[0])
+        # `from . import api, journal` — имя модуля лежит в самих псевдонимах
+        if узел.level and not узел.module:
+            импортированное.update(псевдоним.name.split(".")[0] for псевдоним in узел.names)
+нарушения = sorted(импортированное & ЗАПРЕЩЁННЫЕ)
+check("agent.py не импортирует интерфейс", not нарушения, ", ".join(нарушения))
 
 print()
 if failures:

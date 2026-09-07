@@ -1,21 +1,24 @@
-"""Вывод в ленту, отделённый от интерфейса.
+"""Вывод в ленту и отрисовка обмена с моделью — отдельно от интерфейса.
 
-Раньше эти функции жили в `cli.py` вместе с разметкой окна, состоянием и обработкой клавиш.
-Из-за этого оркестраторы `team` и `methods` — которым от `cli` нужна была одна лишь
-`append_log` — импортировали его лениво, прямо в телах функций: обычный импорт замкнул бы
-круг, ведь сам `cli` импортирует и `team`, и `methods`.
+Раньше это жило в `cli.py` вместе с разметкой окна, состоянием и обработкой клавиш. Из-за
+этого оркестраторы `team` и `methods` — которым от `cli` нужна была только отрисовка обмена —
+импортировали его лениво, прямо в телах функций: обычный импорт замкнул бы круг, ведь сам
+`cli` импортирует и `team`, и `methods`. Ленивый импорт круг не разрывает, а прячет.
 
-Здесь этого круга нет: модуль знает только про экраны (`screens`) и оформление (`ui`), а про
-`cli`, `prompt_toolkit` и оркестраторы — ничего. Поэтому импортировать его можно обычным
-образом, из любого места пакета.
+Здесь круга нет: модуль знает про экраны (`screens`), оформление (`ui`), поток событий (`api`)
+и собеседника (`agent`), а про `cli` и оркестраторы — ничего. Ни один из этих модулей про
+`output` не знает, поэтому импортировать его можно обычным образом, из любого места пакета.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+from contextlib import suppress
+from typing import TYPE_CHECKING, Any
 
+from . import api, ui
 from . import screens as screens_mod
-from . import ui
+from .agent import Agent, Turn
 
 if TYPE_CHECKING:  # только для подсказок типов — на импорт cli вывод не завязан
     from .cli import State
@@ -72,3 +75,137 @@ def warn_journal(state: State, error: str | None) -> None:
     if error and not state.journal_warned:
         state.journal_warned = True
         append_log(state, ui.error_fragments(error))
+
+
+# ─────────────────────────────── генерация ответа ───────────────────────────────
+
+
+async def _spin(state: State, pane: screens_mod.Pane, marks: dict[str, Any] | None = None) -> None:
+    """Счётчик ожидания: крутится в своей строке, пока не пришло первое событие потока.
+
+    Место, откуда счётчик начал писать, кладём в общую с отрисовкой памятку `marks`: гасит
+    счётчик синхронный `draw_event`, дождаться отмены задачи он не может, поэтому стирает
+    строку сам — и ему нужно знать, докуда обрезать ленту."""
+    mark = len(pane.log)
+    if marks is not None:
+        marks["spin_mark"] = mark
+    i = 0
+    try:
+        while True:
+            frame = ui.SPINNER_FRAMES[i % len(ui.SPINNER_FRAMES)]
+            truncate_log(state, mark, pane)
+            append_log(state, [("class:dim", f"{frame} думаю…")], pane)
+            i += 1
+            await asyncio.sleep(0.08)
+    except asyncio.CancelledError:
+        # Обрезаем ленту только если её ещё не обрезал тот, кто нас погасил. Обрезать второй
+        # раз нельзя: к этому моменту под тем же отступом уже лежит напечатанный ответ, и
+        # `truncate_log` снёс бы его.
+        if marks is None or not marks.get("spin_cleared"):
+            truncate_log(state, mark, pane)
+        raise
+
+
+def _stop_spinner(state: State, pane: screens_mod.Pane, marks: dict[str, Any]) -> None:
+    """Погасить счётчик ожидания и стереть его строку — ровно один раз за обмен.
+
+    Отменяем задачу без ожидания: зовут отсюда и из синхронного `draw_event`, а дождаться
+    отмены можно только из корутины — это делает `run_turn` в своём `finally`."""
+    if marks.get("spin_cleared"):
+        return
+    marks["spin_cleared"] = True
+    task = marks.get("spin_task")
+    if task is not None and not task.done():
+        task.cancel()
+    mark = marks.get("spin_mark")
+    if mark is not None:
+        truncate_log(state, mark, pane)
+
+
+def draw_event(state: State, pane: screens_mod.Pane, event: api.StreamEvent, marks: dict) -> None:
+    """Нарисовать одно событие потока. Единственный обработчик на все режимы.
+
+    `marks` — память между событиями одного обмена: погашен ли счётчик ожидания, напечатан
+    ли ярлык рассуждений, напечатан ли ярлык ответа. Без неё ярлыки печатались бы перед
+    каждым куском текста.
+    """
+    _stop_spinner(state, pane, marks)
+    if event.kind == "meta":
+        return
+    if event.kind == "reasoning":
+        if not marks.get("reasoning"):
+            append_log(state, ui.reasoning_label_fragments(), pane)
+            marks["reasoning"] = True
+        append_log(state, [("class:dim", event.text)], pane)
+        return
+    if not marks.get("answer"):
+        if marks.get("reasoning"):
+            append_log(state, [("", "\n")], pane)
+        append_log(state, ui.answer_label_fragments(), pane)
+        marks["answer"] = True
+    append_log(state, [("", event.text)], pane)
+
+
+async def run_turn(
+    state: State,
+    agent_obj: Agent,
+    content: str,
+    *,
+    pane: screens_mod.Pane,
+    agent_name: str | None = None,
+    run_id: str | None = None,
+) -> Turn:
+    """Обмен агента с моделью, показанный в панели.
+
+    Разделение обязанностей: разговор целиком — за агентом (память, сборка запроса, запись
+    в журнал), показ целиком — здесь (счётчик ожидания, ярлыки, строка расхода, сообщение
+    об ошибке). Панель задаётся явно, потому что исполнители отвечают одновременно: у
+    каждого своя лента, а `State` у них общий.
+    """
+    assert state.client is not None
+    pane.status = screens_mod.BUSY
+    marks: dict[str, Any] = {}
+    marks["spin_task"] = spinner_task = asyncio.create_task(_spin(state, pane, marks))
+
+    def on_event(event: api.StreamEvent) -> None:
+        draw_event(state, pane, event, marks)
+
+    turn: Turn | None = None
+    try:
+        turn = await agent_obj.exchange(
+            state.client,
+            state.model,
+            content,
+            on_event=on_event,
+            agent=agent_name,
+            run_id=run_id,
+        )
+    finally:
+        # Счётчик мог не получить ни одного события (мгновенная ошибка, отмена) — гасим и
+        # здесь, а дождаться его отмены можно только отсюда: `draw_event` синхронный.
+        _stop_spinner(state, pane, marks)
+        with suppress(asyncio.CancelledError):
+            await spinner_task
+        pane.status = screens_mod.DONE if (turn is not None and turn.ok) else screens_mod.ERROR
+        if turn is not None and not turn.ok and turn.error:
+            # `Turn.error` бывает и не сетевой: агент кладёт сюда сбой отрисовки, но только
+            # при удавшемся обмене. Поэтому про DeepSeek говорим лишь когда обмен не удался —
+            # иначе пользователь пойдёт чинить связь, которая исправна.
+            append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {turn.error}"), pane)
+        if marks.get("reasoning") or marks.get("answer"):
+            append_log(state, [("", "\n")], pane)
+        if turn is not None and turn.ok:
+            append_log(
+                state,
+                ui.meta_fragments(turn.finish_reason, turn.usage, turn.elapsed_ms / 1000, agent_obj.profile.name),
+                pane,
+            )
+            if turn.finish_reason == "length":
+                append_log(
+                    state,
+                    ui.hint_fragments("ответ упёрся в max_tokens — увеличьте лимит: /set max_tokens"),
+                    pane,
+                )
+        if turn is not None:
+            warn_journal(state, turn.journal_error)
+    return turn

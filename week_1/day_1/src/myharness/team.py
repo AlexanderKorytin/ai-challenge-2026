@@ -108,8 +108,6 @@ def build_summary_request(question: str, answers: list[tuple[str, str]]) -> str:
 
 async def run(state, question: str, lead: Profile, *, announce: bool = True) -> None:
     """Поднять группу ведущего профиля на этом вопросе и свести ответы."""
-    from . import cli
-
     run_id = uuid4().hex[:8]
     agents = load_agents(state, lead)
     if not agents:
@@ -128,7 +126,7 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
             board.panes.append(pane)
         pane.status = screens_mod.BUSY
         output.append_log(state, ui.agent_task_fragments(expert.name, expert.name, expert.system, question), pane)
-        tasks.append(cli.run_turn(state, pane.agent, question, pane=pane, agent_name=expert.name, run_id=run_id))
+        tasks.append(output.run_turn(state, pane.agent, question, pane=pane, agent_name=expert.name, run_id=run_id))
     turns = await asyncio.gather(*tasks)
 
     answers = [(expert.name, turn.text) for expert, turn in zip(agents, turns, strict=True) if turn.ok and turn.text]
@@ -146,7 +144,7 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
         output.append_log(
             state, ui.system_fragments("у ведущего нет своей инструкции — свожу по общему правилу"), summary_screen
         )
-    await cli.run_turn(
+    await output.run_turn(
         state,
         summary_screen.first.agent,
         build_summary_request(question, answers),

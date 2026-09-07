@@ -69,8 +69,6 @@ async def run_chain(state, screen: screens_mod.Screen, profile: Profile, questio
 
     Человеку тут копировать нечего — промпт переносится сам, и обе половины видны рядом.
     """
-    from . import cli
-
     carried = ""
     for index, pane in enumerate(screen.panes):
         step = pane.profile
@@ -79,7 +77,7 @@ async def run_chain(state, screen: screens_mod.Screen, profile: Profile, questio
         content = question if index == 0 else f"{carried.strip()}\n\n{question}"
         pane.status = screens_mod.BUSY
         output.append_log(state, ui.agent_task_fragments(pane.key, step.name, step.system, content), pane)
-        turn = await cli.run_turn(state, pane.agent, content, pane=pane)
+        turn = await output.run_turn(state, pane.agent, content, pane=pane)
         if not turn.ok:
             output.append_log(state, ui.error_fragments("шаг не дал ответа — цепочка прервана"), pane)
             return
@@ -87,12 +85,10 @@ async def run_chain(state, screen: screens_mod.Screen, profile: Profile, questio
 
 
 async def run_single(state, screen: screens_mod.Screen, profile: Profile, question: str) -> None:
-    from . import cli
-
     pane = screen.first
     pane.status = screens_mod.BUSY
     output.append_log(state, ui.user_fragments(question), pane)
-    await cli.run_turn(state, pane.agent, question, pane=pane)
+    await output.run_turn(state, pane.agent, question, pane=pane)
 
 
 async def run_all(state, question: str, holder: Profile) -> None:
