@@ -17,21 +17,19 @@ from __future__ import annotations
 
 import asyncio
 
-from . import profiles, team, ui
+from . import output, profiles, team, ui
 from . import screens as screens_mod
 from .profiles import Profile
 
 
 def load_methods(state, holder: Profile) -> list[Profile]:
-    from . import cli
-
     loaded: list[Profile] = []
     for name in holder.methods:
         profile, warnings = profiles.load(name)
         for warning in warnings:
-            cli.append_log(state, ui.error_fragments(f"способ «{name}»: {warning}"))
+            output.append_log(state, ui.error_fragments(f"способ «{name}»: {warning}"))
         if profile.name == profiles.DEFAULT_PROFILE_NAME and name != profiles.DEFAULT_PROFILE_NAME:
-            cli.append_log(state, ui.error_fragments(f"способ «{name}» пропущен: профиль не найден"))
+            output.append_log(state, ui.error_fragments(f"способ «{name}» пропущен: профиль не найден"))
             continue
         profile.name = name
         loaded.append(profile)
@@ -76,7 +74,7 @@ async def run_chain(state, screen: screens_mod.Screen, profile: Profile, questio
             continue
         content = question if index == 0 else f"{carried.strip()}\n\n{question}"
         pane.status = screens_mod.BUSY
-        cli.append_log(state, ui.agent_task_fragments(pane.key, step.name, step.system, content), pane)
+        output.append_log(state, ui.agent_task_fragments(pane.key, step.name, step.system, content), pane)
         if step.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
             pane.messages.append({"role": "user", "content": content})
         turn = await cli.generate_response(
@@ -87,7 +85,7 @@ async def run_chain(state, screen: screens_mod.Screen, profile: Profile, questio
             profile=step,
         )
         if not turn.ok:
-            cli.append_log(state, ui.error_fragments("шаг не дал ответа — цепочка прервана"), pane)
+            output.append_log(state, ui.error_fragments("шаг не дал ответа — цепочка прервана"), pane)
             return
         carried = turn.text
 
@@ -97,7 +95,7 @@ async def run_single(state, screen: screens_mod.Screen, profile: Profile, questi
 
     pane = screen.first
     pane.status = screens_mod.BUSY
-    cli.append_log(state, ui.user_fragments(question), pane)
+    output.append_log(state, ui.user_fragments(question), pane)
     if profile.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
         pane.messages.append({"role": "user", "content": question})
     await cli.generate_response(
@@ -111,11 +109,9 @@ async def run_single(state, screen: screens_mod.Screen, profile: Profile, questi
 
 async def run_all(state, question: str, holder: Profile) -> None:
     """Задать вопрос всем способам набора разом."""
-    from . import cli
-
     methods = load_methods(state, holder)
     if not methods:
-        cli.append_log(state, ui.error_fragments("ни один способ не найден — набор пуст"))
+        output.append_log(state, ui.error_fragments("ни один способ не найден — набор пуст"))
         return
     ensure_screens(state, methods)
 

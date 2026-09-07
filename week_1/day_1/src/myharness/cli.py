@@ -42,9 +42,8 @@ from .api import DeepSeekClient
 from .config import Config
 from .config import load as load_config
 from .config import save as save_config
+from .output import Fragments, append_log, refresh, truncate_log, warn_journal
 from .profiles import Profile
-
-Fragments = list[tuple[str, str]]
 
 
 @dataclass
@@ -106,37 +105,6 @@ class State:
         return self.main.first.messages
 
 
-def target_pane(state: State, target: screens_mod.Screen | screens_mod.Pane | None) -> screens_mod.Pane:
-    """Куда писать. Без указания — первая панель экрана, где пользователь работает; экран
-    вместо панели тоже принимается: у большинства экранов панель одна."""
-    if isinstance(target, screens_mod.Pane):
-        return target
-    if isinstance(target, screens_mod.Screen):
-        return target.first
-    return state.focus.first
-
-
-def append_log(
-    state: State, fragments: Fragments, target: screens_mod.Screen | screens_mod.Pane | None = None
-) -> None:
-    pane = target_pane(state, target)
-    pane.log.extend(fragments)
-    pane.line_count += sum(text.count("\n") for _, text in fragments)
-    if state.app is not None:
-        state.app.invalidate()
-
-
-def truncate_log(
-    state: State, mark: int, target: screens_mod.Screen | screens_mod.Pane | None = None
-) -> None:
-    pane = target_pane(state, target)
-    removed = pane.log[mark:]
-    pane.line_count -= sum(text.count("\n") for _, text in removed)
-    del pane.log[mark:]
-    if state.app is not None:
-        state.app.invalidate()
-
-
 def switch_screen(state: State, index: int) -> None:
     if not 0 <= index < len(state.screens) or index == state.active:
         return
@@ -175,11 +143,6 @@ def drop_agent_screens(state: State) -> None:
     завёл: сменился профиль — прежние ленты уже не о чем."""
     del state.screens[1:]
     state.active = 0
-
-
-def refresh(state: State) -> None:
-    if state.app is not None:
-        state.app.invalidate()
 
 
 # ─────────────────────────────── профиль и запрос ───────────────────────────────
@@ -292,13 +255,6 @@ async def _spin(state: State, pane: screens_mod.Pane) -> None:
     except asyncio.CancelledError:
         truncate_log(state, mark, pane)
         raise
-
-
-def record(state: State, entry: dict[str, Any]) -> None:
-    error = journal.append(entry)
-    if error and not state.journal_warned:
-        state.journal_warned = True
-        append_log(state, ui.error_fragments(error))
 
 
 @dataclass
@@ -420,7 +376,10 @@ async def generate_response(
             entry["agent"] = agent
         if run_id:
             entry["run_id"] = run_id
-        record(state, entry)
+        # промежуточная форма: на шаге 22 запись в журнал уедет внутрь агента, и здесь
+        # останется одно предупреждение о том, что журнал не пишется
+        journal_error = journal.append(entry)
+        warn_journal(state, journal_error)
     return Turn(
         status=status,
         text=answer_text,

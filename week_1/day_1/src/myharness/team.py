@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
-from . import profiles, ui
+from . import output, profiles, ui
 from . import screens as screens_mod
 from .profiles import Profile
 
@@ -34,15 +34,13 @@ SUMMARY_SUFFIX = ":summary"
 def load_agents(state, lead: Profile) -> list[Profile]:
     """Профили агентов ведущего. Пропавший профиль пропускаем с явным сообщением: молча
     подставленный default сделал бы агента безликим, а результат группы необъяснимым."""
-    from . import cli  # ленивый импорт: cli зовёт team из worker, а team — генерацию из cli
-
     loaded: list[Profile] = []
     for name in lead.agents:
         profile, warnings = profiles.load(name)
         for warning in warnings:
-            cli.append_log(state, ui.error_fragments(f"агент «{name}»: {warning}"))
+            output.append_log(state, ui.error_fragments(f"агент «{name}»: {warning}"))
         if profile.name == profiles.DEFAULT_PROFILE_NAME and name != profiles.DEFAULT_PROFILE_NAME:
-            cli.append_log(state, ui.error_fragments(f"агент «{name}» пропущен: профиль не найден"))
+            output.append_log(state, ui.error_fragments(f"агент «{name}» пропущен: профиль не найден"))
             continue
         profile.name = name
         loaded.append(profile)
@@ -92,12 +90,12 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
     run_id = uuid4().hex[:8]
     agents = load_agents(state, lead)
     if not agents:
-        cli.append_log(state, ui.error_fragments("группа не поднята: ни один профиль агента не найден"))
+        output.append_log(state, ui.error_fragments("группа не поднята: ни один профиль агента не найден"))
         return
 
     board, summary_screen = ensure_screens(state, lead, agents)
     if announce:
-        cli.append_log(state, ui.team_start_fragments([agent.name for agent in agents]))
+        output.append_log(state, ui.team_start_fragments([agent.name for agent in agents]))
 
     tasks = []
     for agent in agents:
@@ -106,7 +104,7 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
             pane = screens_mod.Pane(key=agent.name, title=agent.title or agent.name, profile=agent)
             board.panes.append(pane)
         pane.status = screens_mod.BUSY
-        cli.append_log(state, ui.agent_task_fragments(agent.name, agent.name, agent.system, question), pane)
+        output.append_log(state, ui.agent_task_fragments(agent.name, agent.name, agent.system, question), pane)
         if agent.keep_history:  # историю панели ведёт вызывающий: сборка сообщений её только читает
             pane.messages.append({"role": "user", "content": question})
         tasks.append(
@@ -125,15 +123,15 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
     answers = [(agent.name, turn.text) for agent, turn in zip(agents, turns, strict=True) if turn.ok and turn.text]
     failed = [agent.name for agent, turn in zip(agents, turns, strict=True) if not (turn.ok and turn.text)]
     for name in failed:
-        cli.append_log(state, ui.error_fragments(f"агент «{name}» ответа не дал — в сводку не попал"), summary_screen)
+        output.append_log(state, ui.error_fragments(f"агент «{name}» ответа не дал — в сводку не попал"), summary_screen)
     if not answers:
-        cli.append_log(state, ui.error_fragments("сводить нечего: ни один агент не ответил"), summary_screen)
+        output.append_log(state, ui.error_fragments("сводить нечего: ни один агент не ответил"), summary_screen)
         return
 
-    cli.append_log(state, ui.team_summary_label_fragments(len(answers)), summary_screen)
+    output.append_log(state, ui.team_summary_label_fragments(len(answers)), summary_screen)
     instruction = lead.system or DEFAULT_LEAD_INSTRUCTION
     if not lead.system:
-        cli.append_log(
+        output.append_log(
             state, ui.system_fragments("у ведущего нет своей инструкции — свожу по общему правилу"), summary_screen
         )
     await cli.generate_response(
