@@ -554,6 +554,92 @@ def cmd_team(state: State, arg: str) -> None:
         append_log(state, ui.queued_fragments(state.queue.qsize()))
 
 
+# ─────────────────────────────── список агентов ───────────────────────────────
+
+
+@dataclass
+class AgentRow:
+    """Один агент в списке `/agents`: сам собеседник и адрес его панели.
+
+    Адрес храним номерами экрана и панели, а не ссылкой на них: переход делают
+    `switch_screen` и `switch_pane`, а они работают именно по номерам."""
+
+    agent: Agent
+    pane: screens_mod.Pane
+    screen_index: int
+    pane_index: int
+    screen_title: str
+    status: str
+
+
+def collect_agents(state: State) -> list[AgentRow]:
+    """Все поднятые агенты — в том же порядке, в каком идут вкладки и панели на них.
+
+    Порядок не косметика: список читают вместе с полосой вкладок, и если он переставит
+    агентов по-своему, сопоставлять придётся по именам вместо номера строки.
+
+    Панель без собеседника пропускаем. Сейчас такой нет — панель заводит агента сама, как
+    только у неё есть профиль, — но список не то место, где стоит падать: его открывают,
+    когда с агентами уже что-то не так."""
+    rows: list[AgentRow] = []
+    for screen_index, screen in enumerate(state.screens):
+        for pane_index, pane in enumerate(screen.panes):
+            if pane.agent is None:
+                continue
+            rows.append(
+                AgentRow(
+                    agent=pane.agent,
+                    pane=pane,
+                    screen_index=screen_index,
+                    pane_index=pane_index,
+                    screen_title=screen.title,
+                    status=pane.status,
+                )
+            )
+    return rows
+
+
+def open_agent_picker(state: State) -> None:
+    """`/agents` — кто поднят, сколько проработал и во что обошёлся; Enter — перейти к нему.
+
+    Отдельную панель под это не заводим: список со стрелками и выбором — ровно то, что уже
+    умеет `picker`, и он же уже кликается мышью. Четвёртая своя панель отличалась бы от трёх
+    остальных мелочами поведения, и чинить их пришлось бы порознь."""
+    rows = collect_agents(state)
+    if not rows:
+        append_log(state, ui.system_fragments("запущенных агентов нет"))
+        return
+    cells = ui.agent_rows(
+        [
+            (row.status, row.agent.name, row.agent.profile.name, row.agent.total_ms, row.agent.total_tokens, row.agent.runs)
+            for row in rows
+        ]
+    )
+    current = state.screen.pane
+    items: list[picker_mod.Item] = []
+    marked: int | None = None
+    for row, (label, hint) in zip(rows, cells, strict=True):
+        if row.screen_index == state.active and row.pane is current:
+            marked = len(items)
+        items.append(picker_mod.Item(label=label, hint=hint, payload=(row.screen_index, row.pane_index)))
+
+    def choose(payload: Any) -> None:
+        state.picker = None
+        screen_index, pane_index = payload
+        switch_screen(state, screen_index)
+        switch_pane(state, pane_index)
+
+    state.picker = picker_mod.Picker(
+        title="/agents — запущенные агенты",
+        description="Enter — перейти на экран и панель агента",
+        items=items,
+        on_choose=choose,
+        index=marked or 0,
+        marked=marked,
+    )
+    refresh(state)
+
+
 async def handle_command(text: str, state: State) -> bool:
     parts = text.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -578,6 +664,8 @@ async def handle_command(text: str, state: State) -> bool:
         append_log(state, ui.system_prompt_fragments(source.name, source.system))
     elif cmd == "/team":
         cmd_team(state, arg)
+    elif cmd == "/agents":
+        open_agent_picker(state)
     elif cmd == "/mouse":
         toggle_mouse(state)
     elif cmd == "/clear":

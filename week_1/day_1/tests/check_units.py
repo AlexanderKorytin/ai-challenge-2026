@@ -36,8 +36,8 @@ os.environ["MYHARNESS_CONFIG_DIR"] = str(tmp / "config")
 os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
 
 from myharness import api, journal, params as params_mod, picker as picker_mod, profiles, ui  # noqa: E402
-from myharness import batch, cli, team  # noqa: E402
-from myharness.agent import Agent
+from myharness import batch, cli, screens as screens_mod, team  # noqa: E402
+from myharness.agent import Agent, usage_tokens
 from myharness.config import Config  # noqa: E402
 
 print("\n1. Профили")
@@ -357,6 +357,40 @@ check(
     len(пара_обменов.calls[1]["messages"]) == 4,
     str(пара_обменов.calls[1]["messages"]),
 )
+
+# Шаг 61. Агент копит свою статистику: сколько обменов, сколько времени, сколько токенов.
+# Считаем ВСЕ обмены, включая упавшие и отменённые: время на них потрачено, а список,
+# показывающий только удачные, рисует агента дешевле, чем он есть на самом деле.
+
+
+class МедленныйStubClient(StubClient):
+    """Тот же подставной клиент, но с крошечной задержкой перед первым событием.
+
+    Без неё обмен укладывается в микросекунды, `total_ms` считает целые миллисекунды и
+    остаётся нулём — и проверка «время копится» ничего бы не проверяла."""
+
+    async def stream_chat(self, model, messages, params=None):
+        await asyncio.sleep(0.01)
+        async for событие in super().stream_chat(model, messages, params):
+            yield событие
+
+
+check("расход берётся из total_tokens, когда сервер его дал", usage_tokens({"total_tokens": 100, "prompt_tokens": 7}) == 100)
+check("без total_tokens слагаемые складываются", usage_tokens({"prompt_tokens": 12, "completion_tokens": 3}) == 15)
+check("без usage расход считается нулём, а не ошибкой", usage_tokens(None) == 0 and usage_tokens({}) == 0)
+
+# ОТКУДА ЧИСЛА: подставной клиент отдаёт usage с 12 и 3 — по 15 токенов за обмен, за два 30.
+профиль_счетовода, _ = profiles.load("s3")
+счетовод = Agent("счетовод", профиль_счетовода)
+медленный = МедленныйStubClient()
+asyncio.run(счетовод.exchange(медленный, "deepseek-v4-flash", "вопрос 1"))
+asyncio.run(счетовод.exchange(медленный, "deepseek-v4-flash", "вопрос 2"))
+check("два обмена посчитаны", счетовод.runs == 2, str(счетовод.runs))
+check("время обменов накоплено", счетовод.total_ms > 0, str(счетовод.total_ms))
+check("токены сложены по обоим ответам", счетовод.total_tokens == 30, str(счетовод.total_tokens))
+asyncio.run(счетовод.exchange(StubClient(error=RuntimeError("сеть упала")), "deepseek-v4-flash", "вопрос 3"))
+check("упавший обмен посчитан наравне с удачными", счетовод.runs == 3, str(счетовод.runs))
+check("но токенов упавший обмен не прибавил", счетовод.total_tokens == 30, str(счетовод.total_tokens))
 
 # Шаг 18. Сбой не оставляет следа в памяти.
 до_сбоя = len(беседа.history())
@@ -885,6 +919,31 @@ check(
 сотня[0].remember("вопрос первому", "ответ первого")
 check("памяти у них независимые", сотня[99].history() == [], str(сотня[99].history()))
 check("создание уложилось в секунду", затрачено < 1.0, f"{затрачено:.3f} с")
+
+print("\n15. Строки списка агентов")
+
+# Форматирование проверяем отдельно от приложения: это чистые функции, и их края —
+# ноль обменов, круглые минуты, тысячи токенов — в живом прогоне не поймать.
+check("секунды до минуты", ui.format_duration(12_400) == "12.4 с", ui.format_duration(12_400))
+check("после минуты — минуты и секунды", ui.format_duration(382_000) == "6 м 22 с", ui.format_duration(382_000))
+check("ровно минута уже не секунды", ui.format_duration(60_000) == "1 м 0 с", ui.format_duration(60_000))
+check("токены до тысячи — как есть", ui.format_tokens(46) == "46", ui.format_tokens(46))
+check("тысячи сокращаются", ui.format_tokens(92_417) == "92.4k", ui.format_tokens(92_417))
+
+строки = ui.agent_rows(
+    [
+        (screens_mod.DONE, "analyst", "analyst", 12_400, 92_417, 3),
+        (screens_mod.ERROR, "critic", "critic", 900, 0, 1),
+        (screens_mod.IDLE, "lead:summary", "lead", 0, 0, 0),
+    ]
+)
+метки = [метка for метка, _ in строки]
+подсказки = [подсказка for _, подсказка in строки]
+check("состояние показано тем же значком, что на вкладках", метки[0].startswith("✓") and метки[1].startswith("✕"), str(метки))
+check("имя и профиль выровнены по самому длинному", all(len(метка) == len(метки[0]) for метка in метки), str(метки))
+check("время и токены в строке", "12.4 с" in подсказки[0] and "92.4k" in подсказки[0], подсказки[0])
+check("упавший агент назван ошибкой, а его время посчитано", "ошибка" in подсказки[1] and "0.9 с" in подсказки[1], подсказки[1])
+check("ещё не отвечавший агент показан прочерками, а не нулями", "—" in подсказки[2] and "0" not in подсказки[2], подсказки[2])
 
 print()
 if failures:

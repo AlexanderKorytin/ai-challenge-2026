@@ -3,6 +3,11 @@
 Используется и для выбора параметра, и для выбора его значения. Панель модальна: пока
 она открыта, ввод в строку не проходит — иначе выбор стрелками и печать текста мешали бы
 друг другу.
+
+Строку можно выбрать и мышью: обработчик висит прямо на фрагменте текста строки — тем же
+способом, каким кликаются вкладки. Как и там, мышь работает, только когда она отдана
+harness (F2 или `/mouse`): по умолчанию она у терминала, чтобы текст выделялся обычным
+образом.
 """
 
 from __future__ import annotations
@@ -10,6 +15,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 
 Fragments = list[tuple[str, str]]
 
@@ -42,6 +49,23 @@ class Picker:
             self.on_choose(self.items[self.index].payload)
 
 
+def _row_click(picker: Picker, index: int) -> Callable[[MouseEvent], Any]:
+    """Клик по строке: подвести выбор к ней и сразу применить.
+
+    Именно применить, а не только подсветить: панель модальна, и клик, который лишь
+    переставил бы подсветку, оставлял бы пользователя дожимать Enter — то есть требовал бы
+    и мыши, и клавиатуры там, где хватает одного движения."""
+
+    def handler(mouse_event: MouseEvent) -> Any:
+        if mouse_event.event_type == MouseEventType.MOUSE_UP:
+            picker.index = index
+            picker.choose()
+            return None
+        return NotImplemented  # прочие события мыши пусть обрабатывает prompt_toolkit
+
+    return handler
+
+
 def fragments(picker: Picker) -> Fragments:
     rows: list[tuple[str, str]] = []  # (метка, подсказка)
     for i, item in enumerate(picker.items):
@@ -54,12 +78,20 @@ def fragments(picker: Picker) -> Fragments:
         + [label_width + (len(hint) + 3 if hint else 0) for label, hint in rows]
     )
 
-    def line(inner: Fragments) -> Fragments:
+    def line(inner: Fragments, click: Callable[[MouseEvent], Any] | None = None) -> Fragments:
         used = sum(len(text) for _, text in inner)
+        pad = " " * max(0, content_width - used)
+        if click is None:
+            return (
+                [("class:panel.border", "│ ")]
+                + inner
+                + [("class:panel", pad), ("class:panel.border", " │\n")]
+            )
+        # Обработчик вешаем и на отбивку справа: попасть мышью надо в строку, а не в буквы.
         return (
             [("class:panel.border", "│ ")]
-            + inner
-            + [("class:panel", " " * max(0, content_width - used)), ("class:panel.border", " │\n")]
+            + [(style, text, click) for style, text in inner]
+            + [("class:panel", pad, click), ("class:panel.border", " │\n")]
         )
 
     out: Fragments = [("class:panel.border", "╭─" + "─" * content_width + "─╮\n")]
@@ -74,7 +106,7 @@ def fragments(picker: Picker) -> Fragments:
         inner: Fragments = [(item_style, label.ljust(label_width))]
         if hint:
             inner.append((hint_style, f"   {hint}"))
-        out += line(inner)
+        out += line(inner, _row_click(picker, i))
     out += [("class:panel.border", "├─" + "─" * content_width + "─┤\n")]
     out += line([("class:panel.footer", picker.footer)])
     out += [("class:panel.border", "╰─" + "─" * content_width + "─╯")]

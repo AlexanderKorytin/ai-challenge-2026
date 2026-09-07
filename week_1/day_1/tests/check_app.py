@@ -29,7 +29,7 @@ from prompt_toolkit.output import DummyOutput  # noqa: E402
 from prompt_toolkit.data_structures import Point  # noqa: E402
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType  # noqa: E402
 
-from myharness import api, cli, profiles, ui  # noqa: E402
+from myharness import api, cli, picker as picker_mod, profiles, ui  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 failures = []
@@ -117,7 +117,7 @@ async def main():
         buffer = app.layout.get_buffer_by_name("text-area") or app.current_buffer
         check("список команд открылся без Enter", buffer.complete_state is not None)
         count = len(buffer.complete_state.completions) if buffer.complete_state else 0
-        check("в списке команды авторизованного, без /auth", count == 10, f"их {count}")
+        check("в списке команды авторизованного, без /auth", count == 11, f"их {count}")
 
         await send(DOWN)
         check("стрелка выбирает пункт", buffer.complete_state.current_completion is not None)
@@ -394,7 +394,69 @@ async def main():
         check("и возвращает сетку", state.screen.zoomed is False)
         cli.switch_screen(state, 0)
 
-        print("\n10. Выход")
+        print("\n10. Список запущенных агентов")
+        # Группа поднимается заново, поверх набора способов: так в списке заведомо есть и
+        # отвечавшие агенты, и один не отвечавший — собеседник главного экрана. Смена
+        # профиля заводит его заново, поэтому прежние обмены на него не переносятся.
+        await send("/profile lead" + ENTER, pause=0.3)
+        await send("кто из вас прав?" + ENTER, pause=0.9)
+        await send("/agents" + ENTER, pause=0.3)
+        check("панель списка открылась", state.picker is not None)
+        labels = [item.label for item in state.picker.items]
+        hints = [item.hint for item in state.picker.items]
+        # Агентов ровно четыре: собеседник главного экрана, два эксперта и ведущий на сводке.
+        check(
+            "в списке все поднятые агенты",
+            len(labels) == 4 and any("analyst" in row for row in labels) and any("critic" in row for row in labels),
+            str(labels),
+        )
+        check(
+            "порядок строк повторяет порядок вкладок и панелей",
+            [row.split()[1] for row in labels] == ["main", "analyst", "critic", "lead:summary"],
+            str(labels),
+        )
+        critic_index = next(i for i, row in enumerate(labels) if "critic" in row)
+        check(
+            "у отвечавшего агента посчитаны токены",
+            "46" in hints[critic_index] and "с" in hints[critic_index],
+            hints[critic_index],
+        )
+        main_index = next(i for i, row in enumerate(labels) if "main" in row)
+        check(
+            "агент, который ещё не отвечал, показан прочерками",
+            hints[main_index].count("—") == 2,
+            hints[main_index],
+        )
+        # Клик мышью по строке эксперта: обработчик висит на самом фрагменте текста, как
+        # у вкладок. Пользователь просил именно клик — проверяем тем же способом, каким
+        # проверен клик по вкладке.
+        panel = picker_mod.fragments(state.picker)
+        row_handler = next(
+            f[2] for f in panel if len(f) == 3 and "critic" in f[1]
+        )
+        row_handler(MouseEvent(position=Point(0, 0), event_type=MouseEventType.MOUSE_UP, button=MouseButton.LEFT, modifiers=frozenset()))
+        check("панель закрылась после выбора", state.picker is None)
+        check(
+            "клик по строке переводит на экран и панель агента",
+            state.screen.key == "lead" and state.screen.pane.key == "critic",
+            f"{state.screen.key} / {state.screen.pane.key}",
+        )
+
+        # И то же самое клавишами — второй путь к тому же месту.
+        cli.switch_screen(state, 0)
+        cli.switch_pane(state, 0)
+        await send("/agents" + ENTER, pause=0.3)
+        labels = [item.label for item in state.picker.items]
+        critic_index = next(i for i, row in enumerate(labels) if "critic" in row)
+        await send(DOWN * (critic_index - state.picker.index) + ENTER, pause=0.3)
+        check(
+            "выбор строки клавишами переводит туда же",
+            state.picker is None and state.screen.key == "lead" and state.screen.pane.key == "critic",
+            f"{state.screen.key} / {state.screen.pane.key}",
+        )
+        cli.switch_screen(state, 0)
+
+        print("\n11. Выход")
         await send("/exit" + ENTER)
         await asyncio.sleep(0.15)
         check("приложение завершилось", run.done())
