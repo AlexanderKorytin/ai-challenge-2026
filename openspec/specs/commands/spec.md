@@ -8,11 +8,12 @@
 
 ### Requirement: Состав команд
 Инструмент SHALL предоставлять команды `/auth`, `/help`, `/model`, `/profile`, `/params`, `/set`,
-`/system`, `/team`, `/mouse`, `/clear`, `/exit`.
+`/system`, `/team`, `/agents`, `/mouse`, `/clear`, `/exit`.
 
 #### Scenario: справка
 - **WHEN** вызвана `/help`
 - **THEN** показаны команды и горячие клавиши
+- **AND** в перечне есть `/agents`
 
 ### Requirement: Меню показывает только применимые команды
 Пока ключ не задан, в меню команд SHALL быть видна `/auth` и команды, не требующие ключа. После
