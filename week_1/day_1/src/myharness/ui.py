@@ -72,6 +72,7 @@ COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("/set", "<параметр>", "изменить параметр — меню выбора значения", True),
     ("/system", "", "показать текущую системную инструкцию", True),
     ("/team", "[вопрос]", "поднять группу агентов из профиля-ведущего", True),
+    ("/agents", "", "список запущенных агентов — переход на экран агента", True),
     ("/mouse", "", "отдать мышь harness и обратно (F2) — клики по вкладкам вместо выделения", False),
     ("/clear", "", "очистить историю диалога", True),
     ("/exit", "", "выход", False),
@@ -126,7 +127,7 @@ def banner_fragments(model: str, authorized: bool, profile: str) -> Fragments:
 
 
 def status_fragments(
-    model: str, authorized: bool, profile: str, profile_dirty: bool, mouse_enabled: bool = False
+    model: str, authorized: bool, profile: str, profile_dirty: bool, mouse_enabled: bool = True
 ) -> Fragments:
     """Живая строка состояния внизу экрана. Шапка печатается один раз и остаётся историей,
     а здесь всегда актуальное: после /auth статус меняется сразу, без перезапуска."""
@@ -141,8 +142,8 @@ def status_fragments(
     out.append(("class:status.value", profile))
     if profile_dirty:
         out.append(("class:status.bad", " (изменён)"))
-    if mouse_enabled:
-        out.append(("class:status.bad", "  ·  мышь у harness — выделение недоступно (F2)"))
+    if not mouse_enabled:
+        out.append(("class:status.bad", "  ·  мышь отдана терминалу — клики не действуют (F2)"))
     out.append(("class:status", " "))
     return out
 
@@ -191,6 +192,65 @@ def pane_title_fragments(title: str, status: str, active: bool) -> Fragments:
     mark, _ = STATUS_MARKS.get(status, STATUS_MARKS[screens_mod.IDLE])
     style = "class:pane.title.active" if active else "class:pane.title"
     return [(style, f" {'▸ ' if active else ''}{title} {mark}")]
+
+
+# Слово к значку состояния. Значок один в один тот же, что на вкладках (`STATUS_MARKS`), —
+# иначе в двух местах экрана одно и то же состояние выглядело бы по-разному. Слово рядом
+# нужно потому, что список читают, когда что-то пошло не так, и гадать по одному значку в
+# такой момент — лишняя работа.
+AGENT_STATE_WORDS: dict[str, str] = {
+    screens_mod.IDLE: "ждёт",
+    screens_mod.BUSY: "занят",
+    screens_mod.DONE: "готов",
+    screens_mod.ERROR: "ошибка",
+}
+
+
+def format_duration(ms: int) -> str:
+    """Время работы по-человечески: до минуты — секундами, дальше — минутами и секундами.
+
+    «382.4 с» формально верно и нечитаемо: чтобы понять, много это или мало, приходится
+    делить в уме. Доли секунды после минуты не нужны — на таком масштабе они ничего не решают."""
+    seconds = ms / 1000
+    if seconds < 60:
+        return f"{seconds:.1f} с"
+    return f"{int(seconds) // 60} м {int(seconds) % 60} с"
+
+
+def format_tokens(count: int) -> str:
+    """Расход токенов: до тысячи — как есть, дальше — сокращением вида «92.4k».
+
+    Считать нули в «92417» глазом невозможно, а в списке важен порядок величины: кто из
+    агентов съел заметно больше остальных."""
+    if count < 1000:
+        return str(count)
+    return f"{count / 1000:.1f}k"
+
+
+def agent_rows(rows: list[tuple[str, str, str, int, int, int]]) -> list[tuple[str, str]]:
+    """Строки списка `/agents`: слева состояние и имя, справа время работы и токены.
+
+    На вход — (состояние, имя, профиль, миллисекунды, токены, число обменов); на выход —
+    пары (метка, подсказка) для панели выбора.
+
+    Ширины колонок считаются по самому списку, а не берутся с потолка: имена агентов бывают
+    и в три знака, и в двадцать, а сравнивать расход глазом можно только когда числа стоят
+    друг под другом.
+
+    Агент без единого обмена показывается прочерками, а не нулями. Ноль — это «работал и
+    ничего не потратил», чего не бывает; прочерк честно говорит «ещё не отвечал»."""
+    name_width = max((len(name) for _, name, _, _, _, _ in rows), default=0)
+    profile_width = max((len(profile) for _, _, profile, _, _, _ in rows), default=0)
+    state_width = max(len(word) for word in AGENT_STATE_WORDS.values())
+    out: list[tuple[str, str]] = []
+    for status, name, profile, total_ms, total_tokens, runs in rows:
+        mark, _ = STATUS_MARKS.get(status, STATUS_MARKS[screens_mod.IDLE])
+        elapsed = format_duration(total_ms) if runs else "—"
+        tokens = format_tokens(total_tokens) if runs else "—"
+        label = f"{mark} {name.ljust(name_width)}   {profile.ljust(profile_width)}"
+        word = AGENT_STATE_WORDS.get(status, status)
+        out.append((label, f"{word.ljust(state_width)}  {elapsed.rjust(9)}  {tokens.rjust(8)}"))
+    return out
 
 
 def methods_fragments(names: list[str]) -> Fragments:
@@ -372,6 +432,8 @@ def help_fragments() -> Fragments:
         "системной инструкцией, ответы приходят на отдельные экраны, а профиль-ведущий\n"
         "сводит их в общий вывод. Экраны агентов — только для чтения: постановка задачи,\n"
         "рассуждения и ответ. Переключение — клик по вкладке, Alt+N или Shift+←/→.\n"
+        "/agents показывает всех поднятых агентов со временем работы и расходом токенов;\n"
+        "Enter на строке переводит на экран и панель выбранного агента.\n"
         "\n"
         "Профиль со списком screens раскладывает приём по вкладкам: у каждого экрана своя\n"
         "инструкция и своя заготовка ввода, и ввод уходит в тот экран, который открыт.\n"

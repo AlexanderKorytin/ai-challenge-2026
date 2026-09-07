@@ -29,7 +29,7 @@ from prompt_toolkit.output import DummyOutput  # noqa: E402
 from prompt_toolkit.data_structures import Point  # noqa: E402
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType  # noqa: E402
 
-from myharness import api, cli, profiles, ui  # noqa: E402
+from myharness import api, cli, picker as picker_mod, profiles, ui  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 failures = []
@@ -117,7 +117,7 @@ async def main():
         buffer = app.layout.get_buffer_by_name("text-area") or app.current_buffer
         check("список команд открылся без Enter", buffer.complete_state is not None)
         count = len(buffer.complete_state.completions) if buffer.complete_state else 0
-        check("в списке команды авторизованного, без /auth", count == 10, f"их {count}")
+        check("в списке команды авторизованного, без /auth", count == 11, f"их {count}")
 
         await send(DOWN)
         check("стрелка выбирает пункт", buffer.complete_state.current_completion is not None)
@@ -194,6 +194,64 @@ async def main():
         check("в записи слепок профиля с параметрами", "temperature" in record["profile"]["params"])
         check("в записи причина остановки и токены", record["finish_reason"] == "length" and record["usage"]["completion_tokens"] == 34)
         check("ключ в журнал не попал", "sk-test" not in json.dumps(record, ensure_ascii=False))
+
+        print("\n6a. История разговора")
+        # Профиль с накоплением истории: два вопроса подряд обязаны попасть в один разговор.
+        profiles_dir = tmp / "profiles"
+        (profiles_dir / "talky.json").write_text(
+            json.dumps({"name": "talky", "system": "болтай", "keep_history": True}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        await send("/profile talky" + ENTER, pause=0.25)
+        before = len(fake.calls)
+        await send("первый вопрос" + ENTER, pause=0.4)
+        await send("второй вопрос" + ENTER, pause=0.4)
+        first, second = fake.calls[before], fake.calls[before + 1]
+        # Подставной клиент всегда отдаёт содержимое ответа, значит после первого обмена
+        # в истории лежит ровно одна пара «вопрос — ответ» = 2 сообщения. Системная
+        # инструкция кладётся поверх истории и в саму историю не входит.
+        check(
+            "в первый запрос ушли только инструкция и вопрос",
+            len(first["messages"]) == 2,
+            str([m["role"] for m in first["messages"]]),
+        )
+        check(
+            "во второй запрос ушла история предыдущего обмена",
+            len(second["messages"]) == 4,
+            str([m["role"] for m in second["messages"]]),
+        )
+        check(
+            "роли второго запроса идут по порядку",
+            [m["role"] for m in second["messages"]] == ["system", "user", "assistant", "user"],
+            str([m["role"] for m in second["messages"]]),
+        )
+        check(
+            "в истории лежит первый вопрос, а не второй",
+            second["messages"][1]["content"] == "первый вопрос",
+            repr(second["messages"][1]["content"]),
+        )
+
+        print("\n6b. Обрезка памяти видна пользователю")
+        # Молчаливая обрезка недопустима: первая же потерянная отсылка («сделай короче», а
+        # сокращать уже нечего) будет отлажена пользователем как «модель поглупела». Поле
+        # `dropped_pairs` само по себе ничего не значит — важно, что о нём СКАЗАНО в ленте.
+        # ОТКУДА ЧИСЛА: окно — 1 пара, запас обрезки — 5, значит порог 1 + 5 = 6 пар. Кладём
+        # в память ровно шесть пар и задаём вопрос: обрезка выбрасывает весь запас — 5 пар.
+        (profiles_dir / "forgetful.json").write_text(
+            json.dumps(
+                {"name": "forgetful", "system": "помни немного", "keep_history": True, "history_window": 1},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        await send("/profile forgetful" + ENTER, pause=0.25)
+        for номер in range(6):
+            state.main_agent.remember(f"старый вопрос {номер}", f"старый ответ {номер}")
+        mark = len(state.main.first.log)
+        await send("свежий вопрос" + ENTER, pause=0.4)
+        свежее = fragments_text(state.main.first.log[mark:])
+        check("про обрезку памяти сказано в ленте", "память обрезана" in свежее, свежее[-200:])
+        check("названо, сколько пар выброшено", "выброшено 5 пар" in свежее, свежее[-200:])
 
         print("\n7. Группа агентов")
         profiles_dir = tmp / "profiles"
@@ -306,16 +364,20 @@ async def main():
         check("набранное вручную заготовка не затирает", buffer.text == "своё")
         buffer.text = ""
 
-        check("мышь по умолчанию у терминала — текст выделяется сразу", state.mouse_enabled is False)
-        check("приложение мышь не перехватывает", app.mouse_support() is False)
+        # Поведение изменено осознанно: мышь у harness всегда. Прежний переключатель «или клики,
+        # или выделение» опирался на ложный выбор — губило выделение отслеживание перетаскивания
+        # (1003h), а не сами клики. Приложение просит у терминала только нажатия, поэтому клики
+        # и выделение текста уживаются без команд.
+        check("мышь у harness сразу — клики работают без команд", state.mouse_enabled is True)
+        check("приложение перехватывает мышь с самого начала", app.mouse_support() is True)
+        check("строка состояния молчит, пока всё в порядке", not any("отдана терминалу" in text for text in screen_texts(app)))
         app.key_processor.feed(KeyPress(Keys.F2, "\x1bOQ"))
         app.key_processor.process_keys()
         await asyncio.sleep(0.15)
-        check("F2 отдаёт мышь harness — работают клики по вкладкам", state.mouse_enabled is True)
-        check("приложение начало перехватывать мышь", app.mouse_support() is True)
-        check("в строке состояния видно, что выделение недоступно", any("мышь у harness" in text for text in screen_texts(app)))
+        check("F2 — аварийный выход: мышь целиком терминалу", state.mouse_enabled is False and app.mouse_support() is False)
+        check("о потере кликов сказано в строке состояния", any("отдана терминалу" in text for text in screen_texts(app)))
         await send("/mouse" + ENTER, pause=0.2)
-        check("/mouse возвращает мышь терминалу", state.mouse_enabled is False and app.mouse_support() is False)
+        check("/mouse возвращает мышь harness", state.mouse_enabled is True and app.mouse_support() is True)
 
         print("\n9. Набор способов: один вопрос — все подходы сразу")
         (profiles_dir / "plain.json").write_text(
@@ -358,7 +420,133 @@ async def main():
         check("и возвращает сетку", state.screen.zoomed is False)
         cli.switch_screen(state, 0)
 
-        print("\n10. Выход")
+        print("\n10. Список запущенных агентов")
+        # Группа поднимается заново, поверх набора способов: так в списке заведомо есть и
+        # отвечавшие агенты, и один не отвечавший — собеседник главного экрана. Смена
+        # профиля заводит его заново, поэтому прежние обмены на него не переносятся.
+        await send("/profile lead" + ENTER, pause=0.3)
+        await send("кто из вас прав?" + ENTER, pause=0.9)
+        await send("/agents" + ENTER, pause=0.3)
+        check("панель списка открылась", state.picker is not None)
+        labels = [item.label for item in state.picker.items]
+        hints = [item.hint for item in state.picker.items]
+        # Агентов ровно четыре: собеседник главного экрана, два эксперта и ведущий на сводке.
+        check(
+            "в списке все поднятые агенты",
+            len(labels) == 4 and any("analyst" in row for row in labels) and any("critic" in row for row in labels),
+            str(labels),
+        )
+        check(
+            "порядок строк повторяет порядок вкладок и панелей",
+            [row.split()[1] for row in labels] == ["main", "analyst", "critic", "lead:summary"],
+            str(labels),
+        )
+        critic_index = next(i for i, row in enumerate(labels) if "critic" in row)
+        check(
+            "у отвечавшего агента посчитаны токены",
+            "46" in hints[critic_index] and "с" in hints[critic_index],
+            hints[critic_index],
+        )
+        main_index = next(i for i, row in enumerate(labels) if "main" in row)
+        check(
+            "агент, который ещё не отвечал, показан прочерками",
+            hints[main_index].count("—") == 2,
+            hints[main_index],
+        )
+        # Клик мышью по строке эксперта: обработчик висит на самом фрагменте текста, как
+        # у вкладок. Пользователь просил именно клик — проверяем тем же способом, каким
+        # проверен клик по вкладке.
+        panel = picker_mod.fragments(state.picker)
+        row_handler = next(
+            f[2] for f in panel if len(f) == 3 and "critic" in f[1]
+        )
+        row_handler(MouseEvent(position=Point(0, 0), event_type=MouseEventType.MOUSE_UP, button=MouseButton.LEFT, modifiers=frozenset()))
+        check("панель закрылась после выбора", state.picker is None)
+        check(
+            "клик по строке переводит на экран и панель агента",
+            state.screen.key == "lead" and state.screen.pane.key == "critic",
+            f"{state.screen.key} / {state.screen.pane.key}",
+        )
+
+        # И то же самое клавишами — второй путь к тому же месту.
+        cli.switch_screen(state, 0)
+        cli.switch_pane(state, 0)
+        await send("/agents" + ENTER, pause=0.3)
+        labels = [item.label for item in state.picker.items]
+        critic_index = next(i for i, row in enumerate(labels) if "critic" in row)
+        await send(DOWN * (critic_index - state.picker.index) + ENTER, pause=0.3)
+        check(
+            "выбор строки клавишами переводит туда же",
+            state.picker is None and state.screen.key == "lead" and state.screen.pane.key == "critic",
+            f"{state.screen.key} / {state.screen.pane.key}",
+        )
+        cli.switch_screen(state, 0)
+
+        print("\n11. Цепочка вкладками: каждый шаг на своей вкладке")
+        # Раскладка панелями (раздел 9) остаётся умолчанием — здесь профиль цепочки просит
+        # «tabs», и те же самые шаги должны разъехаться по отдельным вкладкам, не потеряв
+        # передачу работы между собой.
+        (profiles_dir / "tab_ask.json").write_text(
+            json.dumps(
+                {"name": "tab_ask", "title": "постановка", "system": "составь промпт", "keep_history": False},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (profiles_dir / "tab_solve.json").write_text(
+            json.dumps({"name": "tab_solve", "title": "решение", "keep_history": False}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (profiles_dir / "two_tabs.json").write_text(
+            json.dumps(
+                {"name": "two_tabs", "title": "по вкладкам", "screens": ["tab_ask", "tab_solve"], "layout": "tabs"},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (profiles_dir / "task_tabs.json").write_text(
+            json.dumps({"name": "task_tabs", "methods": ["plain", "two_tabs"]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        await send("/profile task_tabs" + ENTER, pause=0.3)
+        keys = [s.key for s in state.screens]
+        check(
+            "у цепочки с layout=tabs по вкладке на шаг, ключ несёт имя цепочки",
+            keys == ["main", "plain", "two_tabs:tab_ask", "two_tabs:tab_solve"],
+            str(keys),
+        )
+        titles = [s.title for s in state.screens[2:]]
+        check("заголовки вкладок различимы и взяты у профилей шагов", titles == ["постановка", "решение"], str(titles))
+        check(
+            "вкладки шагов только на просмотр — ввод уходит в главный экран",
+            all(not s.interactive for s in state.screens[2:]) and state.active == 0,
+        )
+
+        before = len(fake.calls)
+        await send("как из рубашки сделать птицу?" + ENTER, pause=1.2)
+        ask_tab, solve_tab = state.screens[2], state.screens[3]
+        check(
+            "каждый шаг ответил в свою вкладку",
+            '"status": "ok"' in log_text(state, ask_tab) and '"status": "ok"' in log_text(state, solve_tab),
+            log_text(state, solve_tab),
+        )
+        solve_calls = [
+            c
+            for c in fake.calls[before:]
+            if c["messages"][-1]["content"].count("как из рубашки") == 1 and "{" in c["messages"][-1]["content"]
+        ]
+        check("в запрос второго шага вошёл ответ первого", bool(solve_calls), "ответ первого шага во второй запрос не попал")
+
+        await send("а обратно?" + ENTER, pause=1.2)
+        check(
+            "повторный вопрос новых вкладок не заводит",
+            [s.key for s in state.screens] == keys,
+            str([s.key for s in state.screens]),
+        )
+        cli.switch_screen(state, 0)
+
+        print("\n12. Выход")
         await send("/exit" + ENTER)
         await asyncio.sleep(0.15)
         check("приложение завершилось", run.done())

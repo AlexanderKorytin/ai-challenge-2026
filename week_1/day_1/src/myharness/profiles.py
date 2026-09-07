@@ -32,9 +32,16 @@ from string import Template
 from typing import Any
 
 from . import params as params_mod
+from .agent import DEFAULT_WINDOW_PAIRS
 from .config import config_dir
 
 DEFAULT_PROFILE_NAME = "default"
+
+# Раскладка цепочки шагов: панелями рядом на одной вкладке либо вкладкой на шаг.
+LAYOUT_PANES = "panes"
+LAYOUT_TABS = "tabs"
+LAYOUTS = (LAYOUT_PANES, LAYOUT_TABS)
+DEFAULT_LAYOUT = LAYOUT_PANES
 
 
 class Substitution(Template):
@@ -63,8 +70,12 @@ class Profile:
     prefill: str | None = None  # заготовка ввода: подставляется в строку ввода при выборе профиля
     prefill_file: str | None = None
     keep_history: bool = True
+    # сколько пар «вопрос — ответ» держать в памяти; 0 — окно выключено, память не обрезается
+    history_window: int = DEFAULT_WINDOW_PAIRS
     agents: list[str] = field(default_factory=list)  # непусто — профиль ведущего группы
     screens: list[str] = field(default_factory=list)  # непусто — набор рабочих экранов
+    # как разложены шаги цепочки: "panes" — панелями рядом, "tabs" — вкладкой на шаг
+    layout: str = DEFAULT_LAYOUT
     methods: list[str] = field(default_factory=list)  # непусто — набор способов решения
     vars: dict[str, Any] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
@@ -76,12 +87,14 @@ class Profile:
             "name": self.name,
             "system": self.system,
             "keep_history": self.keep_history,
+            "history_window": self.history_window,
             "params": dict(self.params),
         }
         if self.agents:
             snapshot["agents"] = list(self.agents)
         if self.screens:
             snapshot["screens"] = list(self.screens)
+            snapshot["layout"] = self.layout
         if self.methods:
             snapshot["methods"] = list(self.methods)
         return snapshot
@@ -101,10 +114,12 @@ class Profile:
         elif self.prefill is not None:
             data["prefill"] = self.prefill
         data["keep_history"] = self.keep_history
+        data["history_window"] = self.history_window
         if self.agents:
             data["agents"] = list(self.agents)
         if self.screens:
             data["screens"] = list(self.screens)
+            data["layout"] = self.layout
         if self.methods:
             data["methods"] = list(self.methods)
         if self.vars:
@@ -168,8 +183,15 @@ def available() -> list[tuple[str, Path | None]]:
 
 
 def _profile_names(raw: Any, field_name: str, warnings: list[str]) -> list[str]:
-    """Список имён профилей (состав группы или набор рабочих экранов). Мусор в поле не должен
-    ронять профиль — отбрасываем его с предупреждением, как и неизвестные параметры."""
+    """Список имён профилей (состав группы, набор рабочих экранов или набор способов). Мусор в
+    поле не должен ронять профиль — отбрасываем его с предупреждением, как и неизвестные
+    параметры.
+
+    Повторы имён отбрасываем там же и по тому же правилу. Оставить их нельзя: одно имя дважды
+    означает два запроса ОДНОМУ собеседнику — две одинаковые пары в его памяти, две ленты в
+    одной панели и двойная цена за тот же ответ. Схлопнуть молча тоже нельзя: повтор — это
+    почти всегда опечатка в профиле, и человек должен о ней услышать. Порядок первого появления
+    сохраняется: по нему расставлены вкладки и панели."""
     if raw is None:
         return []
     if not isinstance(raw, list):
@@ -177,11 +199,61 @@ def _profile_names(raw: Any, field_name: str, warnings: list[str]) -> list[str]:
         return []
     names: list[str] = []
     for item in raw:
-        if isinstance(item, str) and item.strip():
-            names.append(item.strip())
-        else:
+        if not isinstance(item, str) or not item.strip():
             warnings.append(f"поле «{field_name}»: {item!r} — не имя профиля, пропущено")
+            continue
+        name = item.strip()
+        if name in names:
+            warnings.append(f"поле «{field_name}»: «{name}» указан повторно — второе упоминание пропущено")
+            continue
+        names.append(name)
     return names
+
+
+def _history_window(raw: Any, warnings: list[str]) -> int:
+    """Размер окна памяти в парах: целое неотрицательное, 0 — окно выключено.
+
+    Мусор в поле отбрасываем с предупреждением, а не подставляем умолчание молча: молча
+    подставленное значение сделало бы поведение необъяснимым — пользователь написал одно,
+    harness работает по-другому и нигде об этом не говорит. `bool` отсеиваем отдельно, он
+    в Python подкласс `int`, и `true` иначе прошло бы как окно в одну пару."""
+    if raw is None:
+        return DEFAULT_WINDOW_PAIRS
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        warnings.append(
+            f"поле «history_window»: {raw!r} — ожидалось целое неотрицательное число, "
+            f"взято умолчание {DEFAULT_WINDOW_PAIRS}"
+        )
+        return DEFAULT_WINDOW_PAIRS
+    return raw
+
+
+def _layout(raw: Any, screens: list[str], warnings: list[str]) -> str:
+    """Раскладка шагов цепочки: «panes» — панелями рядом на одной вкладке, «tabs» — вкладкой
+    на шаг. Умолчание — панели: так поведение прежних профилей не меняется от появления поля.
+
+    Мусор отбрасываем с предупреждением, как и в `_history_window`: молча подставленное
+    умолчание сделало бы поведение необъяснимым. Логическое значение сюда не проходит само —
+    оно не строка, — но названо в сообщении наравне с прочим мусором.
+
+    Раскладывать нечего, если шагов нет: `layout` у профиля без `screens` — почти всегда
+    поле, положенное не в тот профиль, и промолчать об этом значит оставить человека с
+    настройкой, которая ничего не делает.
+    """
+    if raw is None:
+        return DEFAULT_LAYOUT
+    if not screens:
+        warnings.append(
+            "поле «layout» имеет смысл только у профиля-цепочки со списком «screens» — не применено"
+        )
+        return DEFAULT_LAYOUT
+    if not isinstance(raw, str) or raw not in LAYOUTS:
+        warnings.append(
+            f"поле «layout»: {raw!r} — ожидалось «{LAYOUT_PANES}» или «{LAYOUT_TABS}», "
+            f"взято умолчание «{DEFAULT_LAYOUT}»"
+        )
+        return DEFAULT_LAYOUT
+    return raw
 
 
 def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | None) -> tuple[Profile, list[str]]:
@@ -195,9 +267,11 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "prefill",
         "prefill_file",
         "keep_history",
+        "history_window",
         "agents",
         "screens",
         "methods",
+        "layout",
         "vars",
     }
 
@@ -234,6 +308,8 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         else:
             warnings.append(f"неизвестный параметр «{key}» — пропущен")
 
+    screen_names = _profile_names(data.get("screens"), "screens", warnings)
+
     profile = Profile(
         name=data.get("name") or name,
         title=data.get("title", ""),
@@ -243,8 +319,10 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         prefill=prefill_text.strip() if isinstance(prefill_text, str) else None,
         prefill_file=data.get("prefill_file"),
         keep_history=bool(data.get("keep_history", True)),
+        history_window=_history_window(data.get("history_window"), warnings),
         agents=_profile_names(data.get("agents"), "agents", warnings),
-        screens=_profile_names(data.get("screens"), "screens", warnings),
+        screens=screen_names,
+        layout=_layout(data.get("layout"), screen_names, warnings),
         methods=_profile_names(data.get("methods"), "methods", warnings),
         vars=dict(variables),
         params=collected,

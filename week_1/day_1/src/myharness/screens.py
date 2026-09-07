@@ -20,6 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from .agent import Agent
+
 if TYPE_CHECKING:  # только для подсказок типов — на импорт профилей экраны не завязаны
     from .profiles import Profile
 
@@ -35,7 +37,11 @@ ERROR = "error"
 
 @dataclass
 class Pane:
-    """Лента вывода: то, что раньше было экраном целиком."""
+    """Лента вывода: то, что раньше было экраном целиком.
+
+    У панели есть собеседник (`agent`), потому что панель — это место отрисовки, а разговор
+    ей не принадлежит: память и правила сборки запроса — дело агента, панель лишь показывает
+    то, что из этого вышло."""
 
     key: str
     title: str = ""
@@ -44,7 +50,19 @@ class Pane:
     autoscroll: bool = True
     status: str = IDLE
     profile: Profile | None = None  # чей это вывод: инструкция исполнителя и его параметры
-    messages: list[dict] = field(default_factory=list)
+    agent: Agent | None = None  # собеседник этой панели: его память, его инструкция
+
+    def __post_init__(self) -> None:
+        """Собеседника заводит сама панель, а не тот, кто её создаёт.
+
+        Пока агентов расставляли вызывающие, панель, заведённая где-то ещё, оставалась без
+        собеседника — и вскрывалось это не при создании, а при первом обращении, посреди
+        разговора. Здесь забыть нельзя: есть профиль — есть и агент.
+
+        Единственная панель без профиля — главный экран: там профиль пользовательский, он
+        меняется командой `/profile`, и собеседника кладёт `cli.State`."""
+        if self.profile is not None and self.agent is None:
+            self.agent = Agent(self.key, self.profile)
 
 
 @dataclass
@@ -94,18 +112,3 @@ class Screen:
 
 def main_screen() -> Screen:
     return Screen(key=MAIN_KEY, title="главный", interactive=True)
-
-
-def build_messages(profile: Profile, pane: Pane, content: str) -> list[dict]:
-    """Сообщения одного запроса: инструкция исполнителя, его история (если профиль её держит)
-    и новый ввод. Одинаково для агента группы и для рабочего экрана — разница только в том,
-    кто набирает текст."""
-    messages: list[dict] = []
-    if profile.system:
-        messages.append({"role": "system", "content": profile.system})
-    if profile.keep_history:
-        pane.messages.append({"role": "user", "content": content})
-        messages.extend(pane.messages)
-    else:
-        messages.append({"role": "user", "content": content})
-    return messages

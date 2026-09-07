@@ -7,7 +7,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
@@ -33,18 +32,18 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
-from . import api, journal, profiles, team, ui
+from . import api, profiles, team, ui
 from . import methods as methods_mod
 from . import params as params_mod
 from . import picker as picker_mod
 from . import screens as screens_mod
+from .agent import Agent
 from .api import DeepSeekClient
 from .config import Config
 from .config import load as load_config
 from .config import save as save_config
+from .output import Fragments, append_log, refresh, run_turn
 from .profiles import Profile
-
-Fragments = list[tuple[str, str]]
 
 
 @dataclass
@@ -76,9 +75,10 @@ class State:
     known_models: list[str] = field(default_factory=lambda: list(api.FALLBACK_MODELS))
     journal_warned: bool = False
     input_buffer: Any = None  # буфер строки ввода: профиль подставляет в него заготовку
-    # Мышь по умолчанию у терминала: выделять и копировать текст важнее, чем кликать по
-    # вкладкам — переключение экранов есть на клавишах. F2 отдаёт мышь harness и обратно.
-    mouse_enabled: bool = False
+    # Мышь включена всегда: клики и выделение текста уживаются, если не просить у терминала
+    # отслеживание перетаскивания (см. click_only_mouse). Команда /mouse оставлена аварийным
+    # выходом для терминала, который так не умеет.
+    mouse_enabled: bool = True
 
     @property
     def main(self) -> screens_mod.Screen:
@@ -102,39 +102,15 @@ class State:
         return self.main.first.log
 
     @property
-    def messages(self) -> list[dict]:
-        return self.main.first.messages
+    def main_agent(self) -> Agent:
+        """Собеседник главного экрана — тот, с кем разговаривает пользователь."""
+        return self.main.first.agent
 
-
-def target_pane(state: State, target: screens_mod.Screen | screens_mod.Pane | None) -> screens_mod.Pane:
-    """Куда писать. Без указания — первая панель экрана, где пользователь работает; экран
-    вместо панели тоже принимается: у большинства экранов панель одна."""
-    if isinstance(target, screens_mod.Pane):
-        return target
-    if isinstance(target, screens_mod.Screen):
-        return target.first
-    return state.focus.first
-
-
-def append_log(
-    state: State, fragments: Fragments, target: screens_mod.Screen | screens_mod.Pane | None = None
-) -> None:
-    pane = target_pane(state, target)
-    pane.log.extend(fragments)
-    pane.line_count += sum(text.count("\n") for _, text in fragments)
-    if state.app is not None:
-        state.app.invalidate()
-
-
-def truncate_log(
-    state: State, mark: int, target: screens_mod.Screen | screens_mod.Pane | None = None
-) -> None:
-    pane = target_pane(state, target)
-    removed = pane.log[mark:]
-    pane.line_count -= sum(text.count("\n") for _, text in removed)
-    del pane.log[mark:]
-    if state.app is not None:
-        state.app.invalidate()
+    def __post_init__(self) -> None:
+        # Панель главного экрана заводит `screens.main_screen()`, профиля у неё нет, а
+        # собеседник нужен: главный разговор ведёт он. Заводим здесь, а не в `_main`, чтобы
+        # у любого состояния — в том числе собранного проверками — главный агент был на месте.
+        self.main.first.agent = Agent(screens_mod.MAIN_KEY, self.profile)
 
 
 def switch_screen(state: State, index: int) -> None:
@@ -177,25 +153,7 @@ def drop_agent_screens(state: State) -> None:
     state.active = 0
 
 
-def refresh(state: State) -> None:
-    if state.app is not None:
-        state.app.invalidate()
-
-
 # ─────────────────────────────── профиль и запрос ───────────────────────────────
-
-
-def build_request_messages(state: State, content: str) -> list[dict]:
-    """Системная инструкция всегда первая: так её видно отдельно от ввода пользователя,
-    и так же работает кэширование общего начала запроса на стороне DeepSeek."""
-    messages: list[dict] = []
-    if state.profile.system:
-        messages.append({"role": "system", "content": state.profile.system})
-    if state.profile.keep_history:
-        messages.extend(state.main.first.messages)
-    else:
-        messages.append({"role": "user", "content": content})
-    return messages
 
 
 def switch_profile(state: State, name: str) -> None:
@@ -206,9 +164,18 @@ def switch_profile(state: State, name: str) -> None:
     save_config(state.config)
     for warning in warnings:
         append_log(state, ui.error_fragments(warning))
-    # история, набранная под прежней инструкцией, исказила бы следующий ответ
-    if state.main.first.messages:
-        state.main.first.messages.clear()
+    # История, набранная под прежней инструкцией, исказила бы следующий ответ. Забыть её
+    # мало: у собеседника главного экрана сменились и инструкция, и параметры — значит это
+    # уже другой собеседник. Смотрим на прежнюю память ДО замены, иначе сообщение об очистке
+    # появилось бы и при первой смене профиля на пустом разговоре.
+    had_history = bool(state.main_agent.history())
+    # Прежнего собеседника прямо объявляем забывшим разговор, а не просто выбрасываем ссылку
+    # на него: его обмен мог ещё идти, и в своём `finally` он дописал бы пару в память,
+    # которой мы уже не пользуемся. Смена поколения делает это дописывание невозможным —
+    # брошенный агент не оставит после себя ни строчки.
+    state.main.first.agent.forget()
+    state.main.first.agent = Agent(screens_mod.MAIN_KEY, profile)
+    if had_history:
         append_log(state, ui.system_fragments("история диалога очищена — профиль сменился"))
     if len(state.screens) > 1:
         drop_agent_screens(state)
@@ -262,6 +229,8 @@ def open_work_screens(state: State, profile: Profile) -> None:
         if step.name == profiles.DEFAULT_PROFILE_NAME and name != profiles.DEFAULT_PROFILE_NAME:
             append_log(state, ui.error_fragments(f"экран «{name}» пропущен: профиль не найден"))
             continue
+        # Панель рабочего экрана делает `Screen.__post_init__`, а собеседника — сама панель
+        # по своему профилю: у каждого шага приёма своя ветка разговора, значит и своя память.
         screen = screens_mod.Screen(key=name, title=name, profile=step, interactive=True)
         state.screens.append(screen)
         # описание профиля — вводная для шага («вставьте промпт с первого экрана»). Держим её
@@ -276,160 +245,7 @@ def open_work_screens(state: State, profile: Profile) -> None:
     switch_screen(state, 1)
 
 
-# ─────────────────────────────── генерация ответа ───────────────────────────────
-
-
-async def _spin(state: State, pane: screens_mod.Pane) -> None:
-    mark = len(pane.log)
-    i = 0
-    try:
-        while True:
-            frame = ui.SPINNER_FRAMES[i % len(ui.SPINNER_FRAMES)]
-            truncate_log(state, mark, pane)
-            append_log(state, [("class:dim", f"{frame} думаю…")], pane)
-            i += 1
-            await asyncio.sleep(0.08)
-    except asyncio.CancelledError:
-        truncate_log(state, mark, pane)
-        raise
-
-
-def record(state: State, entry: dict[str, Any]) -> None:
-    error = journal.append(entry)
-    if error and not state.journal_warned:
-        state.journal_warned = True
-        append_log(state, ui.error_fragments(error))
-
-
-@dataclass
-class Turn:
-    """Итог одного обмена с моделью — тем, кто позвал: тексту ответа и цене."""
-
-    status: str
-    text: str = ""
-    reasoning: str = ""
-    finish_reason: str | None = None
-    usage: dict[str, Any] = field(default_factory=dict)
-    elapsed_ms: int = 0
-    error: str | None = None
-
-    @property
-    def ok(self) -> bool:
-        return self.status == "ok"
-
-
-async def generate_response(
-    state: State,
-    request_messages: list[dict],
-    user_text: str,
-    *,
-    pane: screens_mod.Pane | None = None,
-    profile: Profile | None = None,
-    agent: str | None = None,
-    run_id: str | None = None,
-) -> Turn:
-    """Один запрос к модели с потоковым выводом в свою панель.
-
-    Панель и профиль задаются явно, потому что исполнители отвечают одновременно: у каждого
-    своя лента, своя системная инструкция и свои параметры, а State у них общий.
-    """
-    assert state.client is not None
-    target = pane or state.main.first
-    active_profile = profile or state.profile
-    target.status = screens_mod.BUSY
-    spinner_task = asyncio.create_task(_spin(state, target))
-
-    async def clear_spinner() -> None:
-        if not spinner_task.done():
-            spinner_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await spinner_task
-
-    reasoning_started = False
-    answer_started = False
-    answer_text = ""
-    reasoning_text = ""
-    finish_reason: str | None = None
-    usage: dict[str, Any] = {}
-    status = "error"
-    error_text: str | None = None
-    started = time.monotonic()
-    try:
-        async for event in state.client.stream_chat(state.model, request_messages, active_profile.params):
-            await clear_spinner()
-            if event.kind == "meta":
-                finish_reason = event.finish_reason
-                usage = event.usage
-                continue
-            if event.kind == "reasoning":
-                if not reasoning_started:
-                    append_log(state, ui.reasoning_label_fragments(), target)
-                    reasoning_started = True
-                reasoning_text += event.text
-                append_log(state, [("class:dim", event.text)], target)
-            else:
-                if not answer_started:
-                    if reasoning_started:
-                        append_log(state, [("", "\n")], target)
-                    append_log(state, ui.answer_label_fragments(), target)
-                    answer_started = True
-                append_log(state, [("", event.text)], target)
-                answer_text += event.text
-        status = "ok"
-    except asyncio.CancelledError:
-        await clear_spinner()
-        status = "cancelled"
-        raise
-    except Exception as exc:  # сеть, лимиты, ошибки API — не роняем harness
-        await clear_spinner()
-        error_text = str(exc)
-        append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {exc}"), target)
-    finally:
-        await clear_spinner()
-        elapsed = time.monotonic() - started
-        target.status = screens_mod.DONE if status == "ok" else screens_mod.ERROR
-        if reasoning_started or answer_started:
-            append_log(state, [("", "\n")], target)
-        if status == "ok":
-            append_log(state, ui.meta_fragments(finish_reason, usage, elapsed, active_profile.name), target)
-            if finish_reason == "length":
-                append_log(
-                    state,
-                    ui.hint_fragments("ответ упёрся в max_tokens — увеличьте лимит: /set max_tokens"),
-                    target,
-                )
-        if status == "ok" and answer_text and active_profile.keep_history:
-            target.messages.append({"role": "assistant", "content": answer_text})
-        elif active_profile.keep_history and target.messages and target.messages[-1]["role"] == "user":
-            # ответ не получен (ошибка/отмена) — не оставляем в истории вопрос без ответа
-            target.messages.pop()
-        entry: dict[str, Any] = {
-            "status": status,
-            "model": state.model,
-            "profile": active_profile.snapshot(),
-            "query": user_text,
-            "messages": request_messages,
-            "response": answer_text or None,
-            "reasoning": reasoning_text or None,
-            "finish_reason": finish_reason,
-            "usage": usage or None,
-            "elapsed_ms": int(elapsed * 1000),
-            "error": error_text,
-        }
-        if agent:
-            entry["agent"] = agent
-        if run_id:
-            entry["run_id"] = run_id
-        record(state, entry)
-    return Turn(
-        status=status,
-        text=answer_text,
-        reasoning=reasoning_text,
-        finish_reason=finish_reason,
-        usage=usage,
-        elapsed_ms=int((time.monotonic() - started) * 1000),
-        error=error_text,
-    )
+# ─────────────────────────────── очередь запросов ───────────────────────────────
 
 
 async def worker(state: State) -> None:
@@ -439,19 +255,16 @@ async def worker(state: State) -> None:
         state.busy = True
         if request.screen is not None and request.screen.profile is not None:
             pane = request.screen.first
-            messages = screens_mod.build_messages(request.screen.profile, pane, request.content)
-            task = asyncio.create_task(
-                generate_response(state, messages, request.content, pane=pane, profile=request.screen.profile)
-            )
+            task = asyncio.create_task(run_turn(state, pane.agent, request.content, pane=pane))
         elif lead.methods:
             task = asyncio.create_task(methods_mod.run_all(state, request.content, lead))
         elif lead.agents:
             task = asyncio.create_task(team.run(state, request.content, lead))
         else:
-            if lead.keep_history:
-                state.main.first.messages.append({"role": "user", "content": request.content})
-            request_messages = build_request_messages(state, request.content)
-            task = asyncio.create_task(generate_response(state, request_messages, request.content))
+            # Вопрос в память не дописываем: памятью владеет агент, и кладёт он туда только
+            # отвеченную пару — иначе после сетевого сбоя в истории остался бы вопрос,
+            # на который никто не отвечал.
+            task = asyncio.create_task(run_turn(state, state.main_agent, request.content, pane=state.main.first))
         state.current_task = task
         try:
             await task
@@ -699,19 +512,17 @@ def apply_custom_value(state: State, raw: str) -> None:
 
 
 def toggle_mouse(state: State) -> None:
-    """Мышь: терминалу или приложению.
+    """Аварийный выход: вернуть мышь терминалу целиком.
 
-    Полноэкранное приложение, забравшее мышь, не даёт выделить текст — терминал не видит ни
-    нажатий, ни протяжек. Поэтому по умолчанию мышь остаётся у терминала: копирование должно
-    работать сразу и без команд. Взамен клики по вкладкам и прокрутка колесом не действуют —
-    их включает эта команда, а переключение экранов и без неё есть на клавишах.
+    Обычно этого не требуется — клики и выделение текста уживаются (см. `click_only_mouse`).
+    Команда оставлена на случай терминала, который отслеживание нажатий понимает, а выделение
+    при нём всё равно отдаёт приложению.
     """
     state.mouse_enabled = not state.mouse_enabled
     if state.mouse_enabled:
-        append_log(state, ui.system_fragments("мышь у harness: работают клики по вкладкам и прокрутка колесом"))
-        append_log(state, ui.hint_fragments("выделять текст мышью сейчас нельзя — вернуть терминалу: F2 или /mouse"))
+        append_log(state, ui.system_fragments("мышь у harness: клики по вкладкам, панелям и строкам списка"))
     else:
-        append_log(state, ui.system_fragments("мышь у терминала: выделяйте и копируйте текст обычным образом"))
+        append_log(state, ui.system_fragments("мышь целиком у терминала: клики в harness не действуют"))
     refresh(state)
 
 
@@ -747,6 +558,92 @@ def cmd_team(state: State, arg: str) -> None:
         append_log(state, ui.queued_fragments(state.queue.qsize()))
 
 
+# ─────────────────────────────── список агентов ───────────────────────────────
+
+
+@dataclass
+class AgentRow:
+    """Один агент в списке `/agents`: сам собеседник и адрес его панели.
+
+    Адрес храним номерами экрана и панели, а не ссылкой на них: переход делают
+    `switch_screen` и `switch_pane`, а они работают именно по номерам."""
+
+    agent: Agent
+    pane: screens_mod.Pane
+    screen_index: int
+    pane_index: int
+    screen_title: str
+    status: str
+
+
+def collect_agents(state: State) -> list[AgentRow]:
+    """Все поднятые агенты — в том же порядке, в каком идут вкладки и панели на них.
+
+    Порядок не косметика: список читают вместе с полосой вкладок, и если он переставит
+    агентов по-своему, сопоставлять придётся по именам вместо номера строки.
+
+    Панель без собеседника пропускаем. Сейчас такой нет — панель заводит агента сама, как
+    только у неё есть профиль, — но список не то место, где стоит падать: его открывают,
+    когда с агентами уже что-то не так."""
+    rows: list[AgentRow] = []
+    for screen_index, screen in enumerate(state.screens):
+        for pane_index, pane in enumerate(screen.panes):
+            if pane.agent is None:
+                continue
+            rows.append(
+                AgentRow(
+                    agent=pane.agent,
+                    pane=pane,
+                    screen_index=screen_index,
+                    pane_index=pane_index,
+                    screen_title=screen.title,
+                    status=pane.status,
+                )
+            )
+    return rows
+
+
+def open_agent_picker(state: State) -> None:
+    """`/agents` — кто поднят, сколько проработал и во что обошёлся; Enter — перейти к нему.
+
+    Отдельную панель под это не заводим: список со стрелками и выбором — ровно то, что уже
+    умеет `picker`, и он же уже кликается мышью. Четвёртая своя панель отличалась бы от трёх
+    остальных мелочами поведения, и чинить их пришлось бы порознь."""
+    rows = collect_agents(state)
+    if not rows:
+        append_log(state, ui.system_fragments("запущенных агентов нет"))
+        return
+    cells = ui.agent_rows(
+        [
+            (row.status, row.agent.name, row.agent.profile.name, row.agent.total_ms, row.agent.total_tokens, row.agent.runs)
+            for row in rows
+        ]
+    )
+    current = state.screen.pane
+    items: list[picker_mod.Item] = []
+    marked: int | None = None
+    for row, (label, hint) in zip(rows, cells, strict=True):
+        if row.screen_index == state.active and row.pane is current:
+            marked = len(items)
+        items.append(picker_mod.Item(label=label, hint=hint, payload=(row.screen_index, row.pane_index)))
+
+    def choose(payload: Any) -> None:
+        state.picker = None
+        screen_index, pane_index = payload
+        switch_screen(state, screen_index)
+        switch_pane(state, pane_index)
+
+    state.picker = picker_mod.Picker(
+        title="/agents — запущенные агенты",
+        description="Enter — перейти на экран и панель агента",
+        items=items,
+        on_choose=choose,
+        index=marked or 0,
+        marked=marked,
+    )
+    refresh(state)
+
+
 async def handle_command(text: str, state: State) -> bool:
     parts = text.split(maxsplit=1)
     cmd = parts[0].lower()
@@ -771,10 +668,12 @@ async def handle_command(text: str, state: State) -> bool:
         append_log(state, ui.system_prompt_fragments(source.name, source.system))
     elif cmd == "/team":
         cmd_team(state, arg)
+    elif cmd == "/agents":
+        open_agent_picker(state)
     elif cmd == "/mouse":
         toggle_mouse(state)
     elif cmd == "/clear":
-        state.main.first.messages.clear()
+        state.main_agent.forget()
         append_log(state, ui.system_fragments("история диалога очищена"))
     else:
         append_log(state, ui.error_fragments(f"неизвестная команда: {cmd} (см. /help)"))
@@ -878,6 +777,38 @@ def pane_columns(count: int, width: int) -> int:
     if count <= 1 or width < 100:
         return 1
     return 2 if width < 170 else 3
+
+
+def app_output():  # noqa: ANN201 — тип вывода приходит из prompt_toolkit
+    from prompt_toolkit.application.current import get_app_session
+
+    return get_app_session().output
+
+
+def click_only_mouse(output) -> None:  # noqa: ANN001
+    """Просить у терминала только нажатия мыши, без отслеживания перетаскивания.
+
+    prompt_toolkit включает мышь одним куском: `1000h` (нажатия), `1003h` (любое движение),
+    `1015h` и `1006h` (расширенные ответы). Губителен здесь `1003h` — пока он поднят, терминал
+    отдаёт приложению и протяжку тоже, а значит выделить текст мышью нельзя. Отсюда и родился
+    прежний переключатель «или клики, или копирование».
+
+    Выбор ложный. Оставив только `1000h` и `1006h`, приложение получает клики по вкладкам,
+    панелям и строкам списка, а протяжка остаётся терминалу — выделение и копирование работают
+    как обычно, без единой команды.
+    """
+    if getattr(output, "_click_only", False):
+        return
+    output._click_only = True
+
+    def enable() -> None:
+        output.write_raw("\x1b[?1000h\x1b[?1006h")
+
+    def disable() -> None:
+        output.write_raw("\x1b[?1006l\x1b[?1000l")
+
+    output.enable_mouse_support = enable
+    output.disable_mouse_support = disable
 
 
 def build_app(state: State) -> Application:
@@ -1096,6 +1027,7 @@ def build_app(state: State) -> Application:
         def _goto_screen(event, index=number - 1) -> None:  # noqa: ANN001
             switch_screen(state, index)
 
+    click_only_mouse(app_output())
     app = Application(
         layout=layout,
         key_bindings=kb,
@@ -1130,13 +1062,6 @@ async def repl(state: State) -> None:
             await state.client.aclose()
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="myharness", description="Терминальный harness для DeepSeek API")
-    parser.add_argument("--profile", help="профиль генерации, применяемый при старте")
-    parser.add_argument("--model", help="модель DeepSeek")
-    return parser.parse_args(argv)
-
-
 def silence_transport_noise(loop: asyncio.AbstractEventLoop) -> None:
     """Глушит одно конкретное сообщение httpcore2 2.12: при обрыве ответа по max_tokens
     тело остаётся недочитанным, и закрытие потока печатает «generator didn't stop after
@@ -1159,9 +1084,13 @@ def silence_transport_noise(loop: asyncio.AbstractEventLoop) -> None:
     loop.set_exception_handler(handler)
 
 
-async def _main(argv: list[str] | None = None) -> None:
+async def _main(args: argparse.Namespace) -> None:
+    """Поднять интерфейс на уже разобранных ключах.
+
+    Ключи сюда приходят готовыми (их разбирает точка входа пакета) и здесь не разбираются
+    заново: второй разбор — это второе место, где живут имена и значения по умолчанию, и
+    расходятся такие места молча."""
     silence_transport_noise(asyncio.get_running_loop())
-    args = parse_args(argv)
     cfg = load_config()
     profile_name = args.profile or os.environ.get("MYHARNESS_PROFILE") or cfg.profile
     profile, warnings = profiles.load(profile_name)
@@ -1174,6 +1103,6 @@ async def _main(argv: list[str] | None = None) -> None:
     await repl(state)
 
 
-def main() -> None:
+def main(args: argparse.Namespace) -> None:
     with suppress(KeyboardInterrupt):
-        asyncio.run(_main())
+        asyncio.run(_main(args))
