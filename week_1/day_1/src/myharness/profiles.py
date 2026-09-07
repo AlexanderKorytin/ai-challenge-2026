@@ -32,6 +32,7 @@ from string import Template
 from typing import Any
 
 from . import params as params_mod
+from .agent import DEFAULT_WINDOW_PAIRS
 from .config import config_dir
 
 DEFAULT_PROFILE_NAME = "default"
@@ -63,6 +64,8 @@ class Profile:
     prefill: str | None = None  # заготовка ввода: подставляется в строку ввода при выборе профиля
     prefill_file: str | None = None
     keep_history: bool = True
+    # сколько пар «вопрос — ответ» держать в памяти; 0 — окно выключено, память не обрезается
+    history_window: int = DEFAULT_WINDOW_PAIRS
     agents: list[str] = field(default_factory=list)  # непусто — профиль ведущего группы
     screens: list[str] = field(default_factory=list)  # непусто — набор рабочих экранов
     methods: list[str] = field(default_factory=list)  # непусто — набор способов решения
@@ -76,6 +79,7 @@ class Profile:
             "name": self.name,
             "system": self.system,
             "keep_history": self.keep_history,
+            "history_window": self.history_window,
             "params": dict(self.params),
         }
         if self.agents:
@@ -101,6 +105,7 @@ class Profile:
         elif self.prefill is not None:
             data["prefill"] = self.prefill
         data["keep_history"] = self.keep_history
+        data["history_window"] = self.history_window
         if self.agents:
             data["agents"] = list(self.agents)
         if self.screens:
@@ -184,6 +189,24 @@ def _profile_names(raw: Any, field_name: str, warnings: list[str]) -> list[str]:
     return names
 
 
+def _history_window(raw: Any, warnings: list[str]) -> int:
+    """Размер окна памяти в парах: целое неотрицательное, 0 — окно выключено.
+
+    Мусор в поле отбрасываем с предупреждением, а не подставляем умолчание молча: молча
+    подставленное значение сделало бы поведение необъяснимым — пользователь написал одно,
+    harness работает по-другому и нигде об этом не говорит. `bool` отсеиваем отдельно, он
+    в Python подкласс `int`, и `true` иначе прошло бы как окно в одну пару."""
+    if raw is None:
+        return DEFAULT_WINDOW_PAIRS
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        warnings.append(
+            f"поле «history_window»: {raw!r} — ожидалось целое неотрицательное число, "
+            f"взято умолчание {DEFAULT_WINDOW_PAIRS}"
+        )
+        return DEFAULT_WINDOW_PAIRS
+    return raw
+
+
 def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | None) -> tuple[Profile, list[str]]:
     warnings: list[str] = []
     known_meta = {
@@ -195,6 +218,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "prefill",
         "prefill_file",
         "keep_history",
+        "history_window",
         "agents",
         "screens",
         "methods",
@@ -243,6 +267,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         prefill=prefill_text.strip() if isinstance(prefill_text, str) else None,
         prefill_file=data.get("prefill_file"),
         keep_history=bool(data.get("keep_history", True)),
+        history_window=_history_window(data.get("history_window"), warnings),
         agents=_profile_names(data.get("agents"), "agents", warnings),
         screens=_profile_names(data.get("screens"), "screens", warnings),
         methods=_profile_names(data.get("methods"), "methods", warnings),

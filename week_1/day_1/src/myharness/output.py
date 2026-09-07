@@ -194,6 +194,17 @@ async def run_turn(
             append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {turn.error}"), pane)
         if marks.get("reasoning") or marks.get("answer"):
             append_log(state, [("", "\n")], pane)
+        if turn is not None and turn.dropped_pairs > 0:
+            # Молчаливая обрезка недопустима. Первая же потерянная отсылка — «сделай короче»,
+            # а того, что сокращать, в памяти уже нет — будет отлажена пользователем как
+            # «модель поглупела», и час уйдёт на поиск поломки, которой нет.
+            append_log(
+                state,
+                ui.system_fragments(
+                    f"память обрезана: выброшено {turn.dropped_pairs} пар «вопрос — ответ»"
+                ),
+                pane,
+            )
         if turn is not None and turn.ok:
             append_log(
                 state,
