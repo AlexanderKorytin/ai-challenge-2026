@@ -1,0 +1,7 @@
+{
+  "name": "kotlin",
+  "title": "kotlin",
+  "description": "три агента на одну задачу: постановщик, исполнитель, проверяющий",
+  "prefill": "функция сортировки пузырьком на Kotlin",
+  "methods": ["kotlin_chain"]
+}

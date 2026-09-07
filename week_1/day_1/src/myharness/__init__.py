@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-import sys
+import asyncio
 
 from . import args as args_mod
 
@@ -24,12 +24,12 @@ def main() -> int:
     parsed = args_mod.parse_args()
 
     if parsed.batch:
-        # Честное состояние на сегодня, а не заглушка на будущее: модуль `batch` появится
-        # следующим блоком работ, и тогда эта ветка станет его вызовом — с передачей
-        # `parsed.batch` и `parsed.concurrency`. Пока режима нет, мы об этом прямо говорим
-        # и возвращаем ненулевой код, чтобы вызывающий сценарий не принял отказ за успех.
-        print("пакетный режим ещё не готов", file=sys.stderr)
-        return 1
+        # Пакетный режим загружаем отдельно от интерфейса: в этой ветке `prompt_toolkit`
+        # не попадает в память вовсе — ни одного окна и ни одной клавиши наряду не нужно.
+        # Своего цикла событий у режима нет, поэтому его заводим здесь.
+        from . import batch
+
+        return asyncio.run(batch.main(parsed))
 
     # Интерфейс загружаем только здесь: до этой строки `prompt_toolkit` в памяти нет.
     from . import cli

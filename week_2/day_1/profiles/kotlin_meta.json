@@ -1,0 +1,10 @@
+{
+  "name": "kotlin_meta",
+  "title": "постановка",
+  "description": "превращает короткую формулировку в развёрнутое техническое задание",
+  "system_file": "kotlin_meta.md",
+  "prefill": "функция сортировки пузырьком на Kotlin",
+  "keep_history": false,
+  "temperature": 0.3,
+  "max_tokens": 1200
+}

@@ -1,0 +1,6 @@
+{
+  "name": "kotlin_chain",
+  "title": "цепочка",
+  "description": "постановка → решение → проверка, ответ каждого шага уходит следующему",
+  "screens": ["kotlin_meta", "kotlin_solve", "kotlin_check"]
+}
