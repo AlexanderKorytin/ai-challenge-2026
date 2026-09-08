@@ -183,9 +183,9 @@ smoke_test.py      проверка API одним запросом: `uv run smo
 | Профили генерации | `openspec/specs/profiles/` | пара файлов `.json` + `.md`, порядок поиска, подстановка `vars`, заготовка ввода |
 | Параметры | `openspec/specs/params/` | семь ручек DeepSeek, применимость при рассуждениях |
 | Команды | `openspec/specs/commands/` | `/auth`, `/model`, `/profile`, `/params`, `/set`, `/system`, `/team`, `/mouse`, `/clear`, `/help`, `/exit` |
-| Экраны и панели | `openspec/specs/interface/` | вкладки, сетка панелей, клавиши, мышь у терминала |
-| Группа агентов | `openspec/specs/team/` | список `agents`, одновременные запросы, сводка ведущего |
-| Набор способов | `openspec/specs/methods/` | список `methods`, цепочки, распознавание рода способа |
+| Экраны и панели | `openspec/specs/interface/` | список агентов под вводом, сетка панелей, клавиши, мышь |
+| Группа агентов | `openspec/specs/team/` | список `agents`, одновременные запросы, сводка ведущего в главный экран |
+| Набор способов | `openspec/specs/methods/` | список `methods`, цепочки, распознавание рода способа, итоги в главный экран |
 | Рабочие экраны | `openspec/specs/work-screens/` | список `screens`, диалоговые шаги по вкладкам |
 | Обмен с API | `openspec/specs/api/` | пределы ожидания, поток, список моделей |
 | Журнал прогонов | `openspec/specs/journal/` | `myharness-journal.jsonl`, состав записи, `run_id` |

@@ -42,7 +42,7 @@ from .api import DeepSeekClient
 from .config import Config
 from .config import load as load_config
 from .config import save as save_config
-from .output import Fragments, append_log, refresh, run_turn
+from .output import Fragments, append_log, deliver, refresh, run_turn
 from .profiles import Profile
 
 
@@ -253,12 +253,17 @@ async def worker(state: State) -> None:
         request = await state.queue.get()
         lead = request.lead or state.profile
         state.busy = True
+        # Чем занят запрос, помним отдельно: по одному лишь возвращённому значению не
+        # отличить итог оркестратора от обмена, который сам себя уже показал.
+        kind = "обмен"
         if request.screen is not None and request.screen.profile is not None:
             pane = request.screen.first
             task = asyncio.create_task(run_turn(state, pane.agent, request.content, pane=pane))
         elif lead.methods:
+            kind = "набор"
             task = asyncio.create_task(methods_mod.run_all(state, request.content, lead))
         elif lead.agents:
+            kind = "группа"
             task = asyncio.create_task(team.run(state, request.content, lead))
         else:
             # Вопрос в память не дописываем: памятью владеет агент, и кладёт он туда только
@@ -267,7 +272,15 @@ async def worker(state: State) -> None:
             task = asyncio.create_task(run_turn(state, state.main_agent, request.content, pane=state.main.first))
         state.current_task = task
         try:
-            await task
+            result = await task
+            # Единственное место, где итог оркестратора попадает в главный экран. Сами
+            # оркестраторы решают, ЧТО считать итогом, но не куда его девать: набор способов
+            # состоит из тех же оркестраторов, и пиши каждый из них наверх сам — четыре
+            # способа писали бы вперемешку и в случайном порядке.
+            if kind == "набор":
+                deliver(state, request.content, result)
+            elif kind == "группа" and result is not None:
+                deliver(state, request.content, [result])
         except asyncio.CancelledError:
             append_log(state, ui.system_fragments("запрос отменён"))
         finally:
@@ -563,7 +576,7 @@ def cmd_team(state: State, arg: str) -> None:
 
 @dataclass
 class AgentRow:
-    """Один агент в списке `/agents`: сам собеседник и адрес его панели.
+    """Один агент в списке под строкой ввода: сам собеседник и адрес его панели.
 
     Адрес храним номерами экрана и панели, а не ссылкой на них: переход делают
     `switch_screen` и `switch_pane`, а они работают именно по номерам."""
@@ -572,15 +585,15 @@ class AgentRow:
     pane: screens_mod.Pane
     screen_index: int
     pane_index: int
-    screen_title: str
     status: str
+    occupation: str  # чем занят: начало вопроса, пока работает, иначе имя профиля
 
 
 def collect_agents(state: State) -> list[AgentRow]:
-    """Все поднятые агенты — в том же порядке, в каком идут вкладки и панели на них.
+    """Все поднятые агенты — в том же порядке, в каком идут экраны и панели на них.
 
-    Порядок не косметика: список читают вместе с полосой вкладок, и если он переставит
-    агентов по-своему, сопоставлять придётся по именам вместо номера строки.
+    Порядок не косметика: строка списка и есть адрес агента, и переставь список агентов
+    по-своему — номер строки перестал бы что-либо значить, а ↑/↓ водили бы не туда.
 
     Панель без собеседника пропускаем. Сейчас такой нет — панель заводит агента сама, как
     только у неё есть профиль, — но список не то место, где стоит падать: его открывают,
@@ -596,52 +609,47 @@ def collect_agents(state: State) -> list[AgentRow]:
                     pane=pane,
                     screen_index=screen_index,
                     pane_index=pane_index,
-                    screen_title=screen.title,
                     status=pane.status,
+                    occupation=ui.agent_occupation(pane.status, pane.agent.task, pane.agent.profile.name),
                 )
             )
     return rows
 
 
-def open_agent_picker(state: State) -> None:
-    """`/agents` — кто поднят, сколько проработал и во что обошёлся; Enter — перейти к нему.
-
-    Отдельную панель под это не заводим: список со стрелками и выбором — ровно то, что уже
-    умеет `picker`, и он же уже кликается мышью. Четвёртая своя панель отличалась бы от трёх
-    остальных мелочами поведения, и чинить их пришлось бы порознь."""
-    rows = collect_agents(state)
-    if not rows:
-        append_log(state, ui.system_fragments("запущенных агентов нет"))
-        return
-    cells = ui.agent_rows(
-        [
-            (row.status, row.agent.name, row.agent.profile.name, row.agent.total_ms, row.agent.total_tokens, row.agent.runs)
-            for row in rows
-        ]
-    )
+def agent_index(state: State, rows: list[AgentRow]) -> int:
+    """Строка, на которой стоит пользователь: экран, который открыт, и панель, которая
+    выбрана на нём. Не нашли — считаем первой: строка «вы здесь» в списке обязана быть."""
     current = state.screen.pane
-    items: list[picker_mod.Item] = []
-    marked: int | None = None
-    for row, (label, hint) in zip(rows, cells, strict=True):
+    for index, row in enumerate(rows):
         if row.screen_index == state.active and row.pane is current:
-            marked = len(items)
-        items.append(picker_mod.Item(label=label, hint=hint, payload=(row.screen_index, row.pane_index)))
+            return index
+    return 0
 
-    def choose(payload: Any) -> None:
-        state.picker = None
-        screen_index, pane_index = payload
-        switch_screen(state, screen_index)
-        switch_pane(state, pane_index)
 
-    state.picker = picker_mod.Picker(
-        title="/agents — запущенные агенты",
-        description="Enter — перейти на экран и панель агента",
-        items=items,
-        on_choose=choose,
-        index=marked or 0,
-        marked=marked,
-    )
+def goto_agent(state: State, index: int) -> None:
+    """Перейти на экран и панель агента по номеру строки списка."""
+    rows = collect_agents(state)
+    if not 0 <= index < len(rows):
+        return
+    row = rows[index]
+    switch_screen(state, row.screen_index)
+    switch_pane(state, row.pane_index)
     refresh(state)
+
+
+def show_agent_panel(state: State) -> bool:
+    """Показывать ли список агентов. Пока агент один, списка нет: строка «main» в одиночестве
+    ничего не сообщает и только съедает высоту экрана."""
+    return len(collect_agents(state)) > 1
+
+
+def step_agent(state: State, delta: int) -> None:
+    """Соседний агент по списку, по кругу. Клавиши ↑ и ↓ ведут ровно туда же, куда щелчок
+    мышью по строке: два пути к одному месту, а не два разных поведения."""
+    rows = collect_agents(state)
+    if len(rows) < 2:
+        return
+    goto_agent(state, (agent_index(state, rows) + delta) % len(rows))
 
 
 async def handle_command(text: str, state: State) -> bool:
@@ -668,8 +676,6 @@ async def handle_command(text: str, state: State) -> bool:
         append_log(state, ui.system_prompt_fragments(source.name, source.system))
     elif cmd == "/team":
         cmd_team(state, arg)
-    elif cmd == "/agents":
-        open_agent_picker(state)
     elif cmd == "/mouse":
         toggle_mouse(state)
     elif cmd == "/clear":
@@ -896,20 +902,29 @@ def build_app(state: State) -> Application:
         style="class:status",
     )
 
-    tabs_window = Window(
-        content=FormattedTextControl(
-            text=lambda: ui.tabs_fragments(
-                [(screen.title, screen.status) for screen in state.screens],
-                state.active,
-                lambda index: switch_screen(state, index),
-            ),
-            focusable=False,
-        ),
-        height=1,
-        style="class:tabs",
+    def agent_panel() -> Fragments:
+        rows = collect_agents(state)
+        return ui.agent_panel_fragments(
+            [
+                (row.status, row.agent.name, row.occupation, row.agent.total_ms, row.agent.total_tokens, row.agent.runs)
+                for row in rows
+            ],
+            agent_index(state, rows),
+            get_app().output.get_size().columns,
+            lambda index: goto_agent(state, index),
+        )
+
+    agents_window = Window(
+        content=FormattedTextControl(text=agent_panel, focusable=False),
+        dont_extend_height=True,
+        wrap_lines=False,
+        style="class:agents",
     )
-    # Пока агентов нет, полоса не нужна — она только отнимала бы строку экрана.
-    tabs_area = ConditionalContainer(tabs_window, filter=Condition(lambda: len(state.screens) > 1))
+    # Пока агент один, списка нет: строка «main» в одиночестве ничего не сообщает и только
+    # съедает высоту экрана. Отбивку прячем вместе со списком — иначе под строкой ввода
+    # оставались бы две черты подряд.
+    many_agents = Condition(lambda: show_agent_panel(state))
+    agents_area = ConditionalContainer(HSplit([sep(), agents_window]), filter=many_agents)
 
     picker_active = Condition(lambda: state.picker is not None)
     picker_window = Window(
@@ -920,7 +935,7 @@ def build_app(state: State) -> Application:
     )
 
     root = FloatContainer(
-        content=HSplit([output_window, sep(), input_area, tabs_area, sep(), status_window]),
+        content=HSplit([output_window, sep(), input_area, agents_area, sep(), status_window]),
         floats=[
             Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=12, scroll_offset=1)),
             Float(left=2, bottom=4, content=ConditionalContainer(picker_window, filter=picker_active)),
@@ -1000,6 +1015,18 @@ def build_app(state: State) -> Application:
     @kb.add("c-end")
     def _resume_autoscroll(event) -> None:  # noqa: ANN001
         state.screen.pane.autoscroll = True
+
+    # Меню команд тоже ходит стрелками, и отнимать их у него нельзя: «/» открывает список
+    # прямо под строкой ввода, и там ↑/↓ выбирают команду.
+    menu_open = Condition(lambda: buffer.complete_state is not None)
+
+    @kb.add("up", filter=~picker_active & ~menu_open & many_agents)
+    def _prev_agent(event) -> None:  # noqa: ANN001
+        step_agent(state, -1)
+
+    @kb.add("down", filter=~picker_active & ~menu_open & many_agents)
+    def _next_agent(event) -> None:  # noqa: ANN001
+        step_agent(state, 1)
 
     @kb.add("escape", "left", filter=~picker_active)
     def _prev_pane(event) -> None:  # noqa: ANN001

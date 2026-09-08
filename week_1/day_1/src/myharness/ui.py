@@ -31,13 +31,15 @@ STYLE = Style.from_dict(
         "status.ok": "bg:#21252b #98c379",
         "status.bad": "bg:#21252b #e5c07b",
         "status.value": "bg:#21252b #56b6c2",
-        # полоса вкладок под строкой ввода: главный экран и экраны агентов
-        "tabs": "bg:#2c313a #7f8896",
-        "tabs.active": "bg:#3e4451 #ffffff bold",
-        "tabs.busy": "bg:#2c313a #61afef",
-        "tabs.done": "bg:#2c313a #98c379",
-        "tabs.error": "bg:#2c313a #e06c75",
-        "tabs.hint": "bg:#2c313a #5c6370 italic",
+        # список агентов под строкой ввода: строка на агента, главный разговор первым
+        "agents": "#5c6370",
+        "agents.name": "#abb2bf",
+        "agents.name.active": "#ffffff bold",
+        "agents.busy": "#61afef",
+        "agents.done": "#98c379",
+        "agents.error": "#e06c75",
+        "agents.hint": "#5c6370 italic",
+        "agents.meta": "#5c6370",
         # заголовки панелей внутри экрана
         "pane.title": "bg:#2c313a #7f8896",
         "pane.title.active": "bg:#3e4451 #ffffff bold",
@@ -72,8 +74,7 @@ COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("/set", "<параметр>", "изменить параметр — меню выбора значения", True),
     ("/system", "", "показать текущую системную инструкцию", True),
     ("/team", "[вопрос]", "поднять группу агентов из профиля-ведущего", True),
-    ("/agents", "", "список запущенных агентов — переход на экран агента", True),
-    ("/mouse", "", "отдать мышь harness и обратно (F2) — клики по вкладкам вместо выделения", False),
+    ("/mouse", "", "вернуть мышь терминалу и обратно (F2)", False),
     ("/clear", "", "очистить историю диалога", True),
     ("/exit", "", "выход", False),
 )
@@ -149,14 +150,14 @@ def status_fragments(
 
 
 STATUS_MARKS: dict[str, tuple[str, str]] = {
-    screens_mod.IDLE: ("·", "class:tabs"),
-    screens_mod.BUSY: ("…", "class:tabs.busy"),
-    screens_mod.DONE: ("✓", "class:tabs.done"),
-    screens_mod.ERROR: ("✕", "class:tabs.error"),
+    screens_mod.IDLE: ("·", "class:agents"),
+    screens_mod.BUSY: ("…", "class:agents.busy"),
+    screens_mod.DONE: ("✓", "class:agents.done"),
+    screens_mod.ERROR: ("✕", "class:agents.error"),
 }
 
 
-def _tab_click(on_click: Callable[[int], None], index: int) -> Callable[[MouseEvent], Any]:
+def _row_click(on_click: Callable[[int], None], index: int) -> Callable[[MouseEvent], Any]:
     def handler(mouse_event: MouseEvent) -> Any:
         if mouse_event.event_type == MouseEventType.MOUSE_UP:
             on_click(index)
@@ -166,23 +167,83 @@ def _tab_click(on_click: Callable[[int], None], index: int) -> Callable[[MouseEv
     return handler
 
 
-def tabs_fragments(items: list[tuple[str, str]], active: int, on_click: Callable[[int], None]) -> Fragments:
-    """Полоса вкладок под строкой ввода: главный экран и экраны агентов.
+# Сколько строк списка показываем разом. Набор из двух групп поднимает полтора десятка
+# агентов, и список во весь их рост съел бы пол-экрана — того самого, ради которого агентов и
+# поднимали. Двенадцать строк умещаются даже в невысокое окно, а остальные показывает окно
+# прокрутки: строка, на которой стоит пользователь, видна всегда.
+PANEL_ROWS_MAX = 12
 
-    Вкладка кликабельна (обработчик висит прямо на фрагменте текста) и пронумерована —
-    номер совпадает с Alt+N, чтобы клавиша и клик вели в одно и то же место. Значок
-    показывает, что с агентом происходит: думает, ответил или упал.
+PANEL_HINT = "Alt+N · Shift+←/→ — экран · Alt+←/→ — панель · ↑/↓ — агент · клик — перейти"
+
+
+def panel_slice(count: int, active: int, limit: int = PANEL_ROWS_MAX) -> tuple[int, int]:
+    """Какой отрезок списка показать. Окно ведём за выбранной строкой, а не за началом списка:
+    закрашенный кружок означает «вы здесь», и спрятать его значило бы соврать."""
+    if count <= limit:
+        return 0, count
+    start = max(0, min(active - limit // 2, count - limit))
+    return start, start + limit
+
+
+def _clip(text: str, width: int) -> str:
+    """Обрезать до ширины колонки. Многоточие ставим вместо последнего знака, а не после него:
+    иначе строка вылезает за ширину и переносится, ломая сетку списка."""
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    return text[: width - 1] + "…" if width > 1 else "…"
+
+
+def agent_panel_fragments(
+    rows: list[tuple[str, str, str, int, int, int]],
+    active: int,
+    width: int,
+    on_click: Callable[[int], None],
+) -> Fragments:
+    """Список агентов под строкой ввода: строка на агента, главный разговор первой строкой.
+
+    На вход — (состояние, имя, занятие, миллисекунды, токены, число обменов) по строке на
+    агента, номер строки, на которой стоит пользователь, ширина окна и переход по номеру.
+
+    Кружок слева говорит, на кого мы смотрим сейчас, а не что с агентом происходит:
+    состояние несут цвет имени и колонка занятия. Двух разных смыслов на один значок не
+    вешаем — список читают мельком.
+
+    Время и расход прижаты к правому краю: сравнивать их глазом можно только когда числа
+    стоят друг под другом. Каждая строка добивается пробелами до полной ширины, потому что
+    обработчик щелчка висит на самой строке — попасть мышью надо в строку, а не в буквы.
     """
-    out: Fragments = []
-    for index, (title, status) in enumerate(items):
-        mark, mark_style = STATUS_MARKS.get(status, STATUS_MARKS[screens_mod.IDLE])
-        handler = _tab_click(on_click, index)
-        style = "class:tabs.active" if index == active else "class:tabs"
-        out.append((style, f" {index + 1} {title} ", handler))
-        out.append((style if index == active else mark_style, f"{mark} ", handler))
-        out.append(("class:tabs", "│"))
-    out.append(("class:tabs.hint", "  Alt+N или Shift+←/→ — переключить экран"))
-    out.append(("class:tabs", " "))
+    start, end = panel_slice(len(rows), active)
+    shown = rows[start:end]
+    name_width = min(max((len(name) for _, name, _, _, _, _ in shown), default=0), 22)
+    meta_width = 9 + 2 + 8  # время, отбивка, токены
+    task_width = max(8, width - 3 - name_width - 2 - meta_width - 1)
+
+    out: Fragments = [("class:agents.hint", " " + PANEL_HINT), ("", "\n")]
+    if start:
+        out += [("class:agents", f" ↑ выше ещё {start}"), ("", "\n")]
+    for offset, (status, name, task, total_ms, total_tokens, runs) in enumerate(shown):
+        index = start + offset
+        current = index == active
+        handler = _row_click(on_click, index)
+        _, mark_style = STATUS_MARKS.get(status, STATUS_MARKS[screens_mod.IDLE])
+        elapsed = format_duration(total_ms) if runs else "—"
+        tokens = f"↓ {format_tokens(total_tokens)}" if runs else "—"
+        line: Fragments = [
+            (mark_style, " ● " if current else " ○ "),
+            ("class:agents.name.active" if current else "class:agents.name", _clip(name, name_width).ljust(name_width)),
+            ("class:agents", "  "),
+            (mark_style if status in (screens_mod.BUSY, screens_mod.ERROR) else "class:agents",
+             _clip(task, task_width).ljust(task_width)),
+            ("class:agents.meta", f"{elapsed:>9}  {tokens:>8}"),
+        ]
+        used = sum(len(text) for _, text in line)
+        line.append(("class:agents", " " * max(0, width - used)))
+        out += [(style, text, handler) for style, text in line]
+        out.append(("", "\n"))
+    if end < len(rows):
+        out += [("class:agents", f" ↓ ниже ещё {len(rows) - end}"), ("", "\n")]
     return out
 
 
@@ -206,6 +267,24 @@ AGENT_STATE_WORDS: dict[str, str] = {
 }
 
 
+def agent_occupation(status: str, task: str, profile_name: str) -> str:
+    """Чем агент занят — вторая колонка списка агентов.
+
+    Пока агент работает, показываем начало его вопроса: список читают именно затем, чтобы
+    понять, кто над чем сидит. Освободился — показываем имя профиля: вопрос уже отвечен, и
+    держать его в строке значит выдавать прошлое за настоящее. Оборвался — говорим об этом
+    словом, а не одним значком: искать глазами цвет в такой момент лишняя работа.
+
+    Вопрос сворачиваем до первой строки: многострочный вопрос разорвал бы сетку списка.
+    """
+    if status == screens_mod.BUSY:
+        first = next((line for line in task.strip().splitlines() if line.strip()), "")
+        return first.strip() or profile_name
+    if status == screens_mod.ERROR:
+        return f"{AGENT_STATE_WORDS[screens_mod.ERROR]} · {profile_name}"
+    return profile_name
+
+
 def format_duration(ms: int) -> str:
     """Время работы по-человечески: до минуты — секундами, дальше — минутами и секундами.
 
@@ -225,32 +304,6 @@ def format_tokens(count: int) -> str:
     if count < 1000:
         return str(count)
     return f"{count / 1000:.1f}k"
-
-
-def agent_rows(rows: list[tuple[str, str, str, int, int, int]]) -> list[tuple[str, str]]:
-    """Строки списка `/agents`: слева состояние и имя, справа время работы и токены.
-
-    На вход — (состояние, имя, профиль, миллисекунды, токены, число обменов); на выход —
-    пары (метка, подсказка) для панели выбора.
-
-    Ширины колонок считаются по самому списку, а не берутся с потолка: имена агентов бывают
-    и в три знака, и в двадцать, а сравнивать расход глазом можно только когда числа стоят
-    друг под другом.
-
-    Агент без единого обмена показывается прочерками, а не нулями. Ноль — это «работал и
-    ничего не потратил», чего не бывает; прочерк честно говорит «ещё не отвечал»."""
-    name_width = max((len(name) for _, name, _, _, _, _ in rows), default=0)
-    profile_width = max((len(profile) for _, _, profile, _, _, _ in rows), default=0)
-    state_width = max(len(word) for word in AGENT_STATE_WORDS.values())
-    out: list[tuple[str, str]] = []
-    for status, name, profile, total_ms, total_tokens, runs in rows:
-        mark, _ = STATUS_MARKS.get(status, STATUS_MARKS[screens_mod.IDLE])
-        elapsed = format_duration(total_ms) if runs else "—"
-        tokens = format_tokens(total_tokens) if runs else "—"
-        label = f"{mark} {name.ljust(name_width)}   {profile.ljust(profile_width)}"
-        word = AGENT_STATE_WORDS.get(status, status)
-        out.append((label, f"{word.ljust(state_width)}  {elapsed.rjust(9)}  {tokens.rjust(8)}"))
-    return out
 
 
 def methods_fragments(names: list[str]) -> Fragments:
@@ -302,6 +355,22 @@ def work_screens_fragments(names: list[str]) -> Fragments:
     out.append(("class:dim", "  ввод уходит в тот экран, который открыт (Alt+N, Shift+←/→ или клик)"))
     out.append(("", "\n"))
     return out
+
+
+def outcome_fragments(kind: str, source: str, text: str) -> Fragments:
+    """Итог оркестратора в ленте главного экрана: чей он и что в нём.
+
+    Ответ переносим целиком, а не ссылкой «смотрите вкладку такую-то». Человек, ведущий
+    разговор на главном экране, иначе обязан сам пойти и посмотреть, чем всё кончилось, —
+    а оркестратор, не вернувший итог наверх, не годится и в звено цикла: сравнивать
+    следующему шагу будет нечего.
+    """
+    return [
+        ("class:agent", f"● {kind} «{source}»"),
+        ("", "\n"),
+        ("", text.strip()),
+        ("", "\n"),
+    ]
 
 
 def team_summary_label_fragments(count: int) -> Fragments:
@@ -427,13 +496,19 @@ def help_fragments() -> Fragments:
         "/set <параметр> открывает меню значений: стрелки — выбор, Enter — применить,\n"
         "Esc — выйти без изменений.\n"
         "\n"
+        "Список агентов\n"
+        "Как только поднят хоть один агент кроме главного разговора, под строкой ввода\n"
+        "появляется список: строка на агента, главный разговор первой строкой. Закрашенный\n"
+        "кружок — тот, на кого вы смотрите сейчас; справа время работы и расход токенов.\n"
+        "↑ и ↓ переводят на соседнего агента, клик по строке — на выбранного.\n"
+        "\n"
         "Группа агентов\n"
         "Профиль со списком agents поднимает агентов: вопрос уходит каждому со своей\n"
         "системной инструкцией, ответы приходят на отдельные экраны, а профиль-ведущий\n"
         "сводит их в общий вывод. Экраны агентов — только для чтения: постановка задачи,\n"
-        "рассуждения и ответ. Переключение — клик по вкладке, Alt+N или Shift+←/→.\n"
-        "/agents показывает всех поднятых агентов со временем работы и расходом токенов;\n"
-        "Enter на строке переводит на экран и панель выбранного агента.\n"
+        "рассуждения и ответ. Переключение — Alt+N, Shift+←/→ или строка списка агентов.\n"
+        "Итог работы оркестратора — сводка ведущего у группы, ответ последнего шага у\n"
+        "цепочки — возвращается в главный экран целиком, с пометкой, кто его дал.\n"
         "\n"
         "Профиль со списком screens раскладывает приём по вкладкам: у каждого экрана своя\n"
         "инструкция и своя заготовка ввода, и ввод уходит в тот экран, который открыт.\n"
@@ -443,10 +518,10 @@ def help_fragments() -> Fragments:
         "Внутри вкладки может быть несколько панелей — шаги приёма или ответы экспертов рядом.\n"
         "Alt+←/→ переходят между панелями, F3 разворачивает панель на весь экран и обратно.\n"
         "\n"
-        "Мышь по умолчанию принадлежит терминалу: текст выделяется и копируется как обычно.\n"
-        "F2 или /mouse отдают мышь harness — тогда работают клики по вкладкам и прокрутка\n"
-        "колесом, но выделять текст на это время нельзя. Экраны переключаются и клавишами,\n"
-        "поэтому мышь можно не трогать вовсе.\n"
+        "Мышь работает сразу: клики по строкам списка агентов и по строкам меню, прокрутка\n"
+        "колесом. Выделение текста при этом остаётся за терминалом — harness просит у него\n"
+        "только нажатия, без отслеживания протяжки. F2 или /mouse возвращают мышь терминалу\n"
+        "целиком: это аварийный выход на случай терминала, который так не умеет.\n"
         "\n"
         "Ctrl+C во время ответа — отменить текущий запрос (всю группу разом).\n"
         "Пока модель отвечает, можно вводить следующие сообщения — они встанут в очередь\n"

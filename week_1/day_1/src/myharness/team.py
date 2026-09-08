@@ -111,13 +111,17 @@ def build_summary_request(question: str, answers: list[tuple[str, str]]) -> str:
     return "\n".join(parts).strip()
 
 
-async def run(state, question: str, lead: Profile, *, announce: bool = True) -> None:
-    """Поднять группу ведущего профиля на этом вопросе и свести ответы."""
+async def run(state, question: str, lead: Profile, *, announce: bool = True) -> output.Outcome | None:
+    """Поднять группу ведущего профиля на этом вопросе и свести ответы.
+
+    Сводку возвращаем вызывающему, а в главный экран не пишем: куда девать итог, решает тот,
+    кто группу поднял. Поднял пользователь — итог кладёт очередь запросов; поднял набор
+    способов — он же, вместе с итогами остальных способов и в порядке набора."""
     run_id = uuid4().hex[:8]
     agents = load_agents(state, lead)
     if not agents:
         output.append_log(state, ui.error_fragments("группа не поднята: ни один профиль агента не найден"))
-        return
+        return None
 
     board, summary_screen = ensure_screens(state, lead, agents)
     if announce:
@@ -140,7 +144,7 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
         output.append_log(state, ui.error_fragments(f"агент «{name}» ответа не дал — в сводку не попал"), summary_screen)
     if not answers:
         output.append_log(state, ui.error_fragments("сводить нечего: ни один агент не ответил"), summary_screen)
-        return
+        return None
 
     output.append_log(state, ui.team_summary_label_fragments(len(answers)), summary_screen)
     if not lead.system:
@@ -149,7 +153,7 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
         output.append_log(
             state, ui.system_fragments("у ведущего нет своей инструкции — свожу по общему правилу"), summary_screen
         )
-    await output.run_turn(
+    summary = await output.run_turn(
         state,
         summary_screen.first.agent,
         build_summary_request(question, answers),
@@ -157,3 +161,6 @@ async def run(state, question: str, lead: Profile, *, announce: bool = True) -> 
         agent_name="lead",
         run_id=run_id,
     )
+    if not (summary.ok and summary.text.strip()):
+        return None
+    return output.Outcome(kind="сводка группы", source=lead.name, text=summary.text)

@@ -74,6 +74,35 @@ def log_text(state, target=None):
     return fragments_text(pane.log)
 
 
+def panel_fragments(app):
+    """Фрагменты списка агентов прямо из раскладки — с обработчиками щелчка.
+
+    Ищем по строке подсказок над списком: собственного имени у окна нет, а подделывать
+    фрагменты рядом с приложением значило бы проверять не то, что видит пользователь."""
+    for window in app.layout.walk():
+        if not isinstance(window, Window):
+            continue
+        getter = getattr(window.content, "text", None)
+        if not callable(getter):
+            continue
+        try:
+            value = getter()
+        except Exception:
+            continue
+        if isinstance(value, list) and any("↑/↓" in item[1] for item in value if len(item) >= 2):
+            return value
+    return []
+
+
+def panel_text(app):
+    return "".join(item[1] for item in panel_fragments(app))
+
+
+def press(app, key, sequence):
+    app.key_processor.feed(KeyPress(key, sequence))
+    app.key_processor.process_keys()
+
+
 def screen_texts(app):
     """Тексты всех окон текущей раскладки — так видно, что показывает строка состояния."""
     out = []
@@ -117,7 +146,8 @@ async def main():
         buffer = app.layout.get_buffer_by_name("text-area") or app.current_buffer
         check("список команд открылся без Enter", buffer.complete_state is not None)
         count = len(buffer.complete_state.completions) if buffer.complete_state else 0
-        check("в списке команды авторизованного, без /auth", count == 11, f"их {count}")
+        check("в списке команды авторизованного, без /auth", count == 10, f"их {count}")
+        check("пока агент один, списка агентов нет", not cli.show_agent_panel(state))
 
         await send(DOWN)
         check("стрелка выбирает пункт", buffer.complete_state.current_completion is not None)
@@ -305,11 +335,20 @@ async def main():
         summary_call = agent_calls[-1]
         check("ведущему ушли ответы всех агентов", summary_call["messages"][0]["content"] == "сведи ответы" and "Ответ эксперта «critic»" in summary_call["messages"][1]["content"])
 
-        check("полоса вкладок появилась", any("2 lead" in text for text in screen_texts(app)))
-        tabs = ui.tabs_fragments([(s.title, s.status) for s in state.screens], state.active, lambda i: cli.switch_screen(state, i))
-        handler = next(f[2] for f in tabs if len(f) == 3 and f[1].strip().endswith("lead"))
+        check("список агентов появился", cli.show_agent_panel(state))
+        check("в списке видны агенты группы", "analyst" in panel_text(app) and "critic" in panel_text(app), panel_text(app))
+        handler = next(f[2] for f in panel_fragments(app) if len(f) == 3 and "analyst" in f[1])
         handler(MouseEvent(position=Point(0, 0), event_type=MouseEventType.MOUSE_UP, button=MouseButton.LEFT, modifiers=frozenset()))
-        check("клик по вкладке открывает экран группы", state.active == 1 and state.screen is board)
+        check("клик по строке списка открывает экран агента", state.active == 1 and state.screen is board)
+
+        # Итог оркестратора возвращается в главный экран: человеку, ведущему разговор, не
+        # приходится идти на чужую вкладку и смотреть, чем всё кончилось.
+        check("сводка ведущего вернулась в главный экран", "сводка группы «lead»" in log_text(state), log_text(state)[-300:])
+        хвост = log_text(state).split("сводка группы «lead»")[-1]
+        check("в главном экране лежит сам ответ, а не ссылка на вкладку", '"status": "ok"' in хвост[:200], хвост[:200])
+        память = state.main_agent.history()
+        check("итог попал и в память главного агента", len(память) == 2 and память[0]["content"] == "почему так?", str(память))
+        check("в памяти лежит текст итога", '"status": "ok"' in память[1]["content"], str(память))
         await send("/system" + ENTER, pause=0.25)
         check("/system на панели эксперта показывает его инструкцию", "ты аналитик" in log_text(state, board.panes[0]))
         cli.switch_screen(state, 0)
@@ -408,6 +447,24 @@ async def main():
         check("эксперты отвечали в свои панели", all('"status": "ok"' in log_text(state, pane) for pane in board.panes))
         check("сводка ведущего на своей вкладке", "свожу ответы агентов" in log_text(state, state.screens[4]))
 
+        # Итоги всех способов возвращаются в главный экран — и в порядке набора, а не в
+        # порядке, в каком способы управились: сравнивают их по столбцам набора.
+        главный = log_text(state)
+        итоги = [
+            главный.find("ответ способа «plain»"),
+            главный.find("итог цепочки «two_steps → step_solve»"),
+            главный.find("сводка группы «lead»", главный.find("способы: plain")),
+        ]
+        check("итог каждого способа вернулся в главный экран", all(место > 0 for место in итоги), str(итоги))
+        check("итоги идут в порядке набора, а не готовности", итоги == sorted(итоги), str(итоги))
+        память = state.main_agent.history()
+        check("на весь прогон одна пара в памяти, а не по паре на способ", len(память) == 2, str(len(память)))
+        check(
+            "в памяти итоги подписаны, иначе это склейка из трёх ответов",
+            память[1]["content"].count("[") == 3,
+            память[1]["content"][:200],
+        )
+
         cli.switch_screen(state, 3)
         check("панель по умолчанию первая", state.screen.active_pane == 0)
         cli.switch_pane(state, 1)
@@ -420,64 +477,62 @@ async def main():
         check("и возвращает сетку", state.screen.zoomed is False)
         cli.switch_screen(state, 0)
 
-        print("\n10. Список запущенных агентов")
+        print("\n10. Список агентов под строкой ввода")
         # Группа поднимается заново, поверх набора способов: так в списке заведомо есть и
         # отвечавшие агенты, и один не отвечавший — собеседник главного экрана. Смена
         # профиля заводит его заново, поэтому прежние обмены на него не переносятся.
         await send("/profile lead" + ENTER, pause=0.3)
         await send("кто из вас прав?" + ENTER, pause=0.9)
-        await send("/agents" + ENTER, pause=0.3)
-        check("панель списка открылась", state.picker is not None)
-        labels = [item.label for item in state.picker.items]
-        hints = [item.hint for item in state.picker.items]
+        rows = cli.collect_agents(state)
         # Агентов ровно четыре: собеседник главного экрана, два эксперта и ведущий на сводке.
         check(
-            "в списке все поднятые агенты",
-            len(labels) == 4 and any("analyst" in row for row in labels) and any("critic" in row for row in labels),
-            str(labels),
+            "порядок строк повторяет порядок экранов и панелей",
+            [row.agent.name for row in rows] == ["main", "analyst", "critic", "lead:summary"],
+            str([row.agent.name for row in rows]),
         )
-        check(
-            "порядок строк повторяет порядок вкладок и панелей",
-            [row.split()[1] for row in labels] == ["main", "analyst", "critic", "lead:summary"],
-            str(labels),
-        )
-        critic_index = next(i for i, row in enumerate(labels) if "critic" in row)
+        строки = [строка for строка in panel_text(app).split("\n") if строка.strip()]
+        check("список стоит под строкой ввода без всяких команд", cli.show_agent_panel(state))
+        check("над списком строка подсказок", "↑/↓" in строки[0] and "клик" in строки[0], строки[0])
+        check("главный разговор — первой строкой", строки[1].strip().startswith("○ main") or строки[1].strip().startswith("● main"), строки[1])
         check(
             "у отвечавшего агента посчитаны токены",
-            "46" in hints[critic_index] and "с" in hints[critic_index],
-            hints[critic_index],
+            any("↓ 46" in строка and "critic" in строка for строка in строки),
+            str(строки),
         )
-        main_index = next(i for i, row in enumerate(labels) if "main" in row)
         check(
             "агент, который ещё не отвечал, показан прочерками",
-            hints[main_index].count("—") == 2,
-            hints[main_index],
+            next(строка for строка in строки if "main" in строка).count("—") == 2,
+            next(строка for строка in строки if "main" in строка),
         )
-        # Клик мышью по строке эксперта: обработчик висит на самом фрагменте текста, как
-        # у вкладок. Пользователь просил именно клик — проверяем тем же способом, каким
-        # проверен клик по вкладке.
-        panel = picker_mod.fragments(state.picker)
-        row_handler = next(
-            f[2] for f in panel if len(f) == 3 and "critic" in f[1]
+
+        # Стрелки водят по строкам списка: тот же путь, что и щелчок мышью.
+        cli.switch_screen(state, 0)
+        cli.switch_pane(state, 0)
+        press(app, Keys.Down, "\x1b[B")
+        await asyncio.sleep(0.15)
+        check(
+            "↓ переводит на следующего агента списка",
+            state.screen.key == "lead" and state.screen.pane.key == "analyst",
+            f"{state.screen.key} / {state.screen.pane.key}",
         )
+        check("закрашен тот, на кого перешли", any(строка.strip().startswith("● analyst") for строка in panel_text(app).split("\n")), panel_text(app))
+        press(app, Keys.Up, "\x1b[A")
+        await asyncio.sleep(0.15)
+        check("↑ возвращает на предыдущего", state.active == 0 and state.screen.key == "main")
+
+        # Меню команд ходит теми же стрелками, и отнимать их у него нельзя.
+        await send("/")
+        press(app, Keys.Down, "\x1b[B")
+        await asyncio.sleep(0.15)
+        check("при открытом меню команд стрелка выбирает команду, а не агента", state.active == 0 and buffer.complete_state is not None)
+        await send(ESC + "\x7f" * 40)
+
+        # Клик мышью по строке: обработчик висит на самой строке, включая отбивку справа.
+        row_handler = next(f[2] for f in panel_fragments(app) if len(f) == 3 and "critic" in f[1])
         row_handler(MouseEvent(position=Point(0, 0), event_type=MouseEventType.MOUSE_UP, button=MouseButton.LEFT, modifiers=frozenset()))
-        check("панель закрылась после выбора", state.picker is None)
         check(
             "клик по строке переводит на экран и панель агента",
             state.screen.key == "lead" and state.screen.pane.key == "critic",
-            f"{state.screen.key} / {state.screen.pane.key}",
-        )
-
-        # И то же самое клавишами — второй путь к тому же месту.
-        cli.switch_screen(state, 0)
-        cli.switch_pane(state, 0)
-        await send("/agents" + ENTER, pause=0.3)
-        labels = [item.label for item in state.picker.items]
-        critic_index = next(i for i, row in enumerate(labels) if "critic" in row)
-        await send(DOWN * (critic_index - state.picker.index) + ENTER, pause=0.3)
-        check(
-            "выбор строки клавишами переводит туда же",
-            state.picker is None and state.screen.key == "lead" and state.screen.pane.key == "critic",
             f"{state.screen.key} / {state.screen.pane.key}",
         )
         cli.switch_screen(state, 0)

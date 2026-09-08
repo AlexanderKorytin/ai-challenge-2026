@@ -42,6 +42,8 @@ from myharness import api, journal, params as params_mod, picker as picker_mod, 
 from myharness import batch, cli, screens as screens_mod, team  # noqa: E402
 from myharness.agent import Agent, Turn, usage_tokens
 from myharness.config import Config  # noqa: E402
+from prompt_toolkit.data_structures import Point  # noqa: E402
+from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType  # noqa: E402
 
 print("\n1. Профили")
 (tmp / "profiles").mkdir(parents=True)
@@ -344,10 +346,6 @@ check("набор способов прочитан", method_set.methods == ["fr
 check("широкое окно — три панели в ряд", cli.pane_columns(5, 200) == 3)
 check("обычное окно — две", cli.pane_columns(5, 120) == 2)
 check("узкое окно — панели одна под другой", cli.pane_columns(5, 80) == 1)
-
-tabs = ui.tabs_fragments([("главный", "done"), ("analyst", "busy")], 0, lambda index: None)
-check("вкладки подписаны и пронумерованы", "1 главный" in "".join(f[1] for f in tabs) and "2 analyst" in "".join(f[1] for f in tabs))
-check("вкладка кликабельна — на фрагменте обработчик", any(len(f) == 3 for f in tabs))
 
 print("\n8. Разбор параметров для API")
 direct, extra = api.split_params(profiles.load("s3")[0].params)
@@ -1295,20 +1293,93 @@ check("ровно минута уже не секунды", ui.format_duration(6
 check("токены до тысячи — как есть", ui.format_tokens(46) == "46", ui.format_tokens(46))
 check("тысячи сокращаются", ui.format_tokens(92_417) == "92.4k", ui.format_tokens(92_417))
 
-строки = ui.agent_rows(
-    [
-        (screens_mod.DONE, "analyst", "analyst", 12_400, 92_417, 3),
-        (screens_mod.ERROR, "critic", "critic", 900, 0, 1),
-        (screens_mod.IDLE, "lead:summary", "lead", 0, 0, 0),
-    ]
+# Колонка занятия. Пока агент работает — начало его вопроса; освободился — имя профиля;
+# оборвался — слово «ошибка». Многострочный вопрос сворачивается до первой строки, иначе
+# сетка списка разъезжается.
+check(
+    "занятый агент показывает начало вопроса",
+    ui.agent_occupation(screens_mod.BUSY, "как из рубашки\nсделать птицу?", "meta") == "как из рубашки",
+    ui.agent_occupation(screens_mod.BUSY, "как из рубашки\nсделать птицу?", "meta"),
 )
-метки = [метка for метка, _ in строки]
-подсказки = [подсказка for _, подсказка in строки]
-check("состояние показано тем же значком, что на вкладках", метки[0].startswith("✓") and метки[1].startswith("✕"), str(метки))
-check("имя и профиль выровнены по самому длинному", all(len(метка) == len(метки[0]) for метка in метки), str(метки))
-check("время и токены в строке", "12.4 с" in подсказки[0] and "92.4k" in подсказки[0], подсказки[0])
-check("упавший агент назван ошибкой, а его время посчитано", "ошибка" in подсказки[1] and "0.9 с" in подсказки[1], подсказки[1])
-check("ещё не отвечавший агент показан прочерками, а не нулями", "—" in подсказки[2] and "0" not in подсказки[2], подсказки[2])
+check(
+    "свободный агент показывает профиль",
+    ui.agent_occupation(screens_mod.DONE, "прежний вопрос", "meta") == "meta",
+)
+check(
+    "оборвавшийся агент назван ошибкой словом",
+    ui.agent_occupation(screens_mod.ERROR, "вопрос", "meta") == "ошибка · meta",
+    ui.agent_occupation(screens_mod.ERROR, "вопрос", "meta"),
+)
+check(
+    "занятый агент без вопроса не показывает пустоту",
+    ui.agent_occupation(screens_mod.BUSY, "   \n ", "meta") == "meta",
+)
+
+# Окно прокрутки списка. Строка, на которой стоит пользователь, обязана быть видна: иначе
+# закрашенный кружок «вы здесь» просто пропадает с экрана.
+check("список короче предела показан целиком", ui.panel_slice(4, 0, limit=12) == (0, 4), str(ui.panel_slice(4, 0, limit=12)))
+check("длинный список ведёт окно за выбором", ui.panel_slice(20, 10, limit=6) == (7, 13), str(ui.panel_slice(20, 10, limit=6)))
+check("у начала списка окно не уходит в минус", ui.panel_slice(20, 0, limit=6) == (0, 6), str(ui.panel_slice(20, 0, limit=6)))
+check("у конца списка окно упирается в конец", ui.panel_slice(20, 19, limit=6) == (14, 20), str(ui.panel_slice(20, 19, limit=6)))
+for активный in range(20):
+    начало, конец = ui.panel_slice(20, активный, limit=6)
+    if not начало <= активный < конец:
+        check("выбранная строка всегда внутри окна", False, f"строка {активный} вне ({начало}, {конец})")
+        break
+else:
+    check("выбранная строка всегда внутри окна", True)
+
+# Сам список. Ширину задаём вручную — терминала в проверках нет, а от ширины зависит и
+# обрезка колонки занятия, и правый край с временем и токенами.
+список = ui.agent_panel_fragments(
+    [
+        (screens_mod.IDLE, "main", "default", 0, 0, 0),
+        (screens_mod.DONE, "analyst", "analyst", 12_400, 92_417, 3),
+        (screens_mod.ERROR, "critic", "ошибка · critic", 900, 0, 1),
+    ],
+    active=1,
+    width=78,
+    on_click=lambda index: None,
+)
+текст_списка = "".join(фрагмент[1] for фрагмент in список)
+строки_списка = текст_списка.split("\n")
+check("над списком стоит строка подсказок", "↑/↓" in строки_списка[0] and "клик" in строки_списка[0], строки_списка[0])
+check("строка на агента, главный первой", строки_списка[1].strip().startswith("○ main"), строки_списка[1])
+check("закрашен тот, на кого смотрим", строки_списка[2].strip().startswith("● analyst"), строки_списка[2])
+check("время и токены прижаты вправо", строки_списка[2].rstrip().endswith("↓ 92.4k"), repr(строки_списка[2]))
+check("ещё не отвечавший показан прочерками, а не нулями", строки_списка[1].count("—") == 2, строки_списка[1])
+check(
+    "все строки списка одной ширины",
+    all(len(строка) == 78 for строка in строки_списка[1:4]),
+    str([len(строка) for строка in строки_списка[1:4]]),
+)
+check(
+    "щелчок ловится всей строкой, включая отбивку",
+    all(len(фрагмент) == 3 for фрагмент in список if фрагмент[1] and фрагмент[1] != "\n" and "↑/↓" not in фрагмент[1]),
+)
+
+# Переход по щелчку — по номеру строки, а не по имени: имена агентов повторяются от набора
+# к набору, а номер строки в списке всегда один.
+переходы = []
+ui.agent_panel_fragments(
+    [(screens_mod.IDLE, "main", "default", 0, 0, 0), (screens_mod.IDLE, "analyst", "analyst", 0, 0, 0)],
+    active=0,
+    width=78,
+    on_click=переходы.append,
+)[-3][2](
+    MouseEvent(position=Point(0, 0), event_type=MouseEventType.MOUSE_UP, button=MouseButton.LEFT, modifiers=frozenset())
+)
+check("щелчок по строке зовёт переход с её номером", переходы == [1], str(переходы))
+
+# Длинный список: показаны не все строки, и об остатке сказано вслух, а не молча обрезано.
+длинный = ui.agent_panel_fragments(
+    [(screens_mod.IDLE, f"агент{номер}", "профиль", 0, 0, 0) for номер in range(20)],
+    active=0,
+    width=78,
+    on_click=lambda index: None,
+)
+текст_длинного = "".join(фрагмент[1] for фрагмент in длинный)
+check("длинный список говорит, сколько строк осталось ниже", "ниже ещё 8" in текст_длинного, текст_длинного[-40:])
 
 print()
 if failures:

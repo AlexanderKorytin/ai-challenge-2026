@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from . import api, ui
@@ -24,6 +25,52 @@ if TYPE_CHECKING:  # только для подсказок типов — на 
     from .cli import State
 
 Fragments = list[tuple[str, str]]
+
+
+@dataclass
+class Outcome:
+    """Итог работы оркестратора — то, ради чего его поднимали.
+
+    Оркестратор (группа, цепочка, набор способов) сам итог не показывает и не решает, куда
+    его девать: он возвращает эту запись, а кладёт её в главный экран `deliver`. Разделение
+    не формальность — набор способов состоит из тех же оркестраторов, и решай каждый из них
+    судьбу своего итога сам, четыре способа писали бы в главный экран одновременно, вперемешку
+    и в случайном порядке.
+    """
+
+    kind: str  # что это за итог: «сводка группы», «итог цепочки», «ответ способа»
+    source: str  # кто его дал: имя ведущего, шага или способа
+    text: str
+
+
+def join_outcomes(outcomes: list[Outcome]) -> str:
+    """Итоги одним текстом — для памяти главного агента.
+
+    Один итог кладём как есть: пометка «кто сказал» в памяти лишняя, отвечал ровно один.
+    Несколько — с заголовками, иначе в памяти окажется склейка из четырёх ответов, про
+    которую нельзя сказать, где кончается один и начинается другой.
+    """
+    if len(outcomes) == 1:
+        return outcomes[0].text.strip()
+    return "\n\n".join(f"[{item.kind} «{item.source}»]\n{item.text.strip()}" for item in outcomes)
+
+
+def deliver(state: State, question: str, outcomes: list[Outcome]) -> None:
+    """Положить итоги оркестратора в главный экран — в ленту и в память главного агента.
+
+    Единственное место, где это делается. До сих пор цепочка и группа оставляли результат на
+    своих вкладках, а главный экран сообщал лишь «способы: …» — человек, ведущий разговор,
+    обязан был сам пойти и посмотреть, чем всё кончилось.
+
+    В память кладём тоже: разговор на главном экране продолжается после того, как отработала
+    группа, и следующий вопрос («а покороче?») без итога в памяти повисает в пустоте. Пару
+    пишем одну на весь прогон — вопрос был один, сколько бы способов на него ни отвечало.
+    """
+    if not outcomes:
+        return
+    for item in outcomes:
+        append_log(state, ui.outcome_fragments(item.kind, item.source, item.text), state.main)
+    state.main_agent.remember(question, join_outcomes(outcomes))
 
 
 def target_pane(state: State, target: screens_mod.Screen | screens_mod.Pane | None) -> screens_mod.Pane:

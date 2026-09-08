@@ -118,7 +118,7 @@ def ensure_screens(state, methods: list[Profile]) -> None:
         state.screens.append(screen)
 
 
-async def run_chain(state, panes: list[screens_mod.Pane], question: str) -> None:
+async def run_chain(state, name: str, panes: list[screens_mod.Pane], question: str) -> output.Outcome | None:
     """Цепочка шагов: то, что ответил предыдущий шаг, становится началом запроса следующего.
 
     Человеку тут копировать нечего — промпт переносится сам.
@@ -129,8 +129,14 @@ async def run_chain(state, panes: list[screens_mod.Pane], question: str) -> None
 
     Профиля способа здесь нет намеренно: инструкцию и собеседника каждого шага несёт его
     собственная панель (`pane.profile`, `pane.agent`). Второй источник той же правды в
-    аргументах только вводил бы в заблуждение — на выполнение он не влиял никак."""
+    аргументах только вводил бы в заблуждение — на выполнение он не влиял никак. Имя цепочки
+    приходит отдельной строкой, потому что панели его не несут: при раскладке `panes` ключ
+    панели — имя шага, при `tabs` — пара «цепочка:шаг», и собрать из них подпись итога нельзя.
+
+    Ответ последнего шага возвращается вызывающему: это и есть итог цепочки. Оборвалась
+    цепочка на полпути — итога нет, и возвращается пустое, а не ответ середины."""
     carried = ""
+    last = ""
     for index, pane in enumerate(panes):
         step = pane.profile
         if step is None:
@@ -141,24 +147,36 @@ async def run_chain(state, panes: list[screens_mod.Pane], question: str) -> None
         turn = await output.run_turn(state, pane.agent, content, pane=pane)
         if not turn.ok:
             output.append_log(state, ui.error_fragments("шаг не дал ответа — цепочка прервана"), pane)
-            return
+            return None
         carried = turn.text
+        last = step.name
+    if not carried.strip():
+        return None
+    return output.Outcome(kind="итог цепочки", source=f"{name} → {last}", text=carried)
 
 
-async def run_single(state, screen: screens_mod.Screen, question: str) -> None:
+async def run_single(state, screen: screens_mod.Screen, question: str) -> output.Outcome | None:
     """Обычный способ: один запрос, одна лента. Профиль, как и у цепочки, берётся у панели."""
     pane = screen.first
     pane.status = screens_mod.BUSY
     output.append_log(state, ui.user_fragments(question), pane)
-    await output.run_turn(state, pane.agent, question, pane=pane)
+    turn = await output.run_turn(state, pane.agent, question, pane=pane)
+    if not (turn.ok and turn.text.strip()):
+        return None
+    return output.Outcome(kind="ответ способа", source=screen.key, text=turn.text)
 
 
-async def run_all(state, question: str, holder: Profile) -> None:
-    """Задать вопрос всем способам набора разом."""
+async def run_all(state, question: str, holder: Profile) -> list[output.Outcome]:
+    """Задать вопрос всем способам набора разом и собрать их итоги.
+
+    Итоги возвращаются в порядке списка `methods`, а не в порядке, в каком способы управились:
+    сравнивают их по столбцам набора, и список, переставляющий способы от прогона к прогону,
+    сравнивать нечем. `asyncio.gather` порядок задач сохраняет, поэтому достаточно не терять
+    соответствия между задачей и способом."""
     methods = load_methods(state, holder)
     if not methods:
         output.append_log(state, ui.error_fragments("ни один способ не найден — набор пуст"))
-        return
+        return []
     ensure_screens(state, methods)
 
     tasks = []
@@ -169,9 +187,10 @@ async def run_all(state, question: str, holder: Profile) -> None:
         if profile.screens:
             panes = chain_step_panes(state, profile)
             if panes:
-                tasks.append(run_chain(state, panes, question))
+                tasks.append(run_chain(state, profile.name, panes, question))
             continue
         screen = find_screen(state, profile.name)
         if screen is not None:
             tasks.append(run_single(state, screen, question))
-    await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks)
+    return [item for item in results if item is not None]
