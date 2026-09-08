@@ -65,12 +65,17 @@ def deliver(state: State, question: str, outcomes: list[Outcome]) -> None:
     В память кладём тоже: разговор на главном экране продолжается после того, как отработала
     группа, и следующий вопрос («а покороче?») без итога в памяти повисает в пустоте. Пару
     пишем одну на весь прогон — вопрос был один, сколько бы способов на него ни отвечало.
+
+    Модель называем ту, которой работает приложение: оркестратор ходил к ней же, а пометки
+    в записи разговора должны говорить, чем ответ получен. Условие `keep_history` здесь не
+    проверяется намеренно — оно живёт внутри `remember`, единственной точки пополнения, и
+    вторая его копия тут разошлась бы с первой при первой же правке.
     """
     if not outcomes:
         return
     for item in outcomes:
         append_log(state, ui.outcome_fragments(item.kind, item.source, item.text), state.main)
-    state.main_agent.remember(question, join_outcomes(outcomes))
+    state.main_agent.remember(question, join_outcomes(outcomes), model=state.model)
 
 
 def target_pane(state: State, target: screens_mod.Screen | screens_mod.Pane | None) -> screens_mod.Pane:
