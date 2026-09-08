@@ -279,7 +279,16 @@ class Agent:
         self._dropped_pairs = self._trim()
         messages: list[dict] = []
         system = self.profile.system or ""
-        block = memory.facts_block(self._facts()) if self._facts is not None else ""
+        block = ""
+        if self._facts is not None:
+            try:
+                block = memory.facts_block(self._facts())
+            except Exception as exc:  # noqa: BLE001 — источник фактов приходит снаружи
+                # Сборка запроса идёт ДО начала обмена, и исключение отсюда улетело бы мимо
+                # всей обработки: ни ответа, ни записи прогона в журнал. Сегодня чтение фактов
+                # не бросает по построению, но гарантия «вспомогательный механизм не роняет
+                # обмен» не имеет права держаться на чужом обещании.
+                self.store_error = f"не удалось прочитать глобальную память: {exc}"
         if block:
             # Профиль без инструкции, но с фактами получает системное сообщение из одного
             # блока фактов: иначе факты пропадали бы ровно у встроенного `default`, которым

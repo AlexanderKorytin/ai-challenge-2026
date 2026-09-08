@@ -4,6 +4,7 @@
 а вместо DeepSeek подставлен поддельный клиент — проверки ничего не стоят и не жгут ключ.
 """
 
+import ast
 import asyncio
 import json
 import os
@@ -32,7 +33,7 @@ from prompt_toolkit.output import DummyOutput  # noqa: E402
 from prompt_toolkit.data_structures import Point  # noqa: E402
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType  # noqa: E402
 
-from myharness import api, cli, picker as picker_mod, profiles, ui  # noqa: E402
+from myharness import api, archivist, cli, memory, picker as picker_mod, profiles, ui  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 failures = []
@@ -127,7 +128,10 @@ def screen_texts(app):
 async def main():
     fake = FakeClient()
     state = cli.State(
-        config=Config(api_key="sk-test", model="deepseek-v4-flash"),
+        # Сбор фактов выключен на время разделов 1–11: архивариус — лишний запрос к
+        # подставному клиенту, и он сбил бы счёт вызовов там, где вызовы считают поимённо.
+        # Включают его обратно в разделе 12в, где он и проверяется.
+        config=Config(api_key="sk-test", model="deepseek-v4-flash", remember=False),
         client=fake,
         model="deepseek-v4-flash",
         profile=profiles.builtin_default(),
@@ -149,7 +153,7 @@ async def main():
         buffer = app.layout.get_buffer_by_name("text-area") or app.current_buffer
         check("список команд открылся без Enter", buffer.complete_state is not None)
         count = len(buffer.complete_state.completions) if buffer.complete_state else 0
-        check("в списке команды авторизованного, без /auth", count == 10, f"их {count}")
+        check("в списке команды авторизованного, без /auth", count == 13, f"их {count}")
         check("пока агент один, списка агентов нет", not cli.show_agent_panel(state))
 
         await send(DOWN)
@@ -613,7 +617,274 @@ async def main():
         )
         cli.switch_screen(state, 0)
 
-        print("\n12. Выход")
+        print("\n12. Память между запусками")
+        # Сбор фактов на время остального прогона выключен намеренно: архивариус — лишний
+        # запрос к подставному клиенту, и он сбил бы счёт вызовов в разделах выше. Здесь его
+        # включают обратно и проверяют отдельно.
+        cli.switch_screen(state, 0)
+        await send("/profile talky" + ENTER, pause=0.3)
+        каталог_запуска = Path.cwd()
+        файл_разговора = state.store.path if state.store else None
+        check("разговор пишется в файл сессии профиля", файл_разговора is not None and файл_разговора.exists(), str(файл_разговора))
+        check(
+            "файл разговора лежит в каталоге профиля, а не проекта",
+            файл_разговора.parent == memory.profile_dir(каталог_запуска, "talky"),
+            str(файл_разговора.parent),
+        )
+        check("права файла разговора 600", oct(файл_разговора.stat().st_mode & 0o777) == "0o600", oct(файл_разговора.stat().st_mode & 0o777))
+
+        # Перезапуск без второго процесса: собираем состояние заново в том же каталоге и с
+        # тем же профилем — ровно то, что делает `_main` при следующем запуске.
+        сохранённых_пар = len(memory.read_session(файл_разговора, window=0, system_fp="").pairs)
+        второй_запуск = cli.State(
+            config=Config(api_key="sk-test", model="deepseek-v4-flash", profile="talky", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=profiles.load("talky")[0],
+        )
+        check("новое состояние пустое до восстановления", второй_запуск.main_agent.history() == [])
+        cli.restore_conversation(второй_запуск)
+        поднятое = второй_запуск.main_agent.history()
+        check(
+            "второй запуск в той же папке поднял разговор",
+            len(поднятое) == сохранённых_пар * 2 and поднятое[0]["content"] == "первый вопрос",
+            str(поднятое),
+        )
+        отчёт = log_text(второй_запуск)
+        check("в ленте строка отчёта о восстановлении", "восстановлен разговор:" in отчёт, отчёт)
+        check("в отчёте оба числа — сколько поднято и сколько сохранено", f"из {сохранённых_пар} сохранённых" in отчёт, отчёт)
+        check("в отчёте время последней записи", "последняя " in отчёт, отчёт)
+        # Решение пользователя: экран остаётся чистым, память полной. Печатай мы реплики,
+        # каждый запуск начинался бы с простыни прошлого разговора.
+        check("сами реплики в ленту не печатаются", "первый вопрос" not in отчёт, отчёт)
+        check("восстановление продолжает найденную сессию, а не заводит новую", второй_запуск.store.path == файл_разговора, str(второй_запуск.store.path))
+        # Восстановление идёт единственным методом пополнения памяти и не пишет на диск:
+        # иначе чтение файла тут же удваивало бы его самим собой.
+        размер_после_восстановления = файл_разговора.stat().st_size
+        cli.restore_conversation(второй_запуск)
+        check(
+            "восстановление на диск ничего не пишет",
+            файл_разговора.stat().st_size == размер_после_восстановления,
+            str(файл_разговора.stat().st_size),
+        )
+
+        # Чистый запуск не сообщает ничего: разговора не было, и говорить не о чем.
+        чистый_каталог = tmp / "чистая-папка"
+        чистый_каталог.mkdir()
+        прежний_каталог = os.getcwd()
+        os.chdir(чистый_каталог)
+        чистый_запуск = cli.State(
+            config=Config(api_key="sk-test", profile="talky", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=profiles.load("talky")[0],
+        )
+        cli.restore_conversation(чистый_запуск)
+        check("в новой папке восстанавливать нечего", чистый_запуск.main_agent.history() == [])
+        check("и в ленте об этом ни строки", log_text(чистый_запуск) == "", log_text(чистый_запуск))
+        check("хранилище всё равно открыто — обмену есть куда писать", чистый_запуск.store is not None)
+        os.chdir(прежний_каталог)
+
+        # Правку инструкции между запусками называют вслух: молча продолженный разговор
+        # выглядел бы цельным, не будучи им.
+        правленый = profiles.load("talky")[0]
+        правленый.system = "болтай иначе"
+        запуск_с_правкой = cli.State(
+            config=Config(api_key="sk-test", profile="talky", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=правленый,
+        )
+        cli.restore_conversation(запуск_с_правкой)
+        check("о правке инструкции сказано", "инструкция профиля изменилась" in log_text(запуск_с_правкой), log_text(запуск_с_правкой))
+
+        # Три места, куда встроена память, поведением из этой проверки не достаются:
+        # `_main` и `repl` поднимают настоящее приложение, а проверка собирает состояние
+        # сама. Смотрим дерево разбора — тем же приёмом, каким в check_units проверяется
+        # единственность точки записи в память.
+        def вызовы(имя_функции):
+            дерево = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+            for узел in ast.walk(дерево):
+                if isinstance(узел, (ast.FunctionDef, ast.AsyncFunctionDef)) and узел.name == имя_функции:
+                    return {ast.unparse(вызов.func) for вызов in ast.walk(узел) if isinstance(вызов, ast.Call)}
+            return set()
+
+        check("запуск поднимает прежний разговор", "restore_conversation" in вызовы("_main"), str(sorted(вызовы("_main"))))
+        # В конструкторе состояния восстановлению не место: его зовут проверки напрямую, и
+        # любое собранное состояние начало бы читать и писать в каталог состояния человека.
+        check("конструктор состояния на диск не ходит", "restore_conversation" not in вызовы("__post_init__"))
+        check("смена профиля подхватывает разговор нового профиля", "restore_conversation" in вызовы("switch_profile"))
+        check("очередь запросов заводит заход архивариуса", "archivist.start" in вызовы("worker"), str(sorted(вызовы("worker"))))
+        check("выход зовёт архивариуса последний раз", "archivist.finish" in вызовы("repl"), str(sorted(вызовы("repl"))))
+
+        # Испорченную строку в файле разговора не проглатываем молча: восстановление
+        # продолжается, но человеку сказано, что часть переписки не прочлась.
+        (profiles_dir / "битый.json").write_text(
+            json.dumps({"name": "битый", "system": "болтай", "keep_history": True}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        битая_сессия = memory.new_session(каталог_запуска, "битый")
+        хранилище_битой = memory.SessionStore(битая_сессия)
+        хранилище_битой.append("user", "целый вопрос")
+        хранилище_битой.append("assistant", "целый ответ")
+        with битая_сессия.open("a", encoding="utf-8") as файл:
+            файл.write("{это не json\n")
+        запуск_с_битой = cli.State(
+            config=Config(api_key="sk-test", profile="битый", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=profiles.load("битый")[0],
+        )
+        cli.restore_conversation(запуск_с_битой)
+        check("испорченная строка названа вслух", "испорчена" in log_text(запуск_с_битой), log_text(запуск_с_битой))
+        check("и остальной разговор всё равно поднят", len(запуск_с_битой.main_agent.history()) == 2, str(запуск_с_битой.main_agent.history()))
+
+        print("\n12a. /clear открывает новую сессию")
+        прежний_файл = state.store.path
+        пар_до_очистки = len(memory.read_session(прежний_файл, window=0, system_fp="").pairs)
+        await send("/clear" + ENTER, pause=0.25)
+        check("сказано, что начат новый разговор", "начат новый разговор" in log_text(state), log_text(state)[-200:])
+        check("память главного агента пуста", state.main_agent.history() == [])
+        # Стереть файл значило бы издевательство наоборот: ошибочный /clear был бы
+        # необратим. Файл остаётся, но следующий запуск его уже не поднимет.
+        check("прежний файл разговора цел", прежний_файл.exists() and len(memory.read_session(прежний_файл, window=0, system_fp="").pairs) == пар_до_очистки)
+        check("пишем уже в новый файл", state.store.path != прежний_файл, str(state.store.path))
+        await send("после очистки" + ENTER, pause=0.4)
+        запуск_после_очистки = cli.State(
+            config=Config(api_key="sk-test", profile="talky", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=profiles.load("talky")[0],
+        )
+        cli.restore_conversation(запуск_после_очистки)
+        поднятое_после_очистки = запуск_после_очистки.main_agent.history()
+        check(
+            "перезапуск после /clear поднимает только новый разговор",
+            [сообщение["content"] for сообщение in поднятое_после_очистки[:1]] == ["после очистки"],
+            str(поднятое_после_очистки),
+        )
+        check("стёртое обратно не возвращается", not any("первый вопрос" == сообщение["content"] for сообщение in поднятое_после_очистки))
+
+        # Смена профиля — переход в другой разговор, потому что ключ пары изменился.
+        (profiles_dir / "talky2.json").write_text(
+            json.dumps({"name": "talky2", "system": "болтай иначе", "keep_history": True}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        await send("/profile talky2" + ENTER, pause=0.3)
+        check("у другого профиля свой каталог разговоров", state.store.path.parent == memory.profile_dir(каталог_запуска, "talky2"), str(state.store.path.parent))
+        check("чужой разговор не подхвачен", state.main_agent.history() == [], str(state.main_agent.history()))
+        await send("вопрос второму профилю" + ENTER, pause=0.4)
+        await send("/profile talky" + ENTER, pause=0.35)
+        вернулись = state.main_agent.history()
+        check(
+            "возврат к прежнему профилю поднимает ЕГО разговор",
+            bool(вернулись) and вернулись[0]["content"] == "после очистки",
+            str(вернулись),
+        )
+        check("отчёт о восстановлении показан при смене профиля", "восстановлен разговор:" in log_text(state), log_text(state)[-300:])
+
+        print("\n12b. Команды глобальной памяти")
+        for путь in memory.facts_dir().glob("*.md"):
+            путь.unlink()
+        await send("/memory" + ENTER, pause=0.2)
+        check("на пустой памяти сказано, что она пуста", "глобальная память пуста" in log_text(state), log_text(state)[-200:])
+        await send("/remember" + ENTER, pause=0.2)
+        check("без текста /remember объясняет, чего не хватает", "нужен текст факта" in log_text(state), log_text(state)[-200:])
+        check("и панель выбора не открывает — факт пишут словами", state.picker is None)
+        await send("/remember зовут Александр" + ENTER, pause=0.2)
+        check("факт объявлен в ленте", "запомнил: зовут Александр" in log_text(state), log_text(state)[-200:])
+        check("факт лёг в глобальную память", memory.load_facts()[0] == ["зовут Александр"], str(memory.load_facts()))
+        await send("/remember любимый цвет — синий" + ENTER, pause=0.2)
+        await send("/memory" + ENTER, pause=0.2)
+        память_в_ленте = log_text(state)[-400:]
+        check("список фактов пронумерован", "1. зовут Александр" in память_в_ленте and "2. любимый цвет — синий" in память_в_ленте, память_в_ленте)
+        check("над списком сказано, собираются ли факты", "сбор фактов" in память_в_ленте, память_в_ленте)
+
+        # Факты уезжают в системную инструкцию главного разговора — оттуда «как меня зовут»
+        # отвечается в любой папке, даже в новой, где разговора ещё не было.
+        before = len(fake.calls)
+        await send("как меня зовут?" + ENTER, pause=0.4)
+        системное = fake.calls[before]["messages"][0]["content"]
+        check("факты ушли в системную инструкцию", "зовут Александр" in системное, системное)
+        check("инструкция профиля при этом на месте", "болтай" in системное, системное)
+
+        await send("/forget 1" + ENTER, pause=0.2)
+        check("удаление названо вслух", "забыто: зовут Александр" in log_text(state), log_text(state)[-200:])
+        check("факт убран, нумерация сдвинулась", memory.load_facts()[0] == ["любимый цвет — синий"], str(memory.load_facts()))
+        await send("/forget" + ENTER, pause=0.2)
+        check("без номера /forget объясняет, чего не хватает", "нужен номер" in log_text(state), log_text(state)[-200:])
+        await send("/forget семь" + ENTER, pause=0.2)
+        check("не-номер даёт внятное сообщение, а не падение", "не номер" in log_text(state), log_text(state)[-200:])
+        await send("/forget 99" + ENTER, pause=0.2)
+        check("промах по номеру объяснён", "нет факта с номером 99" in log_text(state), log_text(state)[-200:])
+
+        # Собеседник, собранный конструктором состояния, обязан знать факты сразу — до
+        # первой смены профиля. Проверка выше идёт после `/profile`, и одна она пропустила бы
+        # потерю фактов у главного агента при запуске.
+        свежее_состояние = cli.State(
+            config=Config(api_key="sk-test", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=profiles.load("talky")[0],
+        )
+        системное_свежего = свежее_состояние.main_agent.build_messages("привет")[0]["content"]
+        check("собеседник главного экрана знает факты с самого запуска", "любимый цвет — синий" in системное_свежего, системное_свежего)
+
+        видимые = [имя for имя, _, _ in ui.visible_commands(True)]
+        check("все три команды памяти есть в меню", {"/remember", "/memory", "/forget"} <= set(видимые), str(видимые))
+        справка = fragments_text(ui.help_fragments())
+        check("и в справке", all(команда in справка for команда in ("/remember", "/memory", "/forget")), справка[:200])
+
+        print("\n12c. Архивариус: раз в пять обменов, фоном")
+        for путь in memory.facts_dir().glob("*.md"):
+            путь.unlink()
+        # Подставной клиент отвечает архивариусу тем же, чем всем: это не JSON со списком
+        # фактов, поэтому сам по себе он памяти не пополняет. Здесь проверяется, КОГДА
+        # архивариус заводится, а что он делает с ответом — в check_units.
+        await send("/memory off" + ENTER, pause=0.2)
+        check("выключатель сохранён в настройках инструмента", state.config.remember is False)
+        state.since_archive = 0
+        before = len(fake.calls)
+        for номер in range(archivist.EVERY_N):
+            await send(f"вопрос при выключенном сборе {номер}" + ENTER, pause=0.35)
+        check("при выключенном сборе архивариус не заводится ни разу", state.archivist_task is None)
+        check("и лишних запросов не делает", len(fake.calls) - before == archivist.EVERY_N, str(len(fake.calls) - before))
+
+        await send("/memory on" + ENTER, pause=0.2)
+        check("сбор включён обратно", state.config.remember is True)
+        state.since_archive = 0
+        before = len(fake.calls)
+        for номер in range(archivist.EVERY_N - 1):
+            await send(f"вопрос до срока {номер}" + ENTER, pause=0.35)
+        check("до пятого обмена архивариус не заводится", state.archivist_task is None, str(state.since_archive))
+        await send("пятый вопрос" + ENTER, pause=0.35)
+        check("на пятом обмене заход заведён", state.archivist_task is not None)
+        check("счётчик обнулён — следующий заход не раньше чем через пять", state.since_archive == 0, str(state.since_archive))
+        # Ввод не блокируется: строка ввода принимает текст, пока архивариус ходит к модели.
+        buffer.text = ""
+        await send("набрано, пока архивариус работает")
+        check("ввод при работающем архивариусе не заблокирован", buffer.text == "набрано, пока архивариус работает", repr(buffer.text))
+        await send("\x7f" * 60)
+        check("пока заход идёт, второго не заводим", not archivist.due(state))
+        await asyncio.wait({state.archivist_task}, timeout=5)
+        check("заход завершился", state.archivist_task.done())
+        всего_запросов = len(fake.calls) - before
+        check("на пять обменов пришёлся ровно один запрос архивариуса", всего_запросов == archivist.EVERY_N + 1, str(всего_запросов))
+        запрос_архивариуса = fake.calls[-1]
+        check(
+            "архивариус получил кусок разговора со своей инструкцией",
+            запрос_архивариуса["messages"][0]["content"] == archivist.ARCHIVIST_INSTRUCTION,
+            запрос_архивариуса["messages"][0]["content"][:80],
+        )
+        check(
+            "пока архивариус работал, в строке состояния было сказано",
+            "запоминаю…" in fragments_text(ui.status_fragments("m", True, "talky", False, True, True)),
+        )
+        check(
+            "когда не работает — не сказано",
+            "запоминаю…" not in fragments_text(ui.status_fragments("m", True, "talky", False, True, False)),
+        )
+        print("\n13. Выход")
         await send("/exit" + ENTER)
         await asyncio.sleep(0.15)
         check("приложение завершилось", run.done())

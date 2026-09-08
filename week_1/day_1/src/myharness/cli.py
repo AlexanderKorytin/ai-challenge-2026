@@ -9,6 +9,7 @@ import asyncio
 import os
 from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from prompt_toolkit.application import Application, get_app
@@ -32,7 +33,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
-from . import api, profiles, team, ui
+from . import api, archivist, memory, profiles, team, ui
 from . import methods as methods_mod
 from . import params as params_mod
 from . import picker as picker_mod
@@ -74,11 +75,22 @@ class State:
     profile_dirty: bool = False  # параметры меняли, но профиль не сохранён
     known_models: list[str] = field(default_factory=lambda: list(api.FALLBACK_MODELS))
     journal_warned: bool = False
+    store_warned: bool = False  # о сбое записи разговора говорим один раз за сеанс
     input_buffer: Any = None  # буфер строки ввода: профиль подставляет в него заготовку
     # Мышь включена всегда: клики и выделение текста уживаются, если не просить у терминала
     # отслеживание перетаскивания (см. click_only_mouse). Команда /mouse оставлена аварийным
     # выходом для терминала, который так не умеет.
     mouse_enabled: bool = True
+    # Куда пишется главный разговор между запусками. Заводится в `_main`, а НЕ здесь:
+    # конструктор состояния зовут проверки напрямую, и любое состояние начало бы читать и
+    # писать в каталог состояния пользователя.
+    store: memory.SessionStore | None = None
+    # Сколько пар легло в главный разговор с прошлого захода архивариуса.
+    since_archive: int = 0
+    # Идущий заход архивариуса. Держим саму задачу, а не признак: по ней видно и что заход
+    # ещё идёт (второго заводить нельзя), и что его пора дождаться при выходе.
+    archivist_task: asyncio.Task | None = None
+    archivist_warned: bool = False  # о сбое архивариуса говорим раз за сеанс, как о журнале
 
     @property
     def main(self) -> screens_mod.Screen:
@@ -110,7 +122,7 @@ class State:
         # Панель главного экрана заводит `screens.main_screen()`, профиля у неё нет, а
         # собеседник нужен: главный разговор ведёт он. Заводим здесь, а не в `_main`, чтобы
         # у любого состояния — в том числе собранного проверками — главный агент был на месте.
-        self.main.first.agent = Agent(screens_mod.MAIN_KEY, self.profile)
+        self.main.first.agent = Agent(screens_mod.MAIN_KEY, self.profile, facts=user_facts)
 
 
 def switch_screen(state: State, index: int) -> None:
@@ -153,6 +165,90 @@ def drop_agent_screens(state: State) -> None:
     state.active = 0
 
 
+# ─────────────────────────────── память разговора ───────────────────────────────
+
+
+def user_facts() -> list[str]:
+    """Глобальные факты о человеке — для системной инструкции ГЛАВНОГО разговора.
+
+    Отдаётся вызываемым, а не готовым списком: факты меняются по ходу сеанса — их кладёт
+    `/remember` и выписывает архивариус, — и список, снятый при создании агента, отстал бы
+    от них к первому же запросу.
+
+    Получают их только собеседник главного экрана. Исполнителям группы, шагам цепочки и
+    пакетному наряду нужна их роль, а не любимый цвет пользователя: наряд ещё и обязан быть
+    воспроизводимым, а факты о человеке меняются между прогонами.
+
+    Предупреждения о попорченных файлах здесь отбрасываются намеренно: сборка запроса — не
+    то место, где о них говорить (она молчалива и идёт на каждый вопрос), их показывает
+    `/memory`, куда человек за памятью и приходит."""
+    факты, _ = memory.load_facts()
+    return факты
+
+
+def open_new_session(state: State) -> None:
+    """Начать писать в новый файл разговора — прежний остаётся на диске нетронутым.
+
+    Именно так устроено «забудь»: файл не стирается, а закрывается. Стирай мы файл, любая
+    ошибка человека («не то очистил») была бы необратимой, а так прошлый разговор лежит
+    в каталоге состояния и читается глазами."""
+    state.store = memory.SessionStore(memory.new_session(Path.cwd(), state.profile.name))
+    state.main_agent.set_store(state.store)
+
+
+def restore_conversation(state: State) -> None:
+    """Поднять последний разговор пары «рабочий каталог, профиль» и продолжить писать в него.
+
+    Зовётся при запуске и при смене профиля — то есть каждый раз, когда у главного экрана
+    меняется собеседник. Ключ — пара, а не один каталог: в инструменте уже действует правило
+    «сменился профиль, значит другой собеседник, память не переносится», и ключ по одному
+    каталогу молча отменил бы его.
+
+    Продолжаем НАЙДЕННУЮ сессию, а не заводим новую: иначе каждый запуск оставлял бы на
+    диске по файлу, а «продолжить последний разговор» находило бы вчерашний огрызок.
+
+    Реплики в ленту не печатаются — только строка отчёта: экран остаётся чистым, память при
+    этом полная. Чистый запуск не сообщает ничего: разговора не было, и говорить не о чем."""
+    if not state.profile.keep_history:
+        # Профиль без истории не копит разговор и не пишет его на диск (`Agent.remember`).
+        # Поднимать ему что-то значило бы отчитаться о памяти, которой не будет ни в одном
+        # запросе. Хранилище всё же открываем: профиль сменят, а место для записи должно
+        # быть на своём месте.
+        open_new_session(state)
+        return
+    каталог = Path.cwd()
+    путь = memory.latest_session(каталог, state.profile.name)
+    if путь is None:
+        open_new_session(state)
+        return
+    восстановленное = memory.read_session(
+        путь,
+        window=state.profile.history_window,
+        system_fp=memory.fingerprint(state.profile.system),
+    )
+    for предупреждение in восстановленное.warnings:
+        append_log(state, ui.error_fragments(предупреждение))
+    state.main_agent.restore(восстановленное.pairs)
+    state.store = memory.SessionStore(путь)
+    state.main_agent.set_store(state.store)
+    if восстановленное.pairs:
+        append_log(
+            state,
+            ui.restored_fragments(
+                len(восстановленное.pairs), восстановленное.saved_pairs, восстановленное.last_ts
+            ),
+        )
+    if восстановленное.fingerprint_changed:
+        # Молча продолжать разговор под изменённой инструкцией нельзя: он выглядел бы
+        # цельным, не будучи им, — прежние ответы рождены другой инструкцией.
+        append_log(
+            state,
+            ui.system_fragments(
+                "инструкция профиля изменилась с прошлого запуска — прежние ответы получены под другой"
+            ),
+        )
+
+
 # ─────────────────────────────── профиль и запрос ───────────────────────────────
 
 
@@ -174,7 +270,7 @@ def switch_profile(state: State, name: str) -> None:
     # которой мы уже не пользуемся. Смена поколения делает это дописывание невозможным —
     # брошенный агент не оставит после себя ни строчки.
     state.main.first.agent.forget()
-    state.main.first.agent = Agent(screens_mod.MAIN_KEY, profile)
+    state.main.first.agent = Agent(screens_mod.MAIN_KEY, profile, facts=user_facts)
     if had_history:
         append_log(state, ui.system_fragments("история диалога очищена — профиль сменился"))
     if len(state.screens) > 1:
@@ -182,6 +278,10 @@ def switch_profile(state: State, name: str) -> None:
         append_log(state, ui.system_fragments("экраны прежней группы закрыты"))
     source = str(profile.source) if profile.source else "встроенный"
     append_log(state, ui.system_fragments(f"профиль: {profile.name} ({source})"))
+    # Разговор принадлежит паре «каталог, профиль», значит смена профиля — это переход в
+    # другой разговор, а не только смена инструкции. Прежняя сессия остаётся на диске и
+    # поднимется обратно, когда человек вернётся к тому профилю.
+    restore_conversation(state)
     if not profile.keep_history:
         append_log(state, ui.system_fragments("в этом профиле каждый запрос уходит без истории"))
     if profile.agents:
@@ -271,6 +371,11 @@ async def worker(state: State) -> None:
             # на который никто не отвечал.
             task = asyncio.create_task(run_turn(state, state.main_agent, request.content, pane=state.main.first))
         state.current_task = task
+        # Сколько пар лежало в главном разговоре ДО обмена. Считать обмены по их исходу
+        # нельзя: обмен главного экрана, итог группы и итог набора способов кладут пару
+        # каждый по-своему, а отменённый и упавший — не кладут вовсе. Рост памяти отвечает
+        # на нужный вопрос прямо: разговору, который читает архивариус, прибыло.
+        было_пар = len(state.main_agent.history())
         try:
             result = await task
             # Единственное место, где итог оркестратора попадает в главный экран. Сами
@@ -281,6 +386,11 @@ async def worker(state: State) -> None:
                 deliver(state, request.content, result)
             elif kind == "группа" and result is not None:
                 deliver(state, request.content, [result])
+            if len(state.main_agent.history()) > было_пар:
+                state.since_archive += 1
+            # Заход заводится ОТДЕЛЬНОЙ задачей и никем не ожидается: архивариус не имеет
+            # права задержать ни следующий запрос из очереди, ни ввод человека.
+            archivist.start(state)
         except asyncio.CancelledError:
             append_log(state, ui.system_fragments("запрос отменён"))
         finally:
@@ -539,6 +649,79 @@ def toggle_mouse(state: State) -> None:
     refresh(state)
 
 
+def cmd_remember(state: State, arg: str) -> None:
+    """`/remember <текст>` — положить факт о человеке в глобальную память.
+
+    Без аргумента панель выбора НЕ открывается, в отличие от `/model` и `/profile`: факт
+    пишется словами, и списка вариантов, из которого его можно выбрать, не существует."""
+    текст = arg.strip()
+    if not текст:
+        append_log(state, ui.hint_fragments("нужен текст факта: /remember зовут Александр"))
+        return
+    добавлен, сообщение = memory.add_fact(текст)
+    if добавлен:
+        append_log(state, ui.fact_added_fragments(сообщение))
+        return
+    append_log(state, ui.error_fragments(сообщение))
+
+
+def cmd_memory(state: State, arg: str) -> None:
+    """`/memory` — что известно о человеке; `/memory on` и `/memory off` — сбор фактов.
+
+    Выключатель сохраняется в настройках инструмента, а не в профиле: память про самого
+    человека и его папку, а профиль отвечает лишь на вопрос «кем сейчас работает модель».
+    Выключение не стирает уже записанного: `/remember` и `/forget` работают по-прежнему,
+    молчит только архивариус."""
+    ключ = arg.strip().lower()
+    if ключ in ("on", "off"):
+        state.config.remember = ключ == "on"
+        save_config(state.config)
+        append_log(
+            state,
+            ui.system_fragments(
+                "сбор фактов включён — архивариус выписывает их из разговора"
+                if state.config.remember
+                else "сбор фактов выключен — факты записываются только командой /remember"
+            ),
+        )
+        return
+    if ключ:
+        append_log(state, ui.error_fragments(f"не понимаю «{ключ}» — /memory, /memory on или /memory off"))
+        return
+    факты, предупреждения = memory.load_facts()
+    for предупреждение in предупреждения:
+        append_log(state, ui.error_fragments(предупреждение))
+    # Состояние выключателя — строкой над списком: без неё непонятно, почему память не
+    # пополняется сама, и человек ищет поломку там, где стоит его же выбор.
+    append_log(
+        state,
+        ui.system_fragments(
+            "сбор фактов включён (/memory off — выключить)"
+            if state.config.remember
+            else "сбор фактов выключен (/memory on — включить)"
+        ),
+    )
+    append_log(state, ui.facts_fragments(факты))
+
+
+def cmd_forget(state: State, arg: str) -> None:
+    """`/forget <номер>` — убрать факт по номеру, каким его показал `/memory`."""
+    текст = arg.strip()
+    if not текст:
+        append_log(state, ui.hint_fragments("нужен номер: /forget 2 (номера показывает /memory)"))
+        return
+    try:
+        номер = int(текст)
+    except ValueError:
+        append_log(state, ui.error_fragments(f"«{текст}» — не номер; номера фактов показывает /memory"))
+        return
+    убран, сообщение = memory.remove_fact(номер)
+    if убран:
+        append_log(state, ui.system_fragments(f"забыто: {сообщение}"))
+        return
+    append_log(state, ui.error_fragments(сообщение))
+
+
 def cmd_team(state: State, arg: str) -> None:
     """Разовый запуск группы. Без аргумента — показывает состав; с вопросом — задаёт его
     группе. Первым словом можно назвать профиль-ведущего: так группу поднимают, не уходя
@@ -680,7 +863,16 @@ async def handle_command(text: str, state: State) -> bool:
         toggle_mouse(state)
     elif cmd == "/clear":
         state.main_agent.forget()
-        append_log(state, ui.system_fragments("история диалога очищена"))
+        # Мало забыть разговор в памяти: не открой мы новую сессию, следующий запуск поднял
+        # бы очищенное обратно с диска — издевательство, а не очистка.
+        open_new_session(state)
+        append_log(state, ui.system_fragments("история очищена — начат новый разговор"))
+    elif cmd == "/remember":
+        cmd_remember(state, arg)
+    elif cmd == "/memory":
+        cmd_memory(state, arg)
+    elif cmd == "/forget":
+        cmd_forget(state, arg)
     else:
         append_log(state, ui.error_fragments(f"неизвестная команда: {cmd} (см. /help)"))
     return False
@@ -896,6 +1088,7 @@ def build_app(state: State) -> Application:
                 state.profile.name,
                 state.profile_dirty,
                 state.mouse_enabled,
+                archivist.running(state),
             )
         ),
         height=1,
@@ -1085,6 +1278,9 @@ async def repl(state: State) -> None:
         worker_task.cancel()
         with suppress(asyncio.CancelledError):
             await worker_task
+        # Последний заход архивариуса — до закрытия клиента: без него всё, о чём говорили
+        # после прошлого захода (до пяти обменов), в глобальную память не попало бы вовсе.
+        await archivist.finish(state)
         if state.client:
             await state.client.aclose()
 
@@ -1127,6 +1323,10 @@ async def _main(args: argparse.Namespace) -> None:
     state = State(config=cfg, client=client, model=cfg.model, profile=profile)
     for warning in warnings:
         append_log(state, ui.error_fragments(warning))
+    # Прежний разговор поднимается ЗДЕСЬ: настройки и профиль уже прочитаны, агент уже есть,
+    # ни один запрос ещё невозможен. В конструкторе состояния этому места нет — его зовут
+    # проверки напрямую, и любое состояние начало бы читать и писать в каталог состояния.
+    restore_conversation(state)
     await repl(state)
 
 
