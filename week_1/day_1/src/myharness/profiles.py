@@ -77,6 +77,8 @@ class Profile:
     # как разложены шаги цепочки: "panes" — панелями рядом, "tabs" — вкладкой на шаг
     layout: str = DEFAULT_LAYOUT
     methods: list[str] = field(default_factory=list)  # непусто — набор способов решения
+    # какие шаги цепочки составляют её итог; пусто — все шаги в порядке исполнения
+    result: list[str] = field(default_factory=list)
     vars: dict[str, Any] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     source: Path | None = None
@@ -95,6 +97,8 @@ class Profile:
         if self.screens:
             snapshot["screens"] = list(self.screens)
             snapshot["layout"] = self.layout
+            if self.result:
+                snapshot["result"] = list(self.result)
         if self.methods:
             snapshot["methods"] = list(self.methods)
         return snapshot
@@ -120,6 +124,8 @@ class Profile:
         if self.screens:
             data["screens"] = list(self.screens)
             data["layout"] = self.layout
+            if self.result:
+                data["result"] = list(self.result)
         if self.methods:
             data["methods"] = list(self.methods)
         if self.vars:
@@ -256,6 +262,27 @@ def _layout(raw: Any, screens: list[str], warnings: list[str]) -> str:
     return raw
 
 
+def _chain_result(raw: Any, screens: list[str], warnings: list[str]) -> list[str]:
+    """Шаги, составляющие итог цепочки. Пусто — итогом будут ответы всех шагов.
+
+    Умолчание именно «все шаги», а не «последний»: цепочка, кончающаяся проверяющим, отдала бы
+    наверх один вердикт «ГОДЕН / НЕ ГОДЕН» без предмета вердикта — код остался бы на своей
+    вкладке. Потерять предмет работы хуже, чем показать лишний шаг, поэтому сужает список автор
+    профиля, а не умолчание за него.
+
+    Шаг, которого нет в `screens`, отбрасываем с предупреждением: молча пропущенное имя дало бы
+    итог, в котором чего-то не хватает, и объяснить это было бы нечем."""
+    names = _profile_names(raw, "result", warnings)
+    if names and not screens:
+        warnings.append("поле «result» без «screens» — сужать нечего, пропущено")
+        return []
+    kept = [name for name in names if name in screens]
+    for name in names:
+        if name not in screens:
+            warnings.append(f"шаг «{name}» из «result» не входит в «screens» — пропущен")
+    return kept
+
+
 def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | None) -> tuple[Profile, list[str]]:
     warnings: list[str] = []
     known_meta = {
@@ -272,6 +299,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "screens",
         "methods",
         "layout",
+        "result",
         "vars",
     }
 
@@ -309,6 +337,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
             warnings.append(f"неизвестный параметр «{key}» — пропущен")
 
     screen_names = _profile_names(data.get("screens"), "screens", warnings)
+    result_names = _chain_result(data.get("result"), screen_names, warnings)
 
     profile = Profile(
         name=data.get("name") or name,
@@ -324,6 +353,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         screens=screen_names,
         layout=_layout(data.get("layout"), screen_names, warnings),
         methods=_profile_names(data.get("methods"), "methods", warnings),
+        result=result_names,
         vars=dict(variables),
         params=collected,
         source=source,

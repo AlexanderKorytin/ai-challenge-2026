@@ -118,7 +118,19 @@ def ensure_screens(state, methods: list[Profile]) -> None:
         state.screens.append(screen)
 
 
-async def run_chain(state, name: str, panes: list[screens_mod.Pane], question: str) -> output.Outcome | None:
+def chain_outcome_text(answers: list[tuple[str, str]]) -> str:
+    """Итог цепочки одним текстом: ответы шагов, подписанные именами шагов.
+
+    Один блок подписи не получает: подписывать нечего, когда говорил ровно один.
+    """
+    if len(answers) == 1:
+        return answers[0][1].strip()
+    return "\n\n".join(f"[{label}]\n{text.strip()}" for label, text in answers)
+
+
+async def run_chain(
+    state, name: str, panes: list[screens_mod.Pane], question: str, *, result: list[str] | None = None
+) -> output.Outcome | None:
     """Цепочка шагов: то, что ответил предыдущий шаг, становится началом запроса следующего.
 
     Человеку тут копировать нечего — промпт переносится сам.
@@ -133,10 +145,17 @@ async def run_chain(state, name: str, panes: list[screens_mod.Pane], question: s
     приходит отдельной строкой, потому что панели его не несут: при раскладке `panes` ключ
     панели — имя шага, при `tabs` — пара «цепочка:шаг», и собрать из них подпись итога нельзя.
 
-    Ответ последнего шага возвращается вызывающему: это и есть итог цепочки. Оборвалась
-    цепочка на полпути — итога нет, и возвращается пустое, а не ответ середины."""
+    Итог цепочки — ответы ВСЕХ её шагов, подписанные именами шагов; поле `result` профиля
+    цепочки сужает список. Ответом последнего шага итог быть не может: цепочка, кончающаяся
+    проверяющим, отдала бы наверх один вердикт «ГОДЕН / НЕ ГОДЕН» без предмета вердикта — код
+    остался бы на своей вкладке, а оркестратору, которому предстоит поднять исправляющего,
+    исправлять было бы нечего.
+
+    Оборвалась цепочка на полпути — отдаём то, что успели получить, и говорим, на каком шаге
+    оборвались. Молча потерять уже сделанную работу нельзя: она оплачена."""
     carried = ""
-    last = ""
+    answers: list[tuple[str, str]] = []
+    broken = ""
     for index, pane in enumerate(panes):
         step = pane.profile
         if step is None:
@@ -147,12 +166,17 @@ async def run_chain(state, name: str, panes: list[screens_mod.Pane], question: s
         turn = await output.run_turn(state, pane.agent, content, pane=pane)
         if not turn.ok:
             output.append_log(state, ui.error_fragments("шаг не дал ответа — цепочка прервана"), pane)
-            return None
+            broken = step.title or step.name
+            break
         carried = turn.text
-        last = step.name
-    if not carried.strip():
+        if not result or step.name in result:
+            answers.append((step.title or step.name, turn.text))
+    if not answers:
         return None
-    return output.Outcome(kind="итог цепочки", source=f"{name} → {last}", text=carried)
+    text = chain_outcome_text(answers)
+    if broken:
+        text += f"\n\n(цепочка прервана на шаге «{broken}»)"
+    return output.Outcome(kind="итог цепочки", source=name, text=text)
 
 
 async def run_single(state, screen: screens_mod.Screen, question: str) -> output.Outcome | None:
@@ -187,7 +211,7 @@ async def run_all(state, question: str, holder: Profile) -> list[output.Outcome]
         if profile.screens:
             panes = chain_step_panes(state, profile)
             if panes:
-                tasks.append(run_chain(state, profile.name, panes, question))
+                tasks.append(run_chain(state, profile.name, panes, question, result=profile.result))
             continue
         screen = find_screen(state, profile.name)
         if screen is not None:

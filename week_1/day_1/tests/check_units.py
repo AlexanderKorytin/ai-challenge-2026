@@ -39,7 +39,7 @@ os.environ["MYHARNESS_CONFIG_DIR"] = str(tmp / "config")
 os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
 
 from myharness import api, journal, params as params_mod, picker as picker_mod, profiles, ui  # noqa: E402
-from myharness import batch, cli, screens as screens_mod, team  # noqa: E402
+from myharness import batch, cli, methods, screens as screens_mod, team  # noqa: E402
 from myharness.agent import Agent, Turn, usage_tokens
 from myharness.config import Config  # noqa: E402
 from prompt_toolkit.data_structures import Point  # noqa: E402
@@ -343,6 +343,47 @@ check("сводка несёт задачу и ответы каждого", "з
 )
 method_set, _ = profiles.load("set")
 check("набор способов прочитан", method_set.methods == ["free", "meta"] and method_set.agents == [])
+
+# Итог цепочки. Умолчание — ответы всех шагов, подписанные: цепочка, кончающаяся проверяющим,
+# иначе отдала бы наверх один вердикт без предмета вердикта. Проверено на живой демонстрации
+# дня 6: код оставался на своей вкладке, а в главный экран приезжало «ГОДЕН».
+check(
+    "один блок подписи не получает",
+    methods.chain_outcome_text([("решение", "fun main() {}")]) == "fun main() {}",
+    methods.chain_outcome_text([("решение", "fun main() {}")]),
+)
+итог_цепочки = methods.chain_outcome_text([("решение", "fun main() {}"), ("проверка", "ГОДЕН")])
+check(
+    "несколько блоков подписаны именами шагов",
+    итог_цепочки == "[решение]\nfun main() {}\n\n[проверка]\nГОДЕН",
+    repr(итог_цепочки),
+)
+
+(tmp / "profiles" / "chain_res.json").write_text(
+    json.dumps(
+        {"name": "chain_res", "screens": ["free", "meta"], "result": ["meta", "нет-такого"]},
+        ensure_ascii=False,
+    ),
+    encoding="utf-8",
+)
+сужение, сужение_предупреждения = profiles.load("chain_res")
+check("итог сужается полем result", сужение.result == ["meta"], str(сужение.result))
+check(
+    "шаг вне screens отброшен с предупреждением",
+    any("нет-такого" in w and "result" in w for w in сужение_предупреждения),
+    str(сужение_предупреждения),
+)
+check("состав итога попадает в слепок для журнала", сужение.snapshot().get("result") == ["meta"])
+
+(tmp / "profiles" / "res_no_screens.json").write_text(
+    json.dumps({"name": "res_no_screens", "result": ["meta"]}, ensure_ascii=False), encoding="utf-8"
+)
+_, без_шагов = profiles.load("res_no_screens")
+check(
+    "result без screens отброшен с предупреждением",
+    any("result" in w and "screens" in w for w in без_шагов),
+    str(без_шагов),
+)
 check("широкое окно — три панели в ряд", cli.pane_columns(5, 200) == 3)
 check("обычное окно — две", cli.pane_columns(5, 120) == 2)
 check("узкое окно — панели одна под другой", cli.pane_columns(5, 80) == 1)
