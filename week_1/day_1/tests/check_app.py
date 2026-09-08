@@ -17,6 +17,9 @@ os.environ["MYHARNESS_PROFILES"] = str(tmp / "profiles")
 # пользователя и затирают его ключ. Так уже случилось однажды.
 os.environ["MYHARNESS_CONFIG_DIR"] = str(tmp / "config")
 os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
+# Каталог состояния — туда же: разговоры и глобальные факты пишутся между запусками,
+# и без переопределения проверки замусорили бы настоящий ~/.local/state пользователя.
+os.environ["MYHARNESS_STATE_DIR"] = str(tmp / "state")
 (tmp / "profiles").mkdir(parents=True)
 
 from prompt_toolkit.application import create_app_session  # noqa: E402
