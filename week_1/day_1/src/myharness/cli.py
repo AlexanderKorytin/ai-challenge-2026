@@ -191,8 +191,17 @@ def open_new_session(state: State) -> None:
 
     Именно так устроено «забудь»: файл не стирается, а закрывается. Стирай мы файл, любая
     ошибка человека («не то очистил») была бы необратимой, а так прошлый разговор лежит
-    в каталоге состояния и читается глазами."""
+    в каталоге состояния и читается глазами.
+
+    Файл заводится СРАЗУ, пустым, а не при первой записи. Иначе «забудь» переживало бы
+    перезапуск только вместе с обменом: очистил, вышел не сказав ни слова — и следующий
+    запуск нашёл бы самым свежим прежний файл и поднял ровно то, что человек стёр. Пустой
+    файл в каталоге состояния стоит ничего, а необъяснимое воскрешение стёртого разговора
+    стоит доверия ко всей памяти."""
     state.store = memory.SessionStore(memory.new_session(Path.cwd(), state.profile.name))
+    ошибка = state.store.touch()
+    if ошибка:
+        append_log(state, ui.error_fragments(ошибка))
     state.main_agent.set_store(state.store)
 
 
@@ -258,7 +267,6 @@ def switch_profile(state: State, name: str) -> None:
     state.profile_dirty = False
     state.config.profile = profile.name
     save_config(state.config)
-    greet(state)
     for warning in warnings:
         append_log(state, ui.error_fragments(warning))
     # История, набранная под прежней инструкцией, исказила бы следующий ответ. Забыть её

@@ -765,6 +765,34 @@ async def main():
         )
         check("стёртое обратно не возвращается", not any("первый вопрос" == сообщение["content"] for сообщение in поднятое_после_очистки))
 
+        # Очистка обязана пережить перезапуск ДАЖЕ БЕЗ единого обмена после неё. Заводись
+        # файл при первой записи, а не сразу, — очистил, вышел молча, и следующий запуск
+        # нашёл бы самым свежим прежний файл и поднял ровно то, что человек стёр.
+        # Ведём на своём профиле: пустая сессия, оставленная у `talky`, сбила бы соседние
+        # проверки, которым нужен его разговор.
+        (profiles_dir / "забывчивый.json").write_text(
+            json.dumps({"name": "забывчивый", "system": "болтай", "keep_history": True}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        await send("/profile забывчивый" + ENTER, pause=0.3)
+        await send("сказано до очистки" + ENTER, pause=0.4)
+        await send("/clear" + ENTER, pause=0.3)
+        check("новый файл разговора заведён сразу, до первой реплики", state.store.path.exists(), str(state.store.path))
+        молчаливый_запуск = cli.State(
+            config=Config(api_key="sk-test", profile="забывчивый", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=profiles.load("забывчивый")[0],
+        )
+        cli.restore_conversation(молчаливый_запуск)
+        check(
+            "очистка без единого обмена переживает перезапуск",
+            молчаливый_запуск.main_agent.history() == [],
+            str(молчаливый_запуск.main_agent.history()),
+        )
+        await send("/profile talky" + ENTER, pause=0.3)
+
+
         # Смена профиля — переход в другой разговор, потому что ключ пары изменился.
         (profiles_dir / "talky2.json").write_text(
             json.dumps({"name": "talky2", "system": "болтай иначе", "keep_history": True}, ensure_ascii=False),
@@ -774,7 +802,15 @@ async def main():
         check("у другого профиля свой каталог разговоров", state.store.path.parent == memory.profile_dir(каталог_запуска, "talky2"), str(state.store.path.parent))
         check("чужой разговор не подхвачен", state.main_agent.history() == [], str(state.main_agent.history()))
         await send("вопрос второму профилю" + ENTER, pause=0.4)
+        # Шапка приложения печатается один раз за сеанс. Она уехала было в смену профиля
+        # вместе с правкой порядка печати при запуске, и каждый /profile рисовал рамку заново.
+        шапок_до_возврата = log_text(state).count("myharness  ·  DeepSeek API")
         await send("/profile talky" + ENTER, pause=0.35)
+        check(
+            "смена профиля не печатает шапку заново",
+            log_text(state).count("myharness  ·  DeepSeek API") == шапок_до_возврата,
+            str((шапок_до_возврата, log_text(state).count("myharness  ·  DeepSeek API"))),
+        )
         вернулись = state.main_agent.history()
         check(
             "возврат к прежнему профилю поднимает ЕГО разговор",
