@@ -258,6 +258,7 @@ def switch_profile(state: State, name: str) -> None:
     state.profile_dirty = False
     state.config.profile = profile.name
     save_config(state.config)
+    greet(state)
     for warning in warnings:
         append_log(state, ui.error_fragments(warning))
     # История, набранная под прежней инструкцией, исказила бы следующий ответ. Забыть её
@@ -1265,12 +1266,18 @@ def build_app(state: State) -> Application:
     return app
 
 
-async def repl(state: State) -> None:
-    app = build_app(state)
-    state.app = app
+def greet(state: State) -> None:
+    """Шапка и подсказка про инструкцию. Вынесены из `repl`, потому что печатать их надо
+    ДО восстановления разговора: строка «восстановлен разговор…», вылезшая выше приветствия,
+    читается так, будто разговор подняли ещё до запуска инструмента."""
     append_log(state, ui.banner_fragments(state.model, state.config.is_authorized, state.profile.name))
     if state.profile.system:
         append_log(state, ui.system_fragments("профиль задаёт системную инструкцию — показать: /system"))
+
+
+async def repl(state: State) -> None:
+    app = build_app(state)
+    state.app = app
     worker_task = asyncio.create_task(worker(state))
     try:
         await app.run_async()
@@ -1321,6 +1328,7 @@ async def _main(args: argparse.Namespace) -> None:
         cfg.model = args.model
     client = DeepSeekClient(cfg.api_key) if cfg.is_authorized else None
     state = State(config=cfg, client=client, model=cfg.model, profile=profile)
+    greet(state)
     for warning in warnings:
         append_log(state, ui.error_fragments(warning))
     # Прежний разговор поднимается ЗДЕСЬ: настройки и профиль уже прочитаны, агент уже есть,
