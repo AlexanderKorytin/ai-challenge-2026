@@ -9,3 +9,7 @@
 *журнал*.jsonl
 *-journal.jsonl
 myharness-journal.jsonl
+
+# Записи экрана: их место на Google Диске, ссылка — в README дня.
+*.mov
+*.mp4
