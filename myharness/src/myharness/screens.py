@@ -29,6 +29,12 @@ Fragments = list[tuple[str, str]]
 
 MAIN_KEY = "main"
 
+# Имя стиля — договор между тем, кто пишет в ленту (`output`), и тем, кто её показывает
+# (`Pane.visible_log`). Написанное словом в трёх местах, оно ломается опечаткой в одном:
+# фрагмент перестанет попадать под отбор и размышления вылезут в свёрнутом виде.
+REASONING = "class:reasoning"  # сам черновик модели — прячется
+REASONING_HEAD = "class:reasoning.head"  # заголовок области — виден всегда
+
 IDLE = "idle"
 BUSY = "busy"
 DONE = "done"
@@ -47,6 +53,8 @@ class Pane:
     title: str = ""
     log: Fragments = field(default_factory=list)
     line_count: int = 0
+    reasoning_lines: int = 0  # сколько строк ленты занято размышлениями
+    show_reasoning: bool = False  # черновик модели длиннее ответа в разы — по умолчанию свёрнут
     autoscroll: bool = True
     status: str = IDLE
     profile: Profile | None = None  # чей это вывод: инструкция исполнителя и его параметры
@@ -63,6 +71,31 @@ class Pane:
         меняется командой `/profile`, и собеседника кладёт `cli.State`."""
         if self.profile is not None and self.agent is None:
             self.agent = Agent(self.key, self.profile)
+
+    def visible_log(self) -> Fragments:
+        """Лента такой, какой её видит пользователь: со свёрнутыми размышлениями или без.
+
+        Прячем отбором, а не удалением: размышления остаются в `log` целиком, поэтому
+        развернуть их можно в любой момент, в том числе спустя десяток обменов. Хранить
+        два списка вместо одного не выйдет — они разъедутся на первой же обрезке ленты.
+
+        Заголовок области (`class:reasoning.head`) виден всегда: свёрнутое, о котором
+        нигде не сказано, неотличимо от несуществующего — человек решит, что модель
+        не размышляла, хотя он за эти токены заплатил."""
+        if self.show_reasoning:
+            return self.log
+        return [fragment for fragment in self.log if fragment[0] != REASONING]
+
+    def visible_lines(self) -> int:
+        """Сколько строк на самом деле показано. Нужно для положения курсора: по нему
+        окно доматывает ленту вниз, и со скрытыми размышлениями `line_count` увёл бы
+        прокрутку ниже последней видимой строки — конец ответа ушёл бы за край."""
+        if self.show_reasoning:
+            return self.line_count
+        # `max` не про аккуратность, а про живучесть: курсор стоит ровно на последней
+        # допустимой строке, запаса нет, и завышение хоть на единицу роняет отрисовку
+        # обращением за край экрана.
+        return max(0, self.line_count - self.reasoning_lines)
 
 
 @dataclass

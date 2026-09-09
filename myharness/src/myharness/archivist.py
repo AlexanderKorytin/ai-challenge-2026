@@ -206,6 +206,10 @@ async def run(state: State) -> None:
     try:
         агент = Agent(AGENT_NAME, archivist_profile())
         обмен = await агент.exchange(state.client, ARCHIVIST_MODEL, extract_request(пары), agent=AGENT_NAME)
+        # Архивариус живёт вне панелей, а значит и вне обхода агентов сеанса: без этой строки
+        # его расход не попадал бы в итог никогда. Это единственная трата, которую человек не
+        # заказывал вручную, — и молчать именно о ней было бы хуже всего.
+        state.retire([агент])
         if not обмен.ok:
             warn(state, обмен.error)
             return

@@ -32,6 +32,7 @@ from string import Template
 from typing import Any
 
 from . import params as params_mod
+from . import tokens
 from .agent import DEFAULT_WINDOW_PAIRS
 from .config import config_dir
 
@@ -69,9 +70,16 @@ class Profile:
     system_file: str | None = None
     prefill: str | None = None  # заготовка ввода: подставляется в строку ввода при выборе профиля
     prefill_file: str | None = None
+    # Очередь заготовок: следующий вопрос подставляется сам, как только отправлен предыдущий.
+    # Заведена для повторяемых прогонов — показа и разбора: набранный руками вопрос всякий раз
+    # чуть другой, и сравнивать два прогона между собой становится нечем.
+    prefills: list[str] = field(default_factory=list)
     keep_history: bool = True
     # сколько пар «вопрос — ответ» держать в памяти; 0 — окно выключено, память не обрезается
     history_window: int = DEFAULT_WINDOW_PAIRS
+    # предел веса запроса в токенах; 0 — предела нет. Окно по парам меряет не то, чем считает
+    # контекст и деньги поставщик: пять пар со вставленными файлами весят больше сотни коротких.
+    budget_tokens: int = 0
     agents: list[str] = field(default_factory=list)  # непусто — профиль ведущего группы
     screens: list[str] = field(default_factory=list)  # непусто — набор рабочих экранов
     # как разложены шаги цепочки: "panes" — панелями рядом, "tabs" — вкладкой на шаг
@@ -90,6 +98,7 @@ class Profile:
             "system": self.system,
             "keep_history": self.keep_history,
             "history_window": self.history_window,
+            "budget_tokens": self.budget_tokens,
             "params": dict(self.params),
         }
         if self.agents:
@@ -117,8 +126,11 @@ class Profile:
             data["prefill_file"] = self.prefill_file
         elif self.prefill is not None:
             data["prefill"] = self.prefill
+        if self.prefills:
+            data["prefills"] = list(self.prefills)
         data["keep_history"] = self.keep_history
         data["history_window"] = self.history_window
+        data["budget_tokens"] = self.budget_tokens
         if self.agents:
             data["agents"] = list(self.agents)
         if self.screens:
@@ -188,6 +200,25 @@ def available() -> list[tuple[str, Path | None]]:
     return items
 
 
+def _prefills(value: Any, warnings: list[str]) -> list[str]:
+    """Очередь заготовок из файла профиля.
+
+    Пустые строки выбрасываем, нестроковое — называем вслух и пропускаем: молча съеденный
+    элемент очереди означал бы, что на показе вопрос не появится, а почему — неизвестно."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        warnings.append("поле prefills — список вопросов; значение другого вида пропущено")
+        return []
+    очередь: list[str] = []
+    for элемент in value:
+        if isinstance(элемент, str) and элемент.strip():
+            очередь.append(элемент.strip())
+        else:
+            warnings.append(f"в prefills пропущен элемент, который не текст: {элемент!r}")
+    return очередь
+
+
 def _profile_names(raw: Any, field_name: str, warnings: list[str]) -> list[str]:
     """Список имён профилей (состав группы, набор рабочих экранов или набор способов). Мусор в
     поле не должен ронять профиль — отбрасываем его с предупреждением, как и неизвестные
@@ -231,6 +262,38 @@ def _history_window(raw: Any, warnings: list[str]) -> int:
             f"взято умолчание {DEFAULT_WINDOW_PAIRS}"
         )
         return DEFAULT_WINDOW_PAIRS
+    return raw
+
+
+def _budget_tokens(raw: Any, warnings: list[str]) -> int:
+    """Предел веса запроса в токенах: целое неотрицательное, 0 — предела нет.
+
+    Умолчание — ноль, а не какое-нибудь разумное число: профиль, написанный до появления
+    поля, обязан работать ровно как прежде. Предел — вещь, о которой просят вслух.
+
+    Мусор отбрасываем с предупреждением по той же причине, что и в `_history_window`: молча
+    подставленное умолчание сделало бы поведение необъяснимым — человек написал предел,
+    harness режет память по-своему и нигде об этом не говорит. `bool` отсеиваем отдельно,
+    он в Python подкласс `int`, и `true` прошло бы как бюджет в один токен, то есть как
+    приказ выбросить всю память до последней пары."""
+    if raw is None:
+        return 0
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        warnings.append(
+            f"поле «budget_tokens»: {raw!r} — ожидалось целое неотрицательное число, предел не задан"
+        )
+        return 0
+    if 0 < raw < tokens.BASE_OVERHEAD:
+        # Значение оставляем как есть: человек вправе задать любой предел, и подменять его
+        # своим — то же молчаливое умолчание, от которого разбор и защищается. Но сказать
+        # обязаны: в такой предел не влезает даже пустой запрос — одна обёртка разговора
+        # весит больше, — а значит память будет обрезана до последней пары при каждом
+        # обмене. Узнавать об этом по поведению («почему модель ничего не помнит?») человек
+        # не должен: поведение объяснится не сразу, а строка предупреждения — сразу.
+        warnings.append(
+            f"поле «budget_tokens»: {raw} меньше веса пустого запроса ({tokens.BASE_OVERHEAD}) — "
+            f"память будет обрезана до последней пары"
+        )
     return raw
 
 
@@ -293,8 +356,10 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "system_file",
         "prefill",
         "prefill_file",
+        "prefills",
         "keep_history",
         "history_window",
+        "budget_tokens",
         "agents",
         "screens",
         "methods",
@@ -318,6 +383,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
     system_text = _text("system", "system_file")
     system_file = data.get("system_file")
     prefill_text = _text("prefill", "prefill_file")
+    prefills = _prefills(data.get("prefills"), warnings)
 
     variables = data.get("vars") or {}
     if variables:
@@ -326,6 +392,11 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
             system_text = Substitution(system_text).safe_substitute(variables)
         if prefill_text:
             prefill_text = Substitution(prefill_text).safe_substitute(variables)
+        # Очередь заготовок проходит подстановку наравне с одиночной: требование объявляет
+        # одиночную «той же очередью длиной в один вопрос», и два поля, объявленные одним,
+        # не имеют права вести себя по-разному. Иначе `$переменная` уехала бы в модель
+        # дословно — и увидели бы это все, кто смотрит показ.
+        prefills = [Substitution(вопрос).safe_substitute(variables) for вопрос in prefills]
 
     collected: dict[str, Any] = {}
     for key, value in data.items():
@@ -347,8 +418,10 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         system_file=system_file,
         prefill=prefill_text.strip() if isinstance(prefill_text, str) else None,
         prefill_file=data.get("prefill_file"),
+        prefills=prefills,
         keep_history=bool(data.get("keep_history", True)),
         history_window=_history_window(data.get("history_window"), warnings),
+        budget_tokens=_budget_tokens(data.get("budget_tokens"), warnings),
         agents=_profile_names(data.get("agents"), "agents", warnings),
         screens=screen_names,
         layout=_layout(data.get("layout"), screen_names, warnings),
@@ -359,6 +432,20 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         source=source,
     )
     return profile, warnings
+
+
+def _короткий_путь(каталог: Path) -> str:
+    """Путь для человека: домашний каталог сокращаем до «~», остальное как есть."""
+    дом = Path.home()
+    try:
+        return "~/" + str(каталог.relative_to(дом))
+    except ValueError:
+        return str(каталог)
+
+
+def search_hint() -> str:
+    """Где искать профили — одной строкой, для сообщений человеку."""
+    return " · ".join(_короткий_путь(каталог) for каталог in search_dirs())
 
 
 def load(name: str) -> tuple[Profile, list[str]]:
@@ -376,7 +463,10 @@ def load(name: str) -> tuple[Profile, list[str]]:
         return _from_dict(data, name, path.parent, path)
     if name == DEFAULT_PROFILE_NAME:
         return builtin_default(), []
-    return builtin_default(), [f"профиль «{name}» не найден — взят default"]
+    # Где искали — обязательная часть жалобы, а не любезность. Профили ищутся рядом с
+    # КАТАЛОГОМ ЗАПУСКА, и человек, запустивший harness не оттуда, видит короткий список без
+    # своих профилей и не понимает почему. Названные каталоги отвечают на это сразу.
+    return builtin_default(), [f"профиль «{name}» не найден — взят default. Искали: {search_hint()}"]
 
 
 def save(profile: Profile) -> Path:
