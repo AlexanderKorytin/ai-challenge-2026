@@ -33,7 +33,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
-from . import api, archivist, memory, profiles, team, ui
+from . import api, archivist, memory, profiles, team, tokens, ui
 from . import methods as methods_mod
 from . import params as params_mod
 from . import picker as picker_mod
@@ -75,6 +75,11 @@ class State:
     profile_dirty: bool = False  # параметры меняли, но профиль не сохранён
     known_models: list[str] = field(default_factory=lambda: list(api.FALLBACK_MODELS))
     journal_warned: bool = False
+    # Расход агентов, которых в дереве экранов больше нет: собеседника, смещённого сменой
+    # профиля, и экспертов закрытой группы. Сеанс — это запуск процесса, а не жизнь одного
+    # собеседника: деньги за прежний разговор списаны и никуда не делись оттого, что человек
+    # сменил профиль. Без копилки итог падал бы посреди работы почти до нуля — то есть врал.
+    retired_usage: dict[str, int] = field(default_factory=dict)
     store_warned: bool = False  # о сбое записи разговора говорим один раз за сеанс
     input_buffer: Any = None  # буфер строки ввода: профиль подставляет в него заготовку
     # Мышь включена всегда: клики и выделение текста уживаются, если не просить у терминала
@@ -118,6 +123,44 @@ class State:
         """Собеседник главного экрана — тот, с кем разговаривает пользователь."""
         return self.main.first.agent
 
+    def agents(self) -> list[Agent]:
+        """Все поднятые собеседники сеанса, каждый по одному разу.
+
+        Агентов ищем там, где они живут, — в панелях экранов: собственного списка агентов
+        состояние не ведёт, и второй список разошёлся бы с панелями на первом же экране,
+        заведённом мимо него. Собеседник главного экрана попадает сюда тем же обходом: его
+        панель — первая панель первого экрана.
+
+        Одного и того же агента отдаём один раз: панель может показывать чужого собеседника,
+        и сложенный дважды расход выглядел бы ростом вдвое там, где ничего не росло.
+        """
+        агенты: list[Agent] = []
+        for screen in self.screens:
+            for pane in screen.panes:
+                if pane.agent is not None and not any(pane.agent is уже for уже in агенты):
+                    агенты.append(pane.agent)
+        return агенты
+
+    def retire(self, агенты: list[Agent]) -> None:
+        """Проводить агентов: их расход уходит в копилку выбывших.
+
+        Звать ТОЛЬКО там, где агент действительно покидает дерево экранов, и до того, как
+        ссылка на него потеряна. Проводи живого — и его расход посчитался бы дважды: раз в
+        копилке, раз при обходе панелей."""
+        for агент in агенты:
+            self.retired_usage = tokens.add_usage(self.retired_usage, агент.session_usage)
+
+    def session_usage_total(self) -> dict[str, int]:
+        """Расход за сеанс по ВСЕМ поднятым агентам, одной суммой.
+
+        Считать по одному главному агенту нельзя: группа экспертов, цепочка способов и
+        рабочие экраны ходят к модели своими агентами, и их обмены оплачены из того же
+        кошелька. Итог, показывающий один главный разговор, занижал бы расход ровно в тот
+        день, когда он вырос, — когда человек запустил четыре способа сразу.
+        """
+        живые = [agent.session_usage for agent in self.agents()]
+        return tokens.total_usage([self.retired_usage, *живые])
+
     def __post_init__(self) -> None:
         # Панель главного экрана заводит `screens.main_screen()`, профиля у неё нет, а
         # собеседник нужен: главный разговор ведёт он. Заводим здесь, а не в `_main`, чтобы
@@ -160,7 +203,12 @@ def toggle_zoom(state: State) -> None:
 
 def drop_agent_screens(state: State) -> None:
     """Экраны агентов и рабочие экраны живут ровно столько, сколько профиль, который их
-    завёл: сменился профиль — прежние ленты уже не о чем."""
+    завёл: сменился профиль — прежние ленты уже не о чем.
+
+    Расход экспертов провожаем в копилку прежде, чем закрыть их экраны: ленты не о чем, а
+    деньги за их ответы заплачены."""
+    выбывают = [pane.agent for screen in state.screens[1:] for pane in screen.panes if pane.agent is not None]
+    state.retire(выбывают)
     del state.screens[1:]
     state.active = 0
 
@@ -279,6 +327,9 @@ def switch_profile(state: State, name: str) -> None:
     # которой мы уже не пользуемся. Смена поколения делает это дописывание невозможным —
     # брошенный агент не оставит после себя ни строчки.
     state.main.first.agent.forget()
+    # Расход уходящего собеседника провожаем в копилку до замены: сеанс продолжается, и
+    # потраченное им не должно исчезнуть с экрана вместе с ним.
+    state.retire([state.main.first.agent])
     state.main.first.agent = Agent(screens_mod.MAIN_KEY, profile, facts=user_facts)
     if had_history:
         append_log(state, ui.system_fragments("история диалога очищена — профиль сменился"))
@@ -731,6 +782,96 @@ def cmd_forget(state: State, arg: str) -> None:
     append_log(state, ui.error_fragments(сообщение))
 
 
+def cmd_tokens(state: State) -> None:
+    """`/tokens` — снимок расхода: чем нагружен следующий запрос и во что обошёлся сеанс.
+
+    Итог берём по всем агентам сеанса, а вес разговора — у собеседника главного экрана.
+    Это не непоследовательность: платит человек за всех, кого поднял, а решает «пора ли
+    звать /clear» по разговору, который ведёт сам. Возьми вес истории тоже по всем — и
+    сумма памяти четырёх исполнителей, живущих ровно один вопрос, выдавала бы главный
+    разговор за неподъёмный.
+
+    Цену считает `tokens` по накопленному расходу, а не сложением цен обменов: у DeepSeek
+    цена зависит от часа, и обмен, сделанный в дорогой час, дорог именно тогда. Сумма по
+    накопленному — приближение, зато одно и то же число не пересчитывается двумя способами.
+    """
+    итог = state.session_usage_total()
+    агент = state.main_agent
+    append_log(
+        state,
+        ui.tokens_report_fragments(
+            state.model,
+            history=агент.history_tokens(),
+            pairs=len(агент.history()) // 2,
+            overhead=агент.overhead(state.model),
+            restored=агент.restored_pairs,
+            runs=sum(другой.runs for другой in state.agents()),
+            usage=итог,
+            budget=state.profile.budget_tokens,
+            cost=tokens.format_price(tokens.price(итог, state.model)),
+        ),
+    )
+
+
+def cmd_budget(state: State, arg: str) -> None:
+    """`/budget [токены]` — предел веса запроса; 0 снимает предел.
+
+    Почему это отдельная команда, а НЕ параметр `/set`. В параметрах генерации живут только
+    ручки самого DeepSeek — правило проекта, заведённое затем, чтобы `/params` можно было
+    сверять со страницей документации поставщика построчно. Предел веса запроса в запрос не
+    уходит вовсе: это наша политика обрезки памяти перед отправкой. Положи его к параметрам —
+    и человек искал бы его в документации DeepSeek, где такого поля нет и не будет.
+
+    Значение кладётся в профиль, но на диск не пишется: `/budget` — прикидка на сеанс, а
+    насовсем предел закрепляет `/profile save`. Поэтому здесь же поднимается признак
+    «профиль изменён» — тот самый, по которому строка состояния предупреждает о
+    несохранённых правках.
+    """
+    текст = arg.strip()
+    if not текст:
+        if state.profile.budget_tokens > 0:
+            append_log(
+                state,
+                ui.system_fragments(
+                    f"предел веса запроса профиля «{state.profile.name}»: "
+                    f"{ui.format_exact(state.profile.budget_tokens)} токенов"
+                ),
+            )
+        else:
+            append_log(state, ui.system_fragments("предел веса запроса не задан — память режет только окно по парам"))
+        append_log(state, ui.hint_fragments("задать: /budget 3000; снять: /budget 0"))
+        return
+    try:
+        предел = int(текст)
+    except ValueError:
+        append_log(state, ui.error_fragments(f"«{текст}» — не число токенов; например: /budget 3000"))
+        return
+    if предел < 0:
+        append_log(state, ui.error_fragments("предел не бывает отрицательным; 0 — без предела"))
+        return
+    # Признак «профиль изменён» поднимаем только на настоящей смене значения: повторный
+    # `/budget 3000` ничего не менял, а строка состояния уверяла бы, что есть несохранённое.
+    if предел != state.profile.budget_tokens:
+        state.profile.budget_tokens = предел
+        state.profile_dirty = True
+    if предел == 0:
+        append_log(state, ui.system_fragments("предел веса запроса снят — память режет только окно по парам"))
+        return
+    append_log(state, ui.system_fragments(f"предел веса запроса: {ui.format_exact(предел)} токенов"))
+    if предел < tokens.BASE_OVERHEAD:
+        # Ровно то же предупреждение, что даёт разбор профиля: в такой предел не влезает даже
+        # пустой запрос — одна обёртка разговора весит больше. Узнавать об этом по поведению
+        # («почему модель ничего не помнит?») человек не должен.
+        append_log(
+            state,
+            ui.hint_fragments(
+                f"это меньше веса пустого запроса ({tokens.BASE_OVERHEAD}) — "
+                f"память будет обрезана до последней пары"
+            ),
+        )
+    append_log(state, ui.hint_fragments("сохранить в профиль: /profile save <имя>"))
+
+
 def cmd_team(state: State, arg: str) -> None:
     """Разовый запуск группы. Без аргумента — показывает состав; с вопросом — задаёт его
     группе. Первым словом можно назвать профиль-ведущего: так группу поднимают, не уходя
@@ -882,6 +1023,10 @@ async def handle_command(text: str, state: State) -> bool:
         cmd_memory(state, arg)
     elif cmd == "/forget":
         cmd_forget(state, arg)
+    elif cmd == "/tokens":
+        cmd_tokens(state)
+    elif cmd == "/budget":
+        cmd_budget(state, arg)
     else:
         append_log(state, ui.error_fragments(f"неизвестная команда: {cmd} (см. /help)"))
     return False

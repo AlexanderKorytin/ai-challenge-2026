@@ -11,6 +11,7 @@ from prompt_toolkit.styles import Style
 
 from . import params as params_mod
 from . import screens as screens_mod
+from . import tokens as tokens_mod
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -91,6 +92,8 @@ COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("/remember", "<текст>", "запомнить факт о себе — он будет известен в любой папке", True),
     ("/memory", "[on|off]", "глобальная память: список фактов, сбор фактов вкл/выкл", True),
     ("/forget", "<номер>", "убрать факт из глобальной памяти", True),
+    ("/tokens", "", "расход токенов и денег за сеанс", True),
+    ("/budget", "[токены]", "предел веса запроса; 0 — без предела", True),
     ("/exit", "", "выход", False),
 )
 
@@ -267,6 +270,9 @@ def agent_panel_fragments(
     Время и расход прижаты к правому краю: сравнивать их глазом можно только когда числа
     стоят друг под другом. Каждая строка добивается пробелами до полной ширины, потому что
     обработчик щелчка висит на самой строке — попасть мышью надо в строку, а не в буквы.
+
+    Расход помечен знаком «Σ» и набран тем же стилем, что итог в строке ожидания: знаки на
+    экране означают одно и то же везде, иначе их приходится каждый раз перечитывать.
     """
     start, end = panel_slice(len(rows), active)
     shown = rows[start:end]
@@ -283,15 +289,32 @@ def agent_panel_fragments(
         handler = _row_click(on_click, index)
         _, mark_style = STATUS_MARKS.get(status, STATUS_MARKS[screens_mod.IDLE])
         elapsed = format_duration(total_ms) if runs else "—"
-        tokens = f"↓ {format_tokens(total_tokens)}" if runs else "—"
         line: Fragments = [
             (mark_style, " ● " if current else " ○ "),
             ("class:agents.name.active" if current else "class:agents.name", _clip(name, name_width).ljust(name_width)),
             ("class:agents", "  "),
             (mark_style if status in (screens_mod.BUSY, screens_mod.ERROR) else "class:agents",
              _clip(task, task_width).ljust(task_width)),
-            ("class:agents.meta", f"{elapsed:>9}  {tokens:>8}"),
         ]
+        if runs:
+            # Знак итога, а не входящих: в колонке стоит ВЕСЬ расход агента — вход, выход и
+            # размышления вместе. Стрелка «↓» тут означала бы «столько пришло от модели», и
+            # число, прочитанное по такой пометке, оказалось бы втрое больше правды. Пометка,
+            # врущая про смысл числа, дороже неверного числа: неверное число видно, а из-за
+            # неверной пометки перестают верить и всем остальным числам на экране.
+            #
+            # Столбцов «↑» и «↓» в списке нет намеренно. Список отвечает на один вопрос —
+            # кто из агентов дороже, — и для него хватает одного столбца. Три столбца съели
+            # бы колонку занятия, а её и читают чаще всего. Разбивка живёт там, где ей место:
+            # в замерших строках самого агента и в отчёте `/tokens`.
+            число = format_tokens(total_tokens)
+            # Отступ отдаём приглушённому фрагменту, а само число — стилю итога: тот же приём,
+            # что и в строке ожидания, чтобы во фрагменте числа лежало только число.
+            отступ = " " * max(0, 8 - 2 - len(число))
+            line.append(("class:agents.meta", f"{elapsed:>9}  {отступ}Σ "))
+            line.append(("class:tokens.sum", число))
+        else:
+            line.append(("class:agents.meta", f"{elapsed:>9}  {'—':>8}"))
         used = sum(len(text) for _, text in line)
         line.append(("class:agents", " " * max(0, width - used)))
         out += [(style, text, handler) for style, text in line]
@@ -681,21 +704,40 @@ def answer_label_fragments() -> Fragments:
     return [("class:answer", "myharness › ")]
 
 
-def meta_fragments(finish_reason: str | None, usage: dict[str, Any], elapsed: float, profile: str) -> Fragments:
-    """Строка под ответом: чем закончилось, сколько токенов, сколько времени, каким профилем."""
+def meta_fragments(
+    finish_reason: str | None,
+    usage: dict[str, Any],
+    profile: str,
+    cost: str | None = None,
+) -> Fragments:
+    """Строка под ответом: чем кончилось, что пришло из кэша, во что обошлось, каким профилем.
+
+    Ни токенов, ни времени здесь НЕТ, и это не упущение. И то и другое стоит строкой выше —
+    в замершей строке ожидания, за которой человек следил глазами весь обмен. Повтори их
+    тут — и рядом оказались бы два набора чисел об одном и том же; читающий стал бы искать,
+    чем они отличаются, хотя не отличаются они ничем. Правило одно на оба числа: половина
+    правила («токены убрали, время оставили») хуже, чем никакого, — по ней не догадаешься,
+    чему эта строка вообще посвящена.
+
+    Попадания в кэш названы отдельно, потому что это единственное число, объясняющее цену:
+    вход из кэша дешевле промаха в тридцать раз, и обмен на одинаковый вход может стоить и
+    доллар, и три цента. Когда попаданий нет, о них молчим: «из кэша 0» занимает место и не
+    сообщает ничего.
+
+    Деньги приходят готовой строкой, а не числом: считает их `tokens`, и он же знает, что
+    сказать при незнакомом тарифе. Посчитай их здесь — вторая формула цены разошлась бы с
+    первой на первой же правке тарифа.
+    """
     parts: list[str] = []
     if finish_reason:
         parts.append(FINISH_REASONS.get(finish_reason, finish_reason))
-    if usage:
-        prompt_tokens = usage.get("prompt_tokens")
-        completion_tokens = usage.get("completion_tokens")
-        details = usage.get("completion_tokens_details") or {}
-        reasoning_tokens = details.get("reasoning_tokens")
-        chunk = f"токены: вход {prompt_tokens}, выход {completion_tokens}"
-        if reasoning_tokens:
-            chunk += f" (из них рассуждения {reasoning_tokens})"
-        parts.append(chunk)
-    parts.append(f"{elapsed:.1f} с")
+    cache_hits = usage.get("prompt_cache_hit_tokens") if isinstance(usage, dict) else None
+    # `bool` отсеиваем наравне с нечислами: `usage` приходит от сервера, а True напечаталось
+    # бы как «из кэша 1» — правдоподобное число, которого не было.
+    if isinstance(cache_hits, int) and not isinstance(cache_hits, bool) and cache_hits > 0:
+        parts.append(f"из кэша {format_exact(cache_hits)}")
+    if cost:
+        parts.append(cost)
     parts.append(f"профиль: {profile}")
     style = "class:meta.warn" if finish_reason == "length" else "class:meta"
     return [(style, "· " + "  ·  ".join(parts)), ("", "\n")]
@@ -738,6 +780,96 @@ def profile_list_fragments(items: list[tuple[str, Any]], active: str) -> Fragmen
             out.append(("class:dim", "   встроенный"))
         out.append(("", "\n"))
     out.append(("class:dim", "  переключить: /profile <имя> · сохранить текущий: /profile save <имя>\n"))
+    return out
+
+
+def _percent(part: int, whole: int) -> str:
+    """Доля в процентах для снимка расхода. Дно у неё то же, что у цены в `format_price`:
+    «0.0 %» на месте настоящей доли читается как «ничего не занято», а занято может быть уже
+    несколько тысяч токенов — просто окно у модели в миллион."""
+    if whole <= 0:
+        return "—"
+    доля = part / whole * 100
+    if 0 < доля < 0.1:
+        return "< 0.1 %"
+    return f"{доля:.1f} %"
+
+
+def tokens_report_fragments(
+    model: str,
+    *,
+    history: int,
+    pairs: int,
+    overhead: int,
+    restored: int,
+    runs: int,
+    usage: dict[str, Any],
+    budget: int,
+    cost: str,
+) -> Fragments:
+    """Снимок расхода по `/tokens`: что уйдёт в следующий запрос и во что обошёлся сеанс.
+
+    Две половины снимка отвечают на разные вопросы, и смешивать их нельзя. Первая — про
+    БУДУЩЕЕ: сколько весит разговор, который уедет в модель следующим запросом, и близко ли
+    дно окна. Вторая — про ПРОШЛОЕ: сколько обменов уже сделано и сколько за них заплачено.
+    Человек зовёт команду ради одного из двух, и строка, отвечающая сразу на оба, не отвечает
+    ни на один.
+
+    Занятое окно берём вместе с надбавкой обёртки, а строкой ниже вес истории — без неё.
+    Разница между числами не описка: в окно уходит весь запрос целиком, а решение «пора ли
+    звать /clear» принимается по весу того, что агент помнит, — обёртку `/clear` не уберёт.
+
+    Поднятые с диска пары названы отдельной строкой и только когда они есть. Иначе расход
+    выглядит необъяснимым: обменов ноль, денег потрачено ноль, а первый же запрос уходит
+    тяжёлым — потому что разговор поднят из прошлого запуска и оплачен будет сейчас.
+
+    Деньги приходят готовой строкой — по той же причине, что и в `meta_fragments`: считает
+    их `tokens`, он же знает, что сказать при незнакомом тарифе. Вторая формула цены
+    разошлась бы с первой на первой же правке тарифа.
+    """
+    занято = history + overhead
+    пар_истории = _plural(pairs, "паре", "парах", "парах")
+    обменов = _plural(runs, "обмен", "обмена", "обменов")
+    # Строки собираем в переменные, а не прямо во фрагментах: там пропущенная запятая
+    # склеила бы соседние куски в одну строку молча, и подпись стиля уехала бы на строку ниже.
+    окно = (
+        f"· окно «{model}»: {format_exact(tokens_mod.CONTEXT_WINDOW)}, "
+        f"следующий запрос займёт {format_exact(занято)} ({_percent(занято, tokens_mod.CONTEXT_WINDOW)})"
+    )
+    out: Fragments = [
+        ("class:system", окно),
+        ("", "\n"),
+        (
+            "class:dim",
+            f"  история: {format_exact(history)} в {pairs} {пар_истории} — этот вес уйдёт в следующий запрос\n",
+        ),
+    ]
+    if restored:
+        поднято = _plural(restored, "пара", "пары", "пар")
+        out.append(
+            (
+                "class:dim",
+                f"  с диска поднято {restored} {поднято} — в итог сеанса не входят, в запрос — да\n",
+            )
+        )
+    вход = format_exact(int(usage.get("prompt_tokens") or 0))
+    выход = format_exact(int(usage.get("completion_tokens") or 0))
+    рассуждения = format_exact(int(usage.get("reasoning_tokens") or 0))
+    сеанс = (
+        f"  сеанс: {runs} {обменов}, вход {вход}, выход {выход} "
+        f"(из них рассуждения {рассуждения}), {cost}\n"
+    )
+    out.append(("class:dim", сеанс))
+    if budget > 0:
+        out.append(("class:dim", f"  предел веса запроса: {format_exact(budget)} (/budget 0 — снять)\n"))
+    else:
+        out.append(("class:dim", "  предел веса запроса не задан (/budget <токены> — задать)\n"))
+    if not tokens_mod.exact():
+        # Приблизительны ровно два верхних числа: их считаем мы сами. Расход сеанса назвал
+        # сервер, и валить его в ту же оговорку значило бы наводить тень на точные числа.
+        out.append(
+            ("class:dim", "  словаря нет: вес истории и занятое окно — оценка, расход сеанса точен\n")
+        )
     return out
 
 
@@ -792,6 +924,16 @@ def help_fragments() -> Fragments:
         "/remember <текст> кладёт факт, /memory показывает список с номерами, /forget <номер>\n"
         "убирает. Раз в несколько обменов их выписывает из разговора агент-архивариус —\n"
         "каждый найденный факт он объявляет в ленте; /memory off выключает его совсем.\n"
+        "\n"
+        "Токены и деньги\n"
+        "/tokens показывает снимок расхода: сколько весит разговор и какую долю окна модели\n"
+        "он займёт следующим запросом, сколько пар поднято с диска, сколько обменов сделано\n"
+        "за сеанс и во что они обошлись. Числа веса считает сам harness, расход сеанса\n"
+        "приходит от сервера.\n"
+        "/budget <токены> задаёт предел веса запроса: как только разговор перестаёт в него\n"
+        "влезать, самые старые пары выбрасываются из памяти перед отправкой. /budget без\n"
+        "довода показывает действующее значение, /budget 0 снимает предел. Предел живёт в\n"
+        "профиле — сохранить его насовсем: /profile save <имя>.\n"
         "\n"
         "Внутри вкладки может быть несколько панелей — шаги приёма или ответы экспертов рядом.\n"
         "Alt+←/→ переходят между панелями, F3 разворачивает панель на весь экран и обратно.\n"

@@ -33,7 +33,8 @@ from prompt_toolkit.output import DummyOutput  # noqa: E402
 from prompt_toolkit.data_structures import Point  # noqa: E402
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType  # noqa: E402
 
-from myharness import api, archivist, cli, memory, picker as picker_mod, profiles, ui  # noqa: E402
+from myharness import api, archivist, cli, memory, output, picker as picker_mod, profiles, ui  # noqa: E402
+from myharness import screens, tokens  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 failures = []
@@ -60,7 +61,20 @@ class FakeClient:
         self.calls.append({"model": model, "messages": messages, "params": dict(params or {})})
         yield api.StreamEvent("reasoning", self.reasoning)
         yield api.StreamEvent("content", '{"status": "ok", "name": "щука"}')
-        yield api.StreamEvent("meta", finish_reason="length", usage={"prompt_tokens": 12, "completion_tokens": 34})
+        # Разбивка входа сходится с `prompt_tokens` (8 + 4 = 12) намеренно: не сойдись она,
+        # счёт денег считает весь вход промахом, и проверка «из кэша N» показывала бы не то,
+        # что показывает живой обмен.
+        yield api.StreamEvent(
+            "meta",
+            finish_reason="length",
+            usage={
+                "prompt_tokens": 12,
+                "completion_tokens": 34,
+                "prompt_cache_hit_tokens": 8,
+                "prompt_cache_miss_tokens": 4,
+                "completion_tokens_details": {"reasoning_tokens": 7},
+            },
+        )
 
     async def list_models(self):
         return ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
@@ -79,6 +93,37 @@ def log_text(state, target=None):
     target = target or state.main
     pane = target.first if hasattr(target, "first") else target
     return fragments_text(pane.log)
+
+
+def строки_ожидания(панель, начало=0):
+    """Строки ожидания из ленты панели — по знакам колонок, а не по их порядку в ленте.
+
+    Отбираем по «↑ ↓ Σ» вместе: поодиночке любой из знаков может встретиться в ответе модели,
+    а все три в одной строке — почерк ровно этой строки.
+    """
+    текст = fragments_text(панель.log[начало:])
+    return [строка for строка in текст.splitlines() if all(знак in строка for знак in ("↑", "↓", "Σ"))]
+
+
+def _число_после(строка, знак, следующий):
+    """Цифры между двумя знаками колонок. Разряды разделены неразрывным пробелом, поэтому
+    склеиваем одни цифры — сравнивать надо число, а не его оформление."""
+    хвост = строка.split(знак, 1)[1].split(следующий, 1)[0]
+    return "".join(з for з in хвост if з.isdigit())
+
+
+def итог_из(строка):
+    """Колонка «Σ» строки ожидания как текст. Именно текст, а не число: итог печатается
+    сокращением («12.4k»), и сравнивать его надо с тем же сокращением, а не с цифрами."""
+    return строка.split("Σ", 1)[1].strip()
+
+
+def исходящие_из(строка):
+    return _число_после(строка, "↑", "↓")
+
+
+def входящие_из(строка):
+    return _число_после(строка, "↓", "Σ")
 
 
 def panel_fragments(app):
@@ -183,7 +228,7 @@ async def main():
         buffer = app.layout.get_buffer_by_name("text-area") or app.current_buffer
         check("список команд открылся без Enter", buffer.complete_state is not None)
         count = len(buffer.complete_state.completions) if buffer.complete_state else 0
-        check("в списке команды авторизованного, без /auth", count == 13, f"их {count}")
+        check("в списке команды авторизованного, без /auth", count == 15, f"их {count}")
         check("пока агент один, списка агентов нет", not cli.show_agent_panel(state))
 
         await send(DOWN)
@@ -244,16 +289,175 @@ async def main():
         check("и возвращается обратно без перезапуска", any("● авторизован" in s for s in screen_texts(app)))
 
         print("\n5. Ответ модели")
+        отметка_5 = len(state.main.first.log)
         await send("щука" + ENTER, pause=0.4)
         text = log_text(state)
         check("вопрос показан", "› щука" in text)
         check("рассуждения показаны", "прикидываю…" in text)
         check("ответ показан", '"status": "ok"' in text)
-        check("расход токенов показан", "токены: вход 12, выход 34" in text)
+        ожидание_5 = строки_ожидания(state.main.first, отметка_5)
+        check("строка ожидания осталась в ленте", len(ожидание_5) == 1, str(ожидание_5))
+        check(
+            "в ней серверные числа расхода, а не живые",
+            ожидание_5 and исходящие_из(ожидание_5[0]) == "12" and входящие_из(ожидание_5[0]) == "34",
+            str(ожидание_5),
+        )
+        check("строка замерла: слова «думаю» в ней нет", ожидание_5 and "думаю" not in ожидание_5[0], str(ожидание_5))
         check("обрыв по лимиту назван прямо", "упёрлось в max_tokens" in text)
         check("подсказка, что делать с обрывом", "/set max_tokens" in text)
+        # Строка итога говорит то, чего нет в замершей строке ожидания, и не повторяет её.
+        итог_5 = fragments_text(state.main.first.log[отметка_5:])
+        check("строка итога называет попадания в кэш", "из кэша 8" in итог_5, итог_5[-200:])
+        check("строка итога называет деньги", "¢" in итог_5 or "$" in итог_5, итог_5[-200:])
+        check("строка итога называет профиль", "профиль: default" in итог_5, итог_5[-200:])
+        check("токены из строки итога убраны — они уже в строке ожидания", "токены: вход" not in итог_5)
+        check("заголовок размышлений получил число токенов", "▸ размышления · 7 токенов" in итог_5, итог_5[:200])
         check("temperature ушла в запрос", fake.calls[0]["params"].get("temperature") is not None)
         check("запрос ушёл выбранной моделью", fake.calls[0]["model"] == "deepseek-v4-pro", fake.calls[0]["model"])
+
+        print("\n5а. Строка ожидания живёт весь обмен, замирает и остаётся в ленте")
+        # Три свойства сразу: живые числа во время потока, замирание с серверными числами и
+        # то, что следующий вопрос заводит СВОЮ строку, а старая больше не меняется. Без
+        # последнего лента не становится таблицей роста расхода, ради которой всё и затеяно.
+
+        class МедленныйКлиент:
+            """Отдаёт поток кусками с паузой между ними.
+
+            Подставной клиент раздела 5 успевает кончиться раньше первого кадра вращения —
+            на нём живых чисел не увидеть вовсе, и проверять было бы нечего."""
+
+            def __init__(self):
+                self.calls = []
+
+            async def stream_chat(self, model, messages, params=None):
+                self.calls.append({"model": model, "messages": messages})
+                for кусок in ("мысль раз ", "мысль два ", "мысль три "):
+                    await asyncio.sleep(0.12)
+                    yield api.StreamEvent("reasoning", кусок)
+                await asyncio.sleep(0.12)
+                yield api.StreamEvent("content", "готово")
+                yield api.StreamEvent(
+                    "meta",
+                    finish_reason="stop",
+                    usage={
+                        "prompt_tokens": 100,
+                        "completion_tokens": 40,
+                        "total_tokens": 140,
+                        "prompt_cache_hit_tokens": 64,
+                        "prompt_cache_miss_tokens": 36,
+                        "completion_tokens_details": {"reasoning_tokens": 9},
+                    },
+                )
+
+            async def list_models(self):
+                return list(api.FALLBACK_MODELS)
+
+            async def aclose(self):
+                pass
+
+        медленный = МедленныйКлиент()
+        state.client = медленный
+        отметка = len(state.main.first.log)
+        pipe.send_text("медленный вопрос" + ENTER)
+        await asyncio.sleep(0.2)
+        живые_1 = строки_ожидания(state.main.first, отметка)
+        await asyncio.sleep(0.25)
+        живые_2 = строки_ожидания(state.main.first, отметка)
+        check("во время обмена строка говорит «думаю…»", bool(живые_1) and "думаю…" in живые_1[0], str(живые_1))
+        check(
+            "строка несёт живой расход: вход, выход, итог сеанса",
+            bool(живые_1) and all(знак in живые_1[0] for знак in ("↑", "↓", "Σ")),
+            str(живые_1),
+        )
+        check(
+            "вес запроса известен, не дожидаясь ответа сервера",
+            bool(живые_1) and исходящие_из(живые_1[0]) not in ("", "0"),
+            str(живые_1),
+        )
+        check(
+            "входящее число растёт по ходу потока",
+            bool(живые_1)
+            and bool(живые_2)
+            and int(входящие_из(живые_2[0])) > int(входящие_из(живые_1[0])),
+            f"{живые_1} → {живые_2}",
+        )
+        check(
+            "строка на весь обмен одна — печатью её не размножает ни один кусок потока",
+            len(живые_1) == 1 and len(живые_2) == 1,
+            f"{len(живые_1)} и {len(живые_2)}",
+        )
+        await asyncio.sleep(0.7)  # дать обмену дойти до конца
+        первая = строки_ожидания(state.main.first, отметка)
+        check("после ответа строка замерла со знаком исхода", bool(первая) and первая[0].startswith("✓"), str(первая))
+        check(
+            "в замершей строке серверные числа, а не живые",
+            bool(первая) and исходящие_из(первая[0]) == "100" and входящие_из(первая[0]) == "40",
+            str(первая),
+        )
+        снимок = первая[0] if первая else ""
+        await send("второй медленный вопрос" + ENTER, pause=1.0)
+        обе = строки_ожидания(state.main.first, отметка)
+        check("у второго вопроса своя строка ожидания", len(обе) == 2, str(обе))
+        check("числа в первой строке больше не меняются", bool(обе) and обе[0] == снимок, f"{снимок!r} → {обе[:1]}")
+        # Итог сеанса здесь ещё трёхзначный, поэтому в строке он напечатан целиком — сравнение
+        # цифр законно. Дорасти он до тысяч, и строка показала бы «1.2k»: тогда сравнивать
+        # пришлось бы иначе, но и день, когда это случится, наступит не в этой проверке.
+
+        def итог(строка):
+            return int("".join(з for з in строка.split("Σ", 1)[1] if з.isdigit()))
+
+        check(
+            "итог сеанса во второй строке вырос — лента стала таблицей роста",
+            len(обе) == 2 and итог(обе[1]) > итог(обе[0]),
+            str(обе),
+        )
+        # Отмена — третий исход, и знак у неё свой. Стирать строку нельзя и здесь: обмен шёл,
+        # время потрачено, часть токенов у поставщика списана, и делать вид, будто запроса не
+        # было, значило бы прятать израсходованное.
+        отметка_отмены = len(state.main.first.log)
+        pipe.send_text("отменяемый вопрос" + ENTER)
+        await asyncio.sleep(0.2)
+        await send("\x03", pause=0.4)
+        отменённая = строки_ожидания(state.main.first, отметка_отмены)
+        check("отменённый обмен оставил свою строку в ленте", len(отменённая) == 1, str(отменённая))
+        check("у отмены свой знак исхода", bool(отменённая) and отменённая[0].startswith("⊘"), str(отменённая))
+        check(
+            "и числа помечены неточными — серверных не дождались",
+            bool(отменённая) and "~" in отменённая[0],
+            str(отменённая),
+        )
+        state.client = fake
+
+        print("\n5б. Два тихих пути строки итога: предел веса и незнакомый тариф")
+        # Оба — по одной строке кода, и оба молчаливые: сломайся они, ни одна другая проверка
+        # этого не заметит. Предел, о превышении которого не сказано, хуже отсутствующего:
+        # на отсутствующий человек не рассчитывает. Цена незнакомой модели, показанная нулём,
+        # читается как «бесплатно», и правду человек узнает из счёта в конце месяца.
+        (tmp / "profiles" / "tight.json").write_text(
+            json.dumps(
+                # Предел выше веса пустого запроса (83), иначе разбор профиля ругается сам и
+                # проверка ловила бы его предупреждение вместо нашего. Вопрос длинный — в
+                # такой предел он не влезает при любой надбавке обёртки.
+                {"name": "tight", "system": "коротко", "keep_history": True, "budget_tokens": 90},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        await send("/profile tight" + ENTER, pause=0.25)
+        отметка_предела = len(state.main.first.log)
+        await send("вопрос, который заведомо не влезает в предел: " + "щука " * 60 + ENTER, pause=0.5)
+        предел = fragments_text(state.main.first.log[отметка_предела:])
+        check("о превышении предела веса сказано вслух", "тяжелее заданного предела" in предел, предел[-300:])
+        check("и сказано, что с этим делать", "/budget" in предел, предел[-300:])
+
+        прежняя_модель = state.model
+        state.model = "модель-без-тарифа"
+        отметка_тарифа = len(state.main.first.log)
+        await send("вопрос незнакомой модели" + ENTER, pause=0.5)
+        тариф = fragments_text(state.main.first.log[отметка_тарифа:])
+        check("у модели без тарифа цена не выдумывается", "тариф неизвестен" in тариф, тариф[-300:])
+        check("и нулём она не притворяется", "0.00" not in тариф, тариф[-300:])
+        state.model = прежняя_модель
 
         print("\n6. Журнал")
         record = json.loads(Path(os.environ["MYHARNESS_JOURNAL"]).read_text(encoding="utf-8").strip().splitlines()[0])
@@ -351,6 +555,49 @@ async def main():
         await send("/profile lead" + ENTER, pause=0.25)
         check("состав группы показан при выборе профиля", "● analyst" in log_text(state) and "● critic" in log_text(state))
 
+        # Разогрев главного экрана перед группой. Без него проверка Σ на экране агента ничего
+        # не значит: смена профиля заводит НОВОГО собеседника главного экрана, его расход
+        # обнуляется, и к приходу экспертов «весь сеанс» равен нулю — то есть совпадает с
+        # расходом самого эксперта. Подмена одного другим при таком совпадении ничем себя не
+        # выдаёт, и проверка проходила бы при сломанном правиле (проверено порчей С1).
+        #
+        # Обмен заводим тем же вызовом, каким его заводит очередь: ввод с клавиатуры при
+        # профиле `lead` поднял бы ещё одну группу.
+        class РазогревныйКлиент:
+            """Расход, заметно отличный от расхода основного подставного клиента: равные
+            числа снова слили бы «своё» с «общим» и обесценили проверку."""
+
+            async def stream_chat(self, model, messages, params=None):
+                yield api.StreamEvent("content", "разогрев")
+                yield api.StreamEvent(
+                    "meta",
+                    finish_reason="stop",
+                    usage={"prompt_tokens": 100, "completion_tokens": 40, "total_tokens": 140},
+                )
+
+            async def list_models(self):
+                return list(api.FALLBACK_MODELS)
+
+            async def aclose(self):
+                pass
+
+        # Меряем ПРИРОСТ, а не итог: к этому месту сценарий уже сменил профиль, и в итоге
+        # сеанса законно лежит расход выбывших собеседников. Проверка на круглое число
+        # сломалась бы от любой правки выше по сценарию, ничего при этом не поймав.
+        до_разогрева = state.session_usage_total()["total_tokens"]
+        state.client = РазогревныйКлиент()
+        await output.run_turn(state, state.main_agent, "разогрев перед группой", pane=state.main.first)
+        state.client = fake
+        разогрев = state.session_usage_total()["total_tokens"]
+        check(
+            "перед группой на главном экране уже потрачено",
+            разогрев - до_разогрева == 140,
+            f"прирост {разогрев - до_разогрева}",
+        )
+        # Счёт вызовов подставного клиента ведём с этого места: разогрев шёл мимо него, а
+        # проверки ниже разбирают запросы группы поимённо.
+        before = len(fake.calls)
+
         await send("почему так?" + ENTER, pause=0.8)
         check("экраны группы заведены", [s.key for s in state.screens] == ["main", "lead", "lead:summary"], str([s.key for s in state.screens]))
         board = state.screens[1]
@@ -364,6 +611,40 @@ async def main():
         check("вывод агентов в главный экран не льётся", "ты аналитик" not in log_text(state))
         check("в главном экране сказано, где смотреть", "группа поднята: analyst, critic" in log_text(state))
         check("сводка ведущего — на своей вкладке", "свожу ответы агентов (2)" in log_text(state, summary_screen))
+
+        # Σ на экране агента — расход ЭТОГО эксперта, и только его. У эксперта одна задача и
+        # никакой переписки: общий итог сеанса стоял бы в его строке чужим числом, и сравнить
+        # экспертов между собой стало бы нечем — у всех одно и то же большое число.
+        свой = analyst_pane.agent.session_usage["total_tokens"]
+        общий = state.session_usage_total()["total_tokens"]
+        ожидание_эксперта = строки_ожидания(analyst_pane)
+        check("расход эксперта и расход сеанса — разные числа", свой != разогрев and общий > свой, f"свой {свой}, разогрев {разогрев}, всего {общий}")
+        check("в панели эксперта есть замершая строка обмена", len(ожидание_эксперта) == 1, str(ожидание_эксперта))
+        check(
+            "Σ на экране агента — расход самого агента",
+            bool(ожидание_эксперта) and итог_из(ожидание_эксперта[0]) == ui.format_tokens(свой),
+            f"{ожидание_эксперта} против {ui.format_tokens(свой)}",
+        )
+        check(
+            "и это не общий итог сеанса",
+            bool(ожидание_эксперта) and итог_из(ожидание_эксперта[0]) != ui.format_tokens(общий),
+            f"{ожидание_эксперта} против {ui.format_tokens(общий)}",
+        )
+
+        # В списке агентов расход помечен знаком итога, а не стрелкой входящих: в колонке
+        # стоит весь расход агента, и «↓» врало бы про смысл числа.
+        фрагменты_списка = panel_fragments(app)
+        check("расход в списке помечен знаком итога", "Σ" in panel_text(app), panel_text(app))
+        check(
+            "и набран стилем итога, как в строке ожидания",
+            any(ф[0] == "class:tokens.sum" for ф in фрагменты_списка),
+            str(sorted({ф[0] for ф in фрагменты_списка})),
+        )
+        check(
+            "стрелкой входящих расход больше не помечен",
+            f"↓ {ui.format_tokens(свой)}" not in panel_text(app),
+            panel_text(app),
+        )
 
         agent_calls = fake.calls[before:]
         systems = [c["messages"][0]["content"] for c in agent_calls]
@@ -390,6 +671,31 @@ async def main():
         check("/system на панели эксперта показывает его инструкцию", "ты аналитик" in log_text(state, board.panes[0]))
         cli.switch_screen(state, 0)
         check("возврат на главный экран", state.active == 0)
+
+        # А на главном экране Σ — весь сеанс, вместе с уже отработавшими экспертами: человек
+        # платит за окно целиком, и итог без экспертов занижал бы счёт ровно в тот день,
+        # когда он вырос.
+        #
+        # Обмен заводим тем же вызовом, каким его заводит очередь (`cli.worker`), а не вводом
+        # с клавиатуры: действующий профиль — `lead`, и ввод поднял бы ещё одну группу. Она
+        # завела бы второй прогон и сбила бы проверку журнала «вся группа помечена одним
+        # прогоном», проверяя при этом не то, ради чего сюда пришли.
+        отметка_главного = len(state.main.first.log)
+        await output.run_turn(state, state.main_agent, "вопрос после группы", pane=state.main.first)
+        главная_строка = строки_ожидания(state.main.first, отметка_главного)
+        всего = state.session_usage_total()["total_tokens"]
+        свой_главный = state.main_agent.session_usage["total_tokens"]
+        check("на главном экране обмен оставил свою строку", len(главная_строка) == 1, str(главная_строка))
+        check(
+            "Σ на главном экране — весь сеанс",
+            bool(главная_строка) and итог_из(главная_строка[0]) == ui.format_tokens(всего),
+            f"{главная_строка} против {ui.format_tokens(всего)}",
+        )
+        check(
+            "и расход экспертов в него входит",
+            всего > свой_главный,
+            f"главный {свой_главный}, всего {всего}",
+        )
 
         records = [json.loads(line) for line in Path(os.environ["MYHARNESS_JOURNAL"]).read_text(encoding="utf-8").splitlines()]
         team_records = [r for r in records if r.get("run_id")]
@@ -541,8 +847,10 @@ async def main():
         check("над списком строка подсказок", "↑/↓" in строки[0] and "Ctrl+R" in строки[0], строки[0])
         check("главный разговор — первой строкой", строки[1].strip().startswith("○ main") or строки[1].strip().startswith("● main"), строки[1])
         check(
-            "у отвечавшего агента посчитаны токены",
-            any("↓ 46" in строка and "critic" in строка for строка in строки),
+            "у отвечавшего агента посчитан расход",
+            # Знак итога, а не стрелка входящих: в колонке весь расход агента. Пометка «↓»
+            # означала бы «столько пришло от модели» и врала бы про смысл числа.
+            any("Σ 46" in строка and "critic" in строка for строка in строки),
             str(строки),
         )
         check(
@@ -970,8 +1278,8 @@ async def main():
         check("ответ на месте", '"status": "ok"' in свёрнуто)
         check(
             "под свёрнутым заголовком нет пустой строки",
-            "▸ размышления…\nmyharness › " in свёрнуто,
-            repr(свёрнуто[-120:]),
+            "развернуть\nmyharness › " in свёрнуто,
+            repr(свёрнуто[-160:]),
         )
         check(
             "счёт видимых строк сходится с тем, что на экране",
@@ -1071,6 +1379,143 @@ async def main():
             тесная,
         )
 
+        print("\n12f. Расход токенов и предел веса запроса")
+        # Снимок «до единого обмена» на живом состоянии не снять: к этому месту проверок
+        # обменов сделаны десятки. Заводим отдельное состояние — ровно то, что видит человек
+        # сразу после запуска в папке, где с прошлого раза уже лежит разговор.
+        чистое = cli.State(
+            config=Config(api_key="sk-test", model="deepseek-v4-flash", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=profiles.load("talky")[0],
+        )
+        чистое.main_agent.restore([("прошлый вопрос", "прошлый ответ")])
+        cli.cmd_tokens(чистое)
+        снимок = log_text(чистое)
+        check("до единого обмена итог сеанса нулевой", "сеанс: 0 обменов" in снимок, снимок)
+        строка_истории = next((с for с in снимок.splitlines() if "история:" in с), "")
+        вес_истории = "".join(з for з in строка_истории.split("история:")[1].split(" в ")[0] if з.isdigit())
+        check(
+            "а вес истории не нулевой — разговор поднят с диска",
+            вес_истории.isdigit() and int(вес_истории) > 0,
+            строка_истории,
+        )
+        check("поднятые пары названы отдельной строкой", "с диска поднято 1 пара" in снимок, снимок)
+        check("и сказано, что в итог сеанса они не входят", "в итог сеанса не входят" in снимок, снимок)
+        check("окно модели названо вместе с долей", "окно «deepseek-v4-flash»" in снимок and "%" in снимок, снимок)
+
+        # Незнакомая модель: цена, показанная нулём, читается как «бесплатно», и правду
+        # человек узнаёт из счёта в конце месяца.
+        чистое.model = "модель-без-тарифа"
+        отметка = len(чистое.main.first.log)
+        cli.cmd_tokens(чистое)
+        без_тарифа = fragments_text(чистое.main.first.log[отметка:])
+        check("у модели без тарифа деньги не выдуманы", "тариф неизвестен" in без_тарифа, без_тарифа)
+        check("и нулём цена не притворяется", "0.00" not in без_тарифа, без_тарифа)
+
+        отметка = len(state.main.first.log)
+        await send("/tokens" + ENTER, pause=0.2)
+        живой = fragments_text(state.main.first.log[отметка:])
+        строка_сеанса = next((с for с in живой.splitlines() if "сеанс:" in с), "")
+        вход_сеанса = "".join(з for з in строка_сеанса.split("вход")[1].split(",")[0] if з.isdigit())
+        check(
+            "после обменов итог сеанса не нулевой",
+            вход_сеанса.isdigit() and int(вход_сеанса) > 0,
+            строка_сеанса,
+        )
+        check("рассуждения в итоге названы отдельно", "из них рассуждения" in живой, живой)
+
+        # Признак несохранённого профиля сбрасываем: к этому месту его подняли параметры
+        # из разделов выше, и проверка ниже прошла бы, ничего не проверив.
+        state.profile_dirty = False
+        await send("/budget 3000" + ENTER, pause=0.2)
+        check("предел принят", state.profile.budget_tokens == 3000, str(state.profile.budget_tokens))
+        check("и назван вслух", ui.format_exact(3000) in log_text(state)[-400:], log_text(state)[-400:])
+        check("профиль помечен изменённым, но не сохранён", state.profile_dirty)
+        отметка = len(state.main.first.log)
+        await send("/tokens" + ENTER, pause=0.2)
+        с_пределом = fragments_text(state.main.first.log[отметка:])
+        check("снимок показывает действующий предел", ui.format_exact(3000) in с_пределом, с_пределом)
+
+        отметка = len(state.main.first.log)
+        await send("/budget" + ENTER, pause=0.2)
+        без_довода = fragments_text(state.main.first.log[отметка:])
+        check("без довода показано действующее значение", ui.format_exact(3000) in без_довода, без_довода)
+
+        await send("/budget 0" + ENTER, pause=0.2)
+        check("нулём предел выключается", state.profile.budget_tokens == 0)
+        check("и это сказано вслух", "предел веса запроса снят" in log_text(state)[-300:], log_text(state)[-300:])
+
+        await send("/budget три тысячи" + ENTER, pause=0.2)
+        check("нечисловой довод даёт сообщение, а не падение", "не число токенов" in log_text(state)[-300:], log_text(state)[-300:])
+        check("и предел от него не меняется", state.profile.budget_tokens == 0)
+        await send("/budget -5" + ENTER, pause=0.2)
+        check("отрицательный предел отвергнут", "не бывает отрицательным" in log_text(state)[-300:], log_text(state)[-300:])
+        check("и тоже ничего не изменил", state.profile.budget_tokens == 0)
+
+        отметка = len(state.main.first.log)
+        await send("/budget 10" + ENTER, pause=0.2)
+        тесный = fragments_text(state.main.first.log[отметка:])
+        check("о заведомо тесном пределе предупреждают", "меньше веса пустого запроса" in тесный, тесный)
+        check("но заданное значение не подменяют своим", state.profile.budget_tokens == 10, str(state.profile.budget_tokens))
+        # Возвращаем как было: тесный предел резал бы память у всего, что идёт следом.
+        await send("/budget 0" + ENTER, pause=0.2)
+
+        видимые = [имя for имя, _, _ in ui.visible_commands(True)]
+        check("обе команды есть в меню", {"/tokens", "/budget"} <= set(видимые), str(видимые))
+        справка = fragments_text(ui.help_fragments())
+        check("и в справке", all(команда in справка for команда in ("/tokens", "/budget")), справка[:200])
+
+        print("\n12ж. Расход сеанса переживает смену профиля")
+
+        # Сеанс — это запуск процесса, а не жизнь одного собеседника. Смена профиля заводит нового
+        # агента и закрывает экраны группы; без копилки выбывших итог падал бы почти до нуля посреди
+        # работы, хотя деньги списаны. На записи ролика профиль переключают трижды — увидели бы сразу.
+        состояние_смены = cli.State(
+            config=Config(api_key="sk-test", model="deepseek-v4-flash", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=profiles.builtin_default(),
+        )
+        состояние_смены.main.first.agent.session_usage = tokens.add_usage(
+            {}, {"prompt_tokens": 700, "completion_tokens": 300, "total_tokens": 1000}
+        )
+        эксперт = screens.Screen(key="эксперт", title="эксперт", profile=состояние_смены.profile)
+        эксперт.first.agent.session_usage = tokens.add_usage(
+            {}, {"prompt_tokens": 200, "completion_tokens": 100, "total_tokens": 300}
+        )
+        состояние_смены.screens.append(эксперт)
+        check(
+            "до смены итог сеанса — сумма главного и эксперта",
+            состояние_смены.session_usage_total()["total_tokens"] == 1300,
+            str(состояние_смены.session_usage_total()["total_tokens"]),
+        )
+
+        cli.switch_profile(состояние_смены, "default")
+        итог_после = состояние_смены.session_usage_total()["total_tokens"]
+        check("расход прежнего собеседника не пропал при смене профиля", итог_после == 1300, str(итог_после))
+        check(
+            "новый собеседник начинает с нуля",
+            состояние_смены.main_agent.session_usage["total_tokens"] == 0,
+            str(состояние_смены.main_agent.session_usage["total_tokens"]),
+        )
+        check("экраны прежней группы закрыты", len(состояние_смены.screens) == 1, str(len(состояние_смены.screens)))
+
+        # Двойной счёт — главная опасность копилки: провожать живого агента нельзя.
+        cli.switch_profile(состояние_смены, "default")
+        check(
+            "вторая смена профиля не удвоила расход",
+            состояние_смены.session_usage_total()["total_tokens"] == 1300,
+            str(состояние_смены.session_usage_total()["total_tokens"]),
+        )
+        состояние_смены.main.first.agent.session_usage = tokens.add_usage(
+            {}, {"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50}
+        )
+        check(
+            "расход нового собеседника прибавляется к копилке",
+            состояние_смены.session_usage_total()["total_tokens"] == 1350,
+            str(состояние_смены.session_usage_total()["total_tokens"]),
+        )
         print("\n13. Выход")
         await send("/exit" + ENTER)
         await asyncio.sleep(0.15)
