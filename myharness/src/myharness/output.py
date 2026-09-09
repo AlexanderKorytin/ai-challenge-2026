@@ -232,15 +232,19 @@ def _predict_outgoing(state: State, agent_obj: Agent, content: str) -> int:
     (`history_tokens`, у профиля без истории он нулевой) и текст самого вопроса, плюс
     надбавка обёртки, подстроенная этим агентом под эту модель.
 
-    Число заведомо приблизительное: в нём нет блока глобальных фактов (его собирает сама
-    сборка запроса) и нет поправки на пары, которые обрезка ещё выбросит. Врать оно будет
-    недолго — точное `turn.predicted_prompt` встаёт на его место, когда строка замирает.
-    Ошибка в сторону занижения тут безобидна: по этому числу ничего не решается, оно только
-    показывается.
+    Системная часть берётся у агента целиком, вместе с блоком глобальных фактов: по этому
+    числу решается, предупреждать ли о переполнении окна, и занижение здесь не безобидно.
+    Пока фактов не считали, разница доходила до девятисот токенов — а значит, чем больше
+    человек рассказал о себе, тем вероятнее он получал отказ сервера вместо предупреждения.
+
+    Приблизительным число остаётся: в нём нет поправки на пары, которые обрезка ещё
+    выбросит, — то есть оно скорее завышено, а это безопасная сторона. Точное
+    `turn.predicted_prompt` встаёт на его место, когда строка замирает.
     """
     превью: list[dict] = []
-    if agent_obj.profile.system:
-        превью.append({"role": "system", "content": agent_obj.profile.system})
+    системная = agent_obj.system_text()
+    if системная:
+        превью.append({"role": "system", "content": системная})
     превью.append({"role": "user", "content": content})
     обёртка = agent_obj.overhead(state.model)
     return tokens.count_messages(превью, overhead=обёртка) + agent_obj.history_tokens()
@@ -379,10 +383,12 @@ def _freeze_wait(
         marks["incoming"] = счёт["completion_tokens"]
         marks["exact"] = True
     else:
-        # Серверных чисел нет: обмен оборвался или его отменили. Вход всё же уточняем, если
-        # запрос успели собрать: `turn.predicted_prompt` считан по РЕАЛЬНОМУ составу запроса,
-        # а живое число — по прикидке до сборки, без блока фактов и без учёта обрезки. Оба
-        # предсказания, поэтому строка честно остаётся помеченной неточной.
+        # Серверных чисел нет: обмен оборвался ошибкой либо его отменили. Вход уточняем
+        # только на первом из двух путей: при отмене `exchange` пробрасывает `CancelledError`,
+        # присваивание результата не выполняется, и `turn` здесь всегда `None` — уточнять
+        # нечем, остаётся живая прикидка. `turn.predicted_prompt` считан по РЕАЛЬНОМУ составу
+        # запроса, живое число — по прикидке до сборки; оба предсказания, поэтому строка
+        # честно остаётся помеченной неточной.
         if turn is not None and turn.predicted_prompt:
             marks["outgoing"] = turn.predicted_prompt
         marks["exact"] = False
@@ -493,7 +499,11 @@ async def run_turn(
         "wait_at": len(pane.log),
         "wait_len": 0,
     }
+    # Предупреждение печатаем ДО того, как заведена строка ожидания, и отметку строки берём
+    # после него: иначе оно встаёт в ленте ниже строки, к которой относится, и читается как
+    # сказанное после отправки.
     _warn_if_over_window(state, pane, agent_obj, marks["outgoing"])
+    marks["wait_at"] = len(pane.log)
     _show_wait(state, pane, marks, mark=marks["frame"])
     spinner_task = asyncio.create_task(_spin(state, pane, marks))
 
@@ -574,6 +584,13 @@ async def run_turn(
                 pane,
             )
         if turn is not None:
+            # Деньги копим тем тарифом, что действовал на этот обмен: модель меняется на
+            # лету, и пересчёт итога по текущей модели врал бы втрое.
+            цена = tokens.price(turn.usage, turn.model) if turn.usage else 0.0
+            if цена is None:
+                state.session_cost_known = False
+            else:
+                state.session_cost += цена
             warn_journal(state, turn.journal_error)
             warn_store(state, turn.store_error)
     return turn

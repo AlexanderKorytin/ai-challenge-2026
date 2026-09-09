@@ -80,6 +80,13 @@ class State:
     # собеседника: деньги за прежний разговор списаны и никуда не делись оттого, что человек
     # сменил профиль. Без копилки итог падал бы посреди работы почти до нуля — то есть врал.
     retired_usage: dict[str, int] = field(default_factory=dict)
+    # Деньги за сеанс копим по ходу, а не считаем задним числом по накопленным токенам:
+    # тариф зависит от модели и от часа, а модель меняется на лету. Пересчёт по текущей
+    # модели врал втрое — расход, сделанный на `pro`, дешевел от одной лишь команды /model.
+    session_cost: float = 0.0
+    # Был ли хоть один обмен моделью с известным тарифом. Нужен, чтобы отличить «бесплатно»
+    # от «тариф неизвестен»: ноль на экране читается как «денег не потрачено».
+    session_cost_known: bool = True
     store_warned: bool = False  # о сбое записи разговора говорим один раз за сеанс
     input_buffer: Any = None  # буфер строки ввода: профиль подставляет в него заготовку
     # Ещё не показанные заготовки профиля. Очередь живёт в состоянии, а не в профиле: профиль
@@ -845,7 +852,7 @@ def cmd_tokens(state: State) -> None:
             runs=sum(другой.runs for другой in state.agents()),
             usage=итог,
             budget=state.profile.budget_tokens,
-            cost=tokens.format_price(tokens.price(итог, state.model)),
+            cost=tokens.format_price(state.session_cost if state.session_cost_known else None),
         ),
     )
 

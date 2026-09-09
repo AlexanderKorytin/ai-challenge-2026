@@ -3878,7 +3878,7 @@ check(
     == tokens_mod.count_messages(клиент_записи.calls[0]["messages"], overhead=tokens_mod.BASE_OVERHEAD),
     str(первая.get("predicted_prompt_tokens")),
 )
-check("расход сеанса записан", первая.get("session_tokens") == 15, str(первая.get("session_tokens")))
+check("расход сеанса записан", первая.get("agent_session_tokens") == 15, str(первая.get("agent_session_tokens")))
 # Денег в записи нет намеренно: тариф не источник правды и протухнет молча, а журнал
 # переживёт любую смену цен. Деньги считаются поверх журнала, из тех же токенов.
 check(
@@ -3889,10 +3889,10 @@ check(
 check("без подъёма с диска ключа restored_pairs нет", "restored_pairs" not in первая, str(sorted(первая)))
 check(
     "те же числа лежат в прогоне",
-    (первый_прогон.index, первый_прогон.history_tokens, первый_прогон.session_tokens)
+    (первый_прогон.index, первый_прогон.history_tokens, первый_прогон.agent_session_tokens)
     == (1, 0, 15)
     and первый_прогон.predicted_prompt == первая["predicted_prompt_tokens"],
-    f"{первый_прогон.index} / {первый_прогон.history_tokens} / {первый_прогон.session_tokens} / {первый_прогон.predicted_prompt}",
+    f"{первый_прогон.index} / {первый_прогон.history_tokens} / {первый_прогон.agent_session_tokens} / {первый_прогон.predicted_prompt}",
 )
 
 # Вес памяти в записи — вес НА МОМЕНТ ЭТОГО запроса, снятый до того, как в память лёг ответ.
@@ -3906,7 +3906,7 @@ check(
     == tokens_mod.count_text("первый вопрос") + tokens_mod.count_text(первый_прогон.text),
     str(вторая.get("history_tokens")),
 )
-check("расход сеанса в записи накоплен", вторая.get("session_tokens") == 30, str(вторая.get("session_tokens")))
+check("расход сеанса в записи накоплен", вторая.get("agent_session_tokens") == 30, str(вторая.get("agent_session_tokens")))
 
 профиль_подъёма = profiles.Profile(name="подъём", keep_history=True, history_window=0)
 поднятый = Agent("поднятый", профиль_подъёма)
@@ -3958,7 +3958,7 @@ asyncio.run(невезучий.exchange(StubClient(error=RuntimeError("сеть 
 запись_сбоя = json.loads(journal_lines()[-1])
 check(
     "у упавшего обмена новые поля на месте",
-    all(ключ in запись_сбоя for ключ in ("index", "history_tokens", "predicted_prompt_tokens", "session_tokens")),
+    all(ключ in запись_сбоя for ключ in ("index", "history_tokens", "predicted_prompt_tokens", "agent_session_tokens")),
     str(sorted(запись_сбоя)),
 )
 check(
@@ -3966,7 +3966,7 @@ check(
     запись_сбоя["index"] == невезучий.runs == 1,
     f"{запись_сбоя.get('index')} против {невезучий.runs}",
 )
-check("упавший обмен расхода не прибавил", запись_сбоя["session_tokens"] == 0, str(запись_сбоя.get("session_tokens")))
+check("упавший обмен расхода не прибавил", запись_сбоя["agent_session_tokens"] == 0, str(запись_сбоя.get("agent_session_tokens")))
 check(
     "предсказание записано и у упавшего обмена",
     запись_сбоя["predicted_prompt_tokens"] > 0,
@@ -3996,7 +3996,7 @@ asyncio.run(отменить_обмен_с_учётом(невезучий))
 check(
     "у отменённого обмена новые поля на месте",
     запись_отмены.get("status") == "cancelled"
-    and all(ключ in запись_отмены for ключ in ("index", "history_tokens", "predicted_prompt_tokens", "session_tokens")),
+    and all(ключ in запись_отмены for ключ in ("index", "history_tokens", "predicted_prompt_tokens", "agent_session_tokens")),
     str(sorted(запись_отмены)),
 )
 check(
@@ -4059,6 +4059,80 @@ try:
         "запоминание не растёт без предела",
         len(tokens_mod._ЗАПОМНЕНО) <= tokens_mod.ЗАПОМИНАТЬ_НЕ_БОЛЕЕ,
         str(len(tokens_mod._ЗАПОМНЕНО)),
+    )
+finally:
+    tokens_mod._vocabulary_cache = прежний_словарь
+    tokens_mod._ЗАПОМНЕНО.clear()
+    tokens_mod._ЗАПОМНЕНО.update(прежнее_запомненное)
+
+# Очередь заготовок проходит подстановку переменных наравне с одиночной: требование зовёт
+# одиночную «той же очередью длиной в один вопрос», а два поля, объявленные одним, не имеют
+# права вести себя по-разному. Без подстановки «$переменная» уехала бы в модель дословно.
+with tempfile.TemporaryDirectory() as каталог_очереди:
+    прежние_профили = os.environ.get("MYHARNESS_PROFILES")
+    try:
+        путь = Path(каталог_очереди)
+        (путь / "с-переменной.json").write_text(
+            json.dumps(
+                {
+                    "name": "с-переменной",
+                    "vars": {"тема": "рыбы"},
+                    "prefill": "начнём про $тема",
+                    "prefills": ["расскажи про $тема", "а что ещё про $тема?"],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        os.environ["MYHARNESS_PROFILES"] = str(путь)
+        профиль_очереди, _ = profiles.load("с-переменной")
+        check(
+            "переменные подставлены в очередь заготовок",
+            профиль_очереди.prefills == ["расскажи про рыбы", "а что ещё про рыбы?"],
+            str(профиль_очереди.prefills),
+        )
+        check(
+            "и в одиночную заготовку — тем же правилом",
+            профиль_очереди.prefill == "начнём про рыбы",
+            str(профиль_очереди.prefill),
+        )
+    finally:
+        if прежние_профили is None:
+            os.environ.pop("MYHARNESS_PROFILES", None)
+        else:
+            os.environ["MYHARNESS_PROFILES"] = прежние_профили
+
+# Требование «тот же текст считается повторно» проверяем на ДЛИННОЙ истории, а не на двух
+# текстах: прежний предел в шестнадцать записей успевал вытеснить системную инструкцию,
+# посчитанную в начале того же прохода, и стог сена считался заново по три раза за обмен —
+# около двух секунд подвисания интерфейса на каждый вопрос.
+прежний_словарь = tokens_mod._vocabulary_cache
+прежнее_запомненное = dict(tokens_mod._ЗАПОМНЕНО)
+try:
+    настоящий = tokens_mod._vocabulary()
+    считающий = СчитающийСловарь(настоящий)
+    tokens_mod._vocabulary_cache = (tokens_mod.vocabulary_path(), считающий)
+    tokens_mod._ЗАПОМНЕНО.clear()
+
+    инструкция = "Системная инструкция. " * 200
+    длинный_запрос = [{"role": "system", "content": инструкция}]
+    for номер in range(20):  # сорок реплик — заведомо больше прежнего предела
+        длинный_запрос.append({"role": "user", "content": f"вопрос номер {номер}"})
+        длинный_запрос.append({"role": "assistant", "content": f"ответ номер {номер}"})
+
+    tokens_mod.count_messages(длинный_запрос)
+    после_первого = считающий.обращений
+    tokens_mod.count_messages(длинный_запрос)
+    после_второго = считающий.обращений
+    check(
+        "второй проход по длинному запросу словарь не трогает",
+        после_второго == после_первого,
+        f"{после_первого} → {после_второго}",
+    )
+    check(
+        "инструкция не вытеснена собственными репликами запроса",
+        tokens_mod.count_text(инструкция) and считающий.обращений == после_первого,
+        f"обращений {считающий.обращений}, было {после_первого}",
     )
 finally:
     tokens_mod._vocabulary_cache = прежний_словарь

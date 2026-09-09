@@ -392,6 +392,11 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
             system_text = Substitution(system_text).safe_substitute(variables)
         if prefill_text:
             prefill_text = Substitution(prefill_text).safe_substitute(variables)
+        # Очередь заготовок проходит подстановку наравне с одиночной: требование объявляет
+        # одиночную «той же очередью длиной в один вопрос», и два поля, объявленные одним,
+        # не имеют права вести себя по-разному. Иначе `$переменная` уехала бы в модель
+        # дословно — и увидели бы это все, кто смотрит показ.
+        prefills = [Substitution(вопрос).safe_substitute(variables) for вопрос in prefills]
 
     collected: dict[str, Any] = {}
     for key, value in data.items():

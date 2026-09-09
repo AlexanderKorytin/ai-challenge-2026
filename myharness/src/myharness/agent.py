@@ -69,13 +69,12 @@ def usage_tokens(usage: dict[str, Any] | None) -> int:
 
     `total_tokens` предпочитаем сумме слагаемых: сервер кладёт туда собственный итог, и он
     учитывает то, чего в двух слагаемых нет, — например попадания в кэш начала запроса."""
-    if not usage:
-        return 0
-    total = usage.get("total_tokens")
-    if isinstance(total, int):
-        return total
-    parts = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
-    return sum(part for part in parts if isinstance(part, int))
+    # Разбор `usage` живёт в одном месте — `tokens.normalize`. Своя копия правила была
+    # здесь до появления модуля счёта и успела разойтись с ним на кривых данных: при
+    # `total_tokens: 0` с непустыми слагаемыми она давала ноль, при `total_tokens: true` —
+    # единицу (в Python `True` это `1`). В списке агентов рядом со строкой ожидания вставало
+    # «Σ 0», и человек шёл искать поломку в учёте, которой нет.
+    return tokens.normalize(usage)["total_tokens"]
 
 
 @dataclass
@@ -108,7 +107,9 @@ class Turn:
     # видно, насколько предсказание врёт, — иначе судить о точности счёта было бы не по чему
     predicted_prompt: int = 0
     # расход сеанса нарастающим итогом на конец этого обмена
-    session_tokens: int = 0
+    # Расход ЭТОГО агента за сеанс — не итог сеанса целиком: агент про соседей не знает.
+    # Имя названо по смыслу, чтобы не спутать с общим итогом на экране и в /tokens.
+    agent_session_tokens: int = 0
     # предел веса задан, обрезка сделала что могла, а запрос всё равно ушёл тяжелее предела
     over_budget: bool = False
     # текст ошибки записи журнала: сам обмен удался, а предупредить надо снаружи
@@ -314,6 +315,27 @@ class Agent:
         себе систематическую разницу счёта, и у другой модели она другая."""
         return self._overhead.get(model, tokens.BASE_OVERHEAD)
 
+    def system_text(self) -> str:
+        """Системная часть запроса целиком: инструкция профиля плюс блок глобальных фактов.
+
+        Нужна снаружи затем, чтобы показ и предупреждение о переполнении считали ТО ЖЕ, что
+        уйдёт в модель. Сборка запроса эту часть собирает сама, но звать её ради взвешивания
+        нельзя: `build_messages` обрезает память, то есть меняет состояние.
+
+        Ошибку чтения фактов здесь глотаем: это взвешивание, а не отправка, и падать на нём
+        нельзя — настоящую жалобу человек всё равно получит при сборке запроса.
+        """
+        system = self.profile.system or ""
+        block = ""
+        if self._facts is not None:
+            try:
+                block = memory.facts_block(self._facts())
+            except Exception:  # noqa: BLE001 — источник фактов приходит снаружи
+                block = ""
+        if block:
+            return f"{system}\n\n{block}" if system else block
+        return system
+
     def predict_tokens(self, messages: list[dict], model: str = "") -> int:
         """Предсказание веса запроса — с надбавкой, подстроенной ЭТИМ агентом под ЭТУ модель.
 
@@ -419,8 +441,14 @@ class Agent:
         # бюджета — потому что системная часть с фактами и сам вопрос уже перевешивают предел,
         # а их выбросить нельзя. Молчать об этом нельзя: предел, который тихо не сработал,
         # хуже отсутствующего — на отсутствующий человек хотя бы не рассчитывает.
+        # Считаем по ПРЕДЕЛУ ПРОФИЛЯ, а не по `budget`: у профиля с выключенной историей
+        # `budget` обнулён, потому что резать нечего, — но это не значит, что предел
+        # соблюдён. Инструкция и вопрос могут перевешивать его и там, и молчать об этом
+        # нельзя: получилось бы, что предел не срабатывает и не жалуется именно у того
+        # профиля, где его нельзя выправить обрезкой.
+        предел = self.profile.budget_tokens
         self._over_budget = bool(
-            budget > 0 and self.predict_tokens(self._preview(content, system), model) > budget
+            предел > 0 and self.predict_tokens(self._preview(content, system), model) > предел
         )
         # Поднятых с диска пар не может быть больше, чем пар в памяти: обрезка только что
         # могла выбросить как раз их. Оставь число прежним — и запись прогона утверждала бы,
@@ -633,7 +661,7 @@ class Agent:
                 "index": self.runs,
                 "history_tokens": history_tokens,
                 "predicted_prompt_tokens": predicted,
-                "session_tokens": self.session_usage["total_tokens"],
+                "agent_session_tokens": self.session_usage["total_tokens"],
                 "elapsed_ms": int(elapsed * 1000),
                 "error": error_text,
             }
@@ -670,7 +698,7 @@ class Agent:
                 index=self.runs,
                 history_tokens=history_tokens,
                 predicted_prompt=predicted,
-                session_tokens=self.session_usage["total_tokens"],
+                agent_session_tokens=self.session_usage["total_tokens"],
                 over_budget=self._over_budget,
                 journal_error=journal_error,
                 store_error=self.store_error,
