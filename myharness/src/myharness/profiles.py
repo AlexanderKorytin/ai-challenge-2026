@@ -70,6 +70,10 @@ class Profile:
     system_file: str | None = None
     prefill: str | None = None  # заготовка ввода: подставляется в строку ввода при выборе профиля
     prefill_file: str | None = None
+    # Очередь заготовок: следующий вопрос подставляется сам, как только отправлен предыдущий.
+    # Заведена для повторяемых прогонов — показа и разбора: набранный руками вопрос всякий раз
+    # чуть другой, и сравнивать два прогона между собой становится нечем.
+    prefills: list[str] = field(default_factory=list)
     keep_history: bool = True
     # сколько пар «вопрос — ответ» держать в памяти; 0 — окно выключено, память не обрезается
     history_window: int = DEFAULT_WINDOW_PAIRS
@@ -122,6 +126,8 @@ class Profile:
             data["prefill_file"] = self.prefill_file
         elif self.prefill is not None:
             data["prefill"] = self.prefill
+        if self.prefills:
+            data["prefills"] = list(self.prefills)
         data["keep_history"] = self.keep_history
         data["history_window"] = self.history_window
         data["budget_tokens"] = self.budget_tokens
@@ -192,6 +198,25 @@ def available() -> list[tuple[str, Path | None]]:
     if DEFAULT_PROFILE_NAME not in found:
         items.insert(0, (DEFAULT_PROFILE_NAME, None))
     return items
+
+
+def _prefills(value: Any, warnings: list[str]) -> list[str]:
+    """Очередь заготовок из файла профиля.
+
+    Пустые строки выбрасываем, нестроковое — называем вслух и пропускаем: молча съеденный
+    элемент очереди означал бы, что на показе вопрос не появится, а почему — неизвестно."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        warnings.append("поле prefills — список вопросов; значение другого вида пропущено")
+        return []
+    очередь: list[str] = []
+    for элемент in value:
+        if isinstance(элемент, str) and элемент.strip():
+            очередь.append(элемент.strip())
+        else:
+            warnings.append(f"в prefills пропущен элемент, который не текст: {элемент!r}")
+    return очередь
 
 
 def _profile_names(raw: Any, field_name: str, warnings: list[str]) -> list[str]:
@@ -331,6 +356,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "system_file",
         "prefill",
         "prefill_file",
+        "prefills",
         "keep_history",
         "history_window",
         "budget_tokens",
@@ -357,6 +383,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
     system_text = _text("system", "system_file")
     system_file = data.get("system_file")
     prefill_text = _text("prefill", "prefill_file")
+    prefills = _prefills(data.get("prefills"), warnings)
 
     variables = data.get("vars") or {}
     if variables:
@@ -386,6 +413,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         system_file=system_file,
         prefill=prefill_text.strip() if isinstance(prefill_text, str) else None,
         prefill_file=data.get("prefill_file"),
+        prefills=prefills,
         keep_history=bool(data.get("keep_history", True)),
         history_window=_history_window(data.get("history_window"), warnings),
         budget_tokens=_budget_tokens(data.get("budget_tokens"), warnings),

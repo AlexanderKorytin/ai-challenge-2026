@@ -82,6 +82,10 @@ class State:
     retired_usage: dict[str, int] = field(default_factory=dict)
     store_warned: bool = False  # о сбое записи разговора говорим один раз за сеанс
     input_buffer: Any = None  # буфер строки ввода: профиль подставляет в него заготовку
+    # Ещё не показанные заготовки профиля. Очередь живёт в состоянии, а не в профиле: профиль
+    # — это описание, одинаковое для всех запусков, а очередь расходуется по ходу разговора,
+    # и хранить расходуемое в описании значило бы менять описание на лету.
+    prefill_queue: list[str] = field(default_factory=list)
     # Мышь включена всегда: клики и выделение текста уживаются, если не просить у терминала
     # отслеживание перетаскивания (см. click_only_mouse). Команда /mouse оставлена аварийным
     # выходом для терминала, который так не умеет.
@@ -355,16 +359,45 @@ def switch_profile(state: State, name: str) -> None:
 
 
 def apply_prefill(state: State, profile: Profile, *, only_if_empty: bool = False) -> None:
-    """Заготовку ввода кладём в строку ввода, а не отправляем сами: пользователь видит текст,
-    может его поправить и отправляет сам — Enter'ом."""
-    if not profile.prefill or state.input_buffer is None:
+    """Заготовки профиля кладём в строку ввода, а не отправляем сами: человек видит текст,
+    может его поправить и отправляет сам — Enter'ом.
+
+    Заготовок может быть несколько (`prefills`): тогда следующая встаёт в строку ввода, как
+    только отправлена предыдущая, — прогон повторяется в точности, и на показе не приходится
+    ничего набирать. Одиночная `prefill` — та же очередь длиной в один вопрос, отдельного
+    пути для неё не заводим."""
+    if state.input_buffer is None:
         return
     if only_if_empty and state.input_buffer.text.strip():
         return
-    text = profile.prefill.strip()
-    state.input_buffer.text = text
-    state.input_buffer.cursor_position = len(text)
-    append_log(state, ui.system_fragments("заготовка вопроса подставлена в строку ввода — Enter отправит её"))
+    очередь = list(profile.prefills) or ([profile.prefill.strip()] if profile.prefill else [])
+    if not очередь:
+        return
+    state.prefill_queue = очередь
+    сказать = (
+        "заготовка вопроса подставлена в строку ввода — Enter отправит её"
+        if len(очередь) == 1
+        else f"вопросы профиля ({len(очередь)}) пойдут по очереди — Enter отправляет и подставляет следующий"
+    )
+    append_log(state, ui.system_fragments(сказать))
+    next_prefill(state)
+
+
+def next_prefill(state: State) -> None:
+    """Поставить в строку ввода следующий вопрос очереди, если он есть.
+
+    Текст, набранный человеком, не затираем: он мог начать печатать своё, пока шёл ответ, и
+    подстановка поверх стёрла бы работу. Очередь тогда просто ждёт — она про удобство, а не
+    про власть над строкой ввода."""
+    if not state.prefill_queue or state.input_buffer is None:
+        return
+    if state.input_buffer.text.strip():
+        return
+    текст = state.prefill_queue.pop(0)
+    state.input_buffer.text = текст
+    state.input_buffer.cursor_position = len(текст)
+    if state.app is not None:
+        state.app.invalidate()
 
 
 def open_method_screens(state: State, profile: Profile) -> None:
@@ -1062,6 +1095,9 @@ async def handle_submit(raw_text: str, state: State) -> None:
     state.queue.put_nowait(Request(content=text, screen=screen))
     if was_busy:
         append_log(state, ui.queued_fragments(state.queue.qsize()), screen)
+    # Следующий вопрос очереди встаёт в строку ввода сразу, не дожидаясь ответа: человек
+    # видит, что будет спрошено, и волен это поправить или стереть, пока модель думает.
+    next_prefill(state)
 
 
 # ─────────────────────────────── меню команд ───────────────────────────────

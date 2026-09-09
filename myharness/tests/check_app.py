@@ -1466,6 +1466,51 @@ async def main():
         справка = fragments_text(ui.help_fragments())
         check("и в справке", all(команда in справка for команда in ("/tokens", "/budget")), справка[:200])
 
+        print("\n12и. Вопросы профиля идут очередью")
+
+        # Заготовки очередью заведены ради повторяемых прогонов: на показе и при разборе
+        # набранный руками вопрос всякий раз чуть другой, и сравнивать нечего.
+        очередь_профиль = profiles.Profile(
+            name="очередь", system="ты краткий помощник", prefills=["вопрос раз", "вопрос два", "вопрос три"]
+        )
+        state.input_buffer.text = ""
+        cli.apply_prefill(state, очередь_профиль)
+        check("первый вопрос очереди встал в строку ввода", state.input_buffer.text == "вопрос раз", state.input_buffer.text)
+        check("сказано, что вопросы пойдут по очереди", "по очереди" in log_text(state), log_text(state)[-200:])
+        check("в очереди остались двое", state.prefill_queue == ["вопрос два", "вопрос три"], str(state.prefill_queue))
+
+        state.input_buffer.text = ""
+        await cli.handle_submit("вопрос раз", state)
+        check("после отправки сам появился следующий", state.input_buffer.text == "вопрос два", state.input_buffer.text)
+
+        state.input_buffer.text = ""
+        await cli.handle_submit("вопрос два", state)
+        check("и третий тоже", state.input_buffer.text == "вопрос три", state.input_buffer.text)
+
+        state.input_buffer.text = ""
+        await cli.handle_submit("вопрос три", state)
+        check("очередь кончилась — строка ввода пуста", state.input_buffer.text == "", state.input_buffer.text)
+        check("и очередь пуста", state.prefill_queue == [], str(state.prefill_queue))
+
+        # Набранное человеком не затираем: он мог начать печатать своё, пока шёл ответ.
+        cli.apply_prefill(state, очередь_профиль)
+        state.input_buffer.text = "своё, набранное руками"
+        await cli.handle_submit("что-то отправленное", state)
+        check(
+            "набранное руками очередь не затирает",
+            state.input_buffer.text == "своё, набранное руками",
+            state.input_buffer.text,
+        )
+        state.input_buffer.text = ""
+        state.prefill_queue = []
+
+        # Одиночная заготовка — та же очередь длиной в один вопрос, отдельного пути нет.
+        одиночный = profiles.Profile(name="один", prefill="единственный вопрос")
+        cli.apply_prefill(state, одиночный)
+        check("одиночная заготовка подставлена", state.input_buffer.text == "единственный вопрос", state.input_buffer.text)
+        check("и очередь за ней пуста", state.prefill_queue == [], str(state.prefill_queue))
+        state.input_buffer.text = ""
+
         print("\n12з. О переполнении окна сказано до отправки")
 
         # Ради этого и заведён собственный счёт: на живом прогоне 2026-09-09 предсказание
