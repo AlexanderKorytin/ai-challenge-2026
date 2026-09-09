@@ -1,6 +1,6 @@
 # День 8 — работа с токенами
 
-Ветка `w2d3`. Стадия: **Validation**.
+Ветка `w2d3`. Стадия: **Done**.
 
 ## Постановка (условие задания)
 
@@ -149,4 +149,7 @@
 
 ## Ссылки
 
-Заполняются отчётом дня.
+- **Видео**: https://drive.google.com/file/d/1dxWgELGXXvipvXRqZS4ErSMDnOzFmesG/view?usp=sharing
+- **Код дня**: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w2d3/week_2/day_3
+- **Инструмент**: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w2d3/myharness
+- **Требования**: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w2d3/openspec/specs/tokens
