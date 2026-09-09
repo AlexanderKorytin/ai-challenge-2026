@@ -4065,6 +4065,45 @@ finally:
     tokens_mod._ЗАПОМНЕНО.clear()
     tokens_mod._ЗАПОМНЕНО.update(прежнее_запомненное)
 
+# Обрыв по длине бывает по двум причинам, и советы у них противоположные: упёрлись в свой
+# max_tokens — увеличивать предел; кончилось окно модели — укорачивать разговор. Совет не
+# из той причины отправляет чинить то, чего нет, — замечено на живом прогоне при остатке
+# окна в 81 токен.
+async def обрыв_по_длине(usage, params):
+    класс = type("КлиентОбрыва", (), {})
+    async def stream_chat(self, model, messages, params=None):
+        yield api.StreamEvent("meta", finish_reason="length", usage=usage)
+    async def aclose(self):
+        return None
+    класс.stream_chat = stream_chat
+    класс.aclose = aclose
+    агент = Agent("обрыв", profiles.Profile(name="обрыв", params=params))
+    return await агент.exchange(класс(), "deepseek-v4-flash", "вопрос")
+
+
+окно_кончилось = asyncio.run(
+    обрыв_по_длине({"prompt_tokens": tokens_mod.CONTEXT_WINDOW - 81, "completion_tokens": 81}, {})
+)
+check(
+    "кончившееся окно названо окном, а не пределом",
+    "в окне модели не осталось места" in (окно_кончилось.error or ""),
+    str(окно_кончилось.error),
+)
+check(
+    "и сказано, что делать — укоротить разговор",
+    "/clear" in (окно_кончилось.error or ""),
+    str(окно_кончилось.error),
+)
+
+предел_кончился = asyncio.run(
+    обрыв_по_длине({"prompt_tokens": 500, "completion_tokens": 100}, {"max_tokens": 100})
+)
+check(
+    "упёршийся в свой предел назван пределом",
+    "max_tokens" in (предел_кончился.error or ""),
+    str(предел_кончился.error),
+)
+
 # Профили ищутся рядом с КАТАЛОГОМ ЗАПУСКА, и запуск не из той папки даёт короткий список
 # без своих профилей. Молчаливое «не найден» отправляет человека искать ошибку в файле
 # профиля, которого инструмент даже не открывал, — поэтому жалоба обязана назвать места.
