@@ -32,6 +32,7 @@ from string import Template
 from typing import Any
 
 from . import params as params_mod
+from . import tokens
 from .agent import DEFAULT_WINDOW_PAIRS
 from .config import config_dir
 
@@ -72,6 +73,9 @@ class Profile:
     keep_history: bool = True
     # сколько пар «вопрос — ответ» держать в памяти; 0 — окно выключено, память не обрезается
     history_window: int = DEFAULT_WINDOW_PAIRS
+    # предел веса запроса в токенах; 0 — предела нет. Окно по парам меряет не то, чем считает
+    # контекст и деньги поставщик: пять пар со вставленными файлами весят больше сотни коротких.
+    budget_tokens: int = 0
     agents: list[str] = field(default_factory=list)  # непусто — профиль ведущего группы
     screens: list[str] = field(default_factory=list)  # непусто — набор рабочих экранов
     # как разложены шаги цепочки: "panes" — панелями рядом, "tabs" — вкладкой на шаг
@@ -90,6 +94,7 @@ class Profile:
             "system": self.system,
             "keep_history": self.keep_history,
             "history_window": self.history_window,
+            "budget_tokens": self.budget_tokens,
             "params": dict(self.params),
         }
         if self.agents:
@@ -119,6 +124,7 @@ class Profile:
             data["prefill"] = self.prefill
         data["keep_history"] = self.keep_history
         data["history_window"] = self.history_window
+        data["budget_tokens"] = self.budget_tokens
         if self.agents:
             data["agents"] = list(self.agents)
         if self.screens:
@@ -234,6 +240,38 @@ def _history_window(raw: Any, warnings: list[str]) -> int:
     return raw
 
 
+def _budget_tokens(raw: Any, warnings: list[str]) -> int:
+    """Предел веса запроса в токенах: целое неотрицательное, 0 — предела нет.
+
+    Умолчание — ноль, а не какое-нибудь разумное число: профиль, написанный до появления
+    поля, обязан работать ровно как прежде. Предел — вещь, о которой просят вслух.
+
+    Мусор отбрасываем с предупреждением по той же причине, что и в `_history_window`: молча
+    подставленное умолчание сделало бы поведение необъяснимым — человек написал предел,
+    harness режет память по-своему и нигде об этом не говорит. `bool` отсеиваем отдельно,
+    он в Python подкласс `int`, и `true` прошло бы как бюджет в один токен, то есть как
+    приказ выбросить всю память до последней пары."""
+    if raw is None:
+        return 0
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        warnings.append(
+            f"поле «budget_tokens»: {raw!r} — ожидалось целое неотрицательное число, предел не задан"
+        )
+        return 0
+    if 0 < raw < tokens.BASE_OVERHEAD:
+        # Значение оставляем как есть: человек вправе задать любой предел, и подменять его
+        # своим — то же молчаливое умолчание, от которого разбор и защищается. Но сказать
+        # обязаны: в такой предел не влезает даже пустой запрос — одна обёртка разговора
+        # весит больше, — а значит память будет обрезана до последней пары при каждом
+        # обмене. Узнавать об этом по поведению («почему модель ничего не помнит?») человек
+        # не должен: поведение объяснится не сразу, а строка предупреждения — сразу.
+        warnings.append(
+            f"поле «budget_tokens»: {raw} меньше веса пустого запроса ({tokens.BASE_OVERHEAD}) — "
+            f"память будет обрезана до последней пары"
+        )
+    return raw
+
+
 def _layout(raw: Any, screens: list[str], warnings: list[str]) -> str:
     """Раскладка шагов цепочки: «panes» — панелями рядом на одной вкладке, «tabs» — вкладкой
     на шаг. Умолчание — панели: так поведение прежних профилей не меняется от появления поля.
@@ -295,6 +333,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "prefill_file",
         "keep_history",
         "history_window",
+        "budget_tokens",
         "agents",
         "screens",
         "methods",
@@ -349,6 +388,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         prefill_file=data.get("prefill_file"),
         keep_history=bool(data.get("keep_history", True)),
         history_window=_history_window(data.get("history_window"), warnings),
+        budget_tokens=_budget_tokens(data.get("budget_tokens"), warnings),
         agents=_profile_names(data.get("agents"), "agents", warnings),
         screens=screen_names,
         layout=_layout(data.get("layout"), screen_names, warnings),
