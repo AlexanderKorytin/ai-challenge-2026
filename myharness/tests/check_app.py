@@ -1466,6 +1466,65 @@ async def main():
         справка = fragments_text(ui.help_fragments())
         check("и в справке", all(команда in справка for команда in ("/tokens", "/budget")), справка[:200])
 
+        print("\n12к. Числа не врут: отказ и вес инструкции")
+
+        # Оба изъяна найдены живым прогоном в настоящем терминале, когда 998 проверок были
+        # зелёными: числа считались верно по отдельности и врали на экране.
+
+        # 1. Итог сеанса за несостоявшийся обмен не растёт: отвергнутый сервером запрос
+        # не оплачен ни на токен, а живой Σ успел прибавить к нему предсказанный вход.
+        class ОтказныйКлиент:
+            async def stream_chat(self, model, messages, params=None):
+                raise RuntimeError("400 - maximum context length")
+                yield  # noqa: PLE0101 — делает функцию генератором, до неё не доходит
+
+            async def list_models(self):
+                return list(api.FALLBACK_MODELS)
+
+            async def aclose(self):
+                pass
+
+        отказный_экран = screens.Screen(key="отказ", title="отказ", profile=profiles.builtin_default())
+        state.screens.append(отказный_экран)
+        отказный_экран.first.agent.session_usage = tokens.add_usage(
+            {}, {"prompt_tokens": 900, "completion_tokens": 100, "total_tokens": 1000}
+        )
+        state.client = ОтказныйКлиент()
+        await output.run_turn(state, отказный_экран.first.agent, "вопрос в пустоту", pane=отказный_экран.first)
+        state.client = fake
+        строки_отказа = строки_ожидания(отказный_экран.first)
+        было = ui.format_tokens(1000)
+        check("у отказавшего обмена своя замершая строка", len(строки_отказа) == 1, str(строки_отказа))
+        check(
+            "итог сеанса за несостоявшийся обмен не вырос",
+            bool(строки_отказа) and итог_из(строки_отказа[0]) == было,
+            f"{строки_отказа} против {было}",
+        )
+        state.screens.remove(отказный_экран)
+
+        # 2. Снимок /tokens считает системную инструкцию: профиль дня кладёт в неё документ
+        # на миллион токенов, и без этого «занято» выходило смехотворно малым.
+        снимок_фрагменты = ui.tokens_report_fragments(
+            "deepseek-v4-flash",
+            history=100,
+            pairs=1,
+            overhead=83,
+            system=500_000,
+            restored=0,
+            runs=1,
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            budget=0,
+            cost="0.01 ¢",
+        )
+        снимок_текст = fragments_text(снимок_фрагменты)
+        check("вес инструкции назван отдельной строкой", "системная инструкция" in снимок_текст, снимок_текст[:200])
+        check("сказано, что /clear её не уберёт", "/clear её не трогает" in снимок_текст, снимок_текст[:300])
+        check(
+            "занятое окно считает инструкцию",
+            ui.format_exact(500_183) in снимок_текст,
+            снимок_текст[:200],
+        )
+
         print("\n12и. Вопросы профиля идут очередью")
 
         # Заготовки очередью заведены ради повторяемых прогонов: на показе и при разборе

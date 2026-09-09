@@ -272,12 +272,14 @@ def _show_wait(
         return
     исходящие = marks.get("outgoing", 0)
     входящие = marks.get("incoming", 0)
+    # Обмен не состоялся — прибавлять к итогу нечего: отвергнутый запрос не оплачен.
+    итог = marks.get("session", 0) if marks.get("session_only") else marks.get("session", 0) + исходящие + входящие
     фрагменты = ui.waiting_fragments(
         mark,
         time.monotonic() - marks.get("started", time.monotonic()),
         исходящие,
         входящие,
-        marks.get("session", 0) + исходящие + входящие,
+        итог,
         exact=marks.get("exact", True),
         frozen=frozen,
     )
@@ -384,6 +386,12 @@ def _freeze_wait(
         if turn is not None and turn.predicted_prompt:
             marks["outgoing"] = turn.predicted_prompt
         marks["exact"] = False
+        # Итог сеанса за несостоявшийся обмен не растёт. Живой Σ складывался из расхода до
+        # обмена и того, что мы насчитали сами, — но отвергнутый сервером запрос не оплачен
+        # ни на токен, и оставить в замершей строке прибавку значило бы показать трату,
+        # которой не было. Замечено на живом прогоне: разговор с документом под потолок
+        # упёрся в окно, и в строке отказа стояло Σ 3.1M вместо настоящих 2.1M.
+        marks["session_only"] = True
     if cancelled:
         исход = "cancelled"
     elif turn is not None and turn.ok:

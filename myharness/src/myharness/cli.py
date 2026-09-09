@@ -836,6 +836,10 @@ def cmd_tokens(state: State) -> None:
             state.model,
             history=агент.history_tokens(),
             pairs=len(агент.history()) // 2,
+            # Вес системной инструкции — часть каждого запроса, и в снимке без него занятое
+            # окно выходило смехотворно малым: профиль дня кладёт в инструкцию документ на
+            # миллион токенов, а снимок показывал «занято 1 354».
+            system=tokens.count_text(агент.profile.system or ""),
             overhead=агент.overhead(state.model),
             restored=агент.restored_pairs,
             runs=sum(другой.runs for другой in state.agents()),
