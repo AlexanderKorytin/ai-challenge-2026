@@ -587,6 +587,11 @@ def open_profile_picker(state: State) -> None:
         switch_profile(state, str(payload))
 
     description = "какой профиль генерации применить"
+    if len(items) <= 1:
+        # Один встроенный профиль в списке почти всегда значит не «профилей нет», а
+        # «harness запущен не из той папки»: профили ищутся рядом с каталогом запуска.
+        # Человек в этот момент смотрит именно сюда, поэтому и сказать надо здесь.
+        description += f" · профили ищутся в {profiles.search_hint()}"
     if state.profile_dirty:
         description += " (текущие изменения не сохранены — /profile save <имя>)"
     state.picker = picker_mod.Picker(

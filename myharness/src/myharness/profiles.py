@@ -434,6 +434,20 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
     return profile, warnings
 
 
+def _короткий_путь(каталог: Path) -> str:
+    """Путь для человека: домашний каталог сокращаем до «~», остальное как есть."""
+    дом = Path.home()
+    try:
+        return "~/" + str(каталог.relative_to(дом))
+    except ValueError:
+        return str(каталог)
+
+
+def search_hint() -> str:
+    """Где искать профили — одной строкой, для сообщений человеку."""
+    return " · ".join(_короткий_путь(каталог) for каталог in search_dirs())
+
+
 def load(name: str) -> tuple[Profile, list[str]]:
     """Профиль по имени. Если файла нет, а имя — default, отдаём встроенный."""
     for directory in search_dirs():
@@ -449,7 +463,10 @@ def load(name: str) -> tuple[Profile, list[str]]:
         return _from_dict(data, name, path.parent, path)
     if name == DEFAULT_PROFILE_NAME:
         return builtin_default(), []
-    return builtin_default(), [f"профиль «{name}» не найден — взят default"]
+    # Где искали — обязательная часть жалобы, а не любезность. Профили ищутся рядом с
+    # КАТАЛОГОМ ЗАПУСКА, и человек, запустивший harness не оттуда, видит короткий список без
+    # своих профилей и не понимает почему. Названные каталоги отвечают на это сразу.
+    return builtin_default(), [f"профиль «{name}» не найден — взят default. Искали: {search_hint()}"]
 
 
 def save(profile: Profile) -> Path:
