@@ -65,12 +65,20 @@ def deliver(state: State, question: str, outcomes: list[Outcome]) -> None:
     В память кладём тоже: разговор на главном экране продолжается после того, как отработала
     группа, и следующий вопрос («а покороче?») без итога в памяти повисает в пустоте. Пару
     пишем одну на весь прогон — вопрос был один, сколько бы способов на него ни отвечало.
+
+    Модель называем ту, которой работает приложение: оркестратор ходил к ней же, а пометки
+    в записи разговора должны говорить, чем ответ получен. Условие `keep_history` здесь не
+    проверяется намеренно — оно живёт внутри `remember`, единственной точки пополнения, и
+    вторая его копия тут разошлась бы с первой при первой же правке.
     """
     if not outcomes:
         return
     for item in outcomes:
         append_log(state, ui.outcome_fragments(item.kind, item.source, item.text), state.main)
-    state.main_agent.remember(question, join_outcomes(outcomes))
+    state.main_agent.remember(question, join_outcomes(outcomes), model=state.model)
+    # Итог оркестратора кладётся на диск здесь же, и сбой этой записи обязан быть назван:
+    # `Turn` тут не собирается, и без этой строки ошибка ушла бы в тишину.
+    warn_store(state, state.main_agent.store_error)
 
 
 def target_pane(state: State, target: screens_mod.Screen | screens_mod.Pane | None) -> screens_mod.Pane:
@@ -121,6 +129,22 @@ def warn_journal(state: State, error: str | None) -> None:
     """
     if error and not state.journal_warned:
         state.journal_warned = True
+        append_log(state, ui.error_fragments(error))
+
+
+def warn_store(state: State, error: str | None) -> None:
+    """Сказать, что разговор не сохраняется, — не больше одного раза за сеанс.
+
+    Тот же приём и та же причина, что у предупреждения о журнале: сбой хранилища обмен не
+    роняет, но причина у него постоянная (нет прав, кончилось место), и повторяться после
+    каждого ответа сообщение не должно.
+
+    Молчать нельзя тем более: человек уверен, что разговор переживёт перезапуск, а он не
+    переживёт. Узнать об этом на следующем запуске по пустой ленте — худший из возможных
+    способов.
+    """
+    if error and not state.store_warned:
+        state.store_warned = True
         append_log(state, ui.error_fragments(error))
 
 
@@ -266,4 +290,5 @@ async def run_turn(
                 )
         if turn is not None:
             warn_journal(state, turn.journal_error)
+            warn_store(state, turn.store_error)
     return turn
