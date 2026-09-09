@@ -1026,7 +1026,7 @@ def build_app(state: State) -> Application:
         existing = windows.get(id(pane))
         if existing is not None:
             return existing
-        control = FormattedTextControl(text=lambda: pane.log, show_cursor=False)
+        control = FormattedTextControl(text=lambda: pane.visible_log(), show_cursor=False)
         window = LogWindow(
             content=control,
             wrap_lines=True,
@@ -1035,7 +1035,7 @@ def build_app(state: State) -> Application:
             on_manual_scroll=lambda: setattr(pane, "autoscroll", False),
         )
         control.get_cursor_position = lambda: (
-            Point(x=0, y=pane.line_count) if pane.autoscroll else Point(x=0, y=window.vertical_scroll)
+            Point(x=0, y=pane.visible_lines()) if pane.autoscroll else Point(x=0, y=window.vertical_scroll)
         )
         windows[id(pane)] = window
         return window
@@ -1241,6 +1241,16 @@ def build_app(state: State) -> Application:
     @kb.add("f3", filter=~picker_active)
     def _zoom_pane(event) -> None:  # noqa: ANN001
         toggle_zoom(state)
+
+    @kb.add("c-r", filter=~picker_active)
+    def _toggle_reasoning(event) -> None:  # noqa: ANN001
+        pane = state.screen.pane
+        pane.show_reasoning = not pane.show_reasoning
+        # Переключение меняет объём ленты выше точки просмотра сразу на все размышления,
+        # а сама точка остаётся на прежнем номере строки — прокрученная вверх панель
+        # прыгнула бы на чужое место. Возвращаемся к живому выводу: там место известно.
+        pane.autoscroll = True
+        refresh(state)
 
     @kb.add("s-right", filter=~picker_active)
     def _next_screen(event) -> None:  # noqa: ANN001

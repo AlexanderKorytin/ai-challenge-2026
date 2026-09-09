@@ -97,6 +97,11 @@ def append_log(
     pane = target_pane(state, target)
     pane.log.extend(fragments)
     pane.line_count += sum(text.count("\n") for _, text in fragments)
+    # Строки размышлений считаем здесь же, рядом с общим счётчиком: лента пополняется
+    # только отсюда, и два счётчика, растущие в соседних строках, разойтись не могут.
+    pane.reasoning_lines += sum(
+        text.count("\n") for style, text in fragments if style == screens_mod.REASONING
+    )
     if state.app is not None:
         state.app.invalidate()
 
@@ -107,6 +112,9 @@ def truncate_log(
     pane = target_pane(state, target)
     removed = pane.log[mark:]
     pane.line_count -= sum(text.count("\n") for _, text in removed)
+    pane.reasoning_lines -= sum(
+        text.count("\n") for style, text in removed if style == screens_mod.REASONING
+    )
     del pane.log[mark:]
     if state.app is not None:
         state.app.invalidate()
@@ -205,13 +213,19 @@ def draw_event(state: State, pane: screens_mod.Pane, event: api.StreamEvent, mar
         return
     if event.kind == "reasoning":
         if not marks.get("reasoning"):
-            append_log(state, ui.reasoning_label_fragments(), pane)
+            # Заголовок области — единственное, что остаётся видимым в свёрнутом виде,
+            # поэтому его стиль отличается от стиля самих размышлений: по стилю их и
+            # отбирает `Pane.visible_log`. Чисел ещё нет — обмен только начался.
+            append_log(state, ui.reasoning_head_fragments(None, None), pane)
             marks["reasoning"] = True
-        append_log(state, [("class:dim", event.text)], pane)
+        append_log(state, [(screens_mod.REASONING, event.text)], pane)
         return
     if not marks.get("answer"):
         if marks.get("reasoning"):
-            append_log(state, [("", "\n")], pane)
+            # Разделитель между черновиком и ответом принадлежит черновику и прячется
+            # вместе с ним: иначе свёрнутая область из одной строки занимает две, и
+            # под заголовком остаётся необъяснимая пустая строка.
+            append_log(state, [(screens_mod.REASONING, "\n")], pane)
         append_log(state, ui.answer_label_fragments(), pane)
         marks["answer"] = True
     append_log(state, [("", event.text)], pane)

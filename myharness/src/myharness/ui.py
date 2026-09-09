@@ -197,7 +197,37 @@ def _row_click(on_click: Callable[[int], None], index: int) -> Callable[[MouseEv
 # прокрутки: строка, на которой стоит пользователь, видна всегда.
 PANEL_ROWS_MAX = 12
 
-PANEL_HINT = "Alt+N · Shift+←/→ — экран · Alt+←/→ — панель · ↑/↓ — агент · клик — перейти"
+# Подсказка над списком агентов набирается из частей по ширине окна. Одной строкой её
+# держать нельзя: строка не переносится (`wrap_lines=False`), и всё, что не влезло, окно
+# срезало бы справа — посреди слова, без всякого признака, что там что-то было.
+#
+# Порядок частей — от менее угадываемого к более угадываемому: отбрасываем с конца, и
+# уходить первым должно то, что человек попробует сам. Щелчок по строке пробуют все,
+# переход на экран по номеру угадывается по номерам на вкладках, а про Ctrl+R не
+# догадается никто — он и стоит выше, среди тех, что показываются даже в узком окне.
+PANEL_HINT_PARTS = (
+    "Shift+←/→ — экран",
+    "Alt+←/→ — панель",
+    "↑/↓ — агент",
+    "Ctrl+R — размышления",
+    "Alt+N — экран по номеру",
+    "клик — перейти",
+)
+
+
+def panel_hint(width: int) -> str:
+    """Подсказка ровно по ширине окна: части складываются, пока помещаются.
+
+    Первую часть отдаём даже когда и она не влезает: обрезанная подсказка всё же говорит,
+    что клавиши тут есть, а пустая строка над списком не говорит ничего и только съедает
+    высоту. Один знак ширины оставлен под отбивку слева, с которой строку и печатают."""
+    hint = PANEL_HINT_PARTS[0]
+    for part in PANEL_HINT_PARTS[1:]:
+        longer = f"{hint} · {part}"
+        if len(longer) + 1 > width:
+            break
+        hint = longer
+    return hint
 
 
 def panel_slice(count: int, active: int, limit: int = PANEL_ROWS_MAX) -> tuple[int, int]:
@@ -244,7 +274,7 @@ def agent_panel_fragments(
     meta_width = 9 + 2 + 8  # время, отбивка, токены
     task_width = max(8, width - 3 - name_width - 2 - meta_width - 1)
 
-    out: Fragments = [("class:agents.hint", " " + PANEL_HINT), ("", "\n")]
+    out: Fragments = [("class:agents.hint", " " + panel_hint(width)), ("", "\n")]
     if start:
         out += [("class:agents", f" ↑ выше ещё {start}"), ("", "\n")]
     for offset, (status, name, task, total_ms, total_tokens, runs) in enumerate(shown):
@@ -461,8 +491,8 @@ def reasoning_head_fragments(tokens: int | None, seconds: float | None) -> Fragm
         заголовок = "▸ размышления"
         подсказка = "…"
     return [
-        ("class:reasoning.head", заголовок),
-        ("class:reasoning.head", подсказка),
+        (screens_mod.REASONING_HEAD, заголовок),
+        (screens_mod.REASONING_HEAD, подсказка),
         ("", "\n"),
     ]
 
@@ -647,10 +677,6 @@ def user_fragments(text: str) -> Fragments:
     return [("class:user", "› "), ("", text), ("", "\n")]
 
 
-def reasoning_label_fragments() -> Fragments:
-    return [("class:system", "· размышляю…"), ("", "\n")]
-
-
 def answer_label_fragments() -> Fragments:
     return [("class:answer", "myharness › ")]
 
@@ -769,6 +795,11 @@ def help_fragments() -> Fragments:
         "\n"
         "Внутри вкладки может быть несколько панелей — шаги приёма или ответы экспертов рядом.\n"
         "Alt+←/→ переходят между панелями, F3 разворачивает панель на весь экран и обратно.\n"
+        "\n"
+        "Размышления\n"
+        "Черновик модели длиннее ответа в разы, поэтому показан свёрнутым: в ленте остаётся\n"
+        "одна строка-заголовок с числом токенов и временем. Ctrl+R разворачивает размышления\n"
+        "текущей панели и прячет обратно.\n"
         "\n"
         "Мышь работает сразу: клики по строкам списка агентов и по строкам меню, прокрутка\n"
         "колесом. Выделение текста при этом остаётся за терминалом — harness просит у него\n"
