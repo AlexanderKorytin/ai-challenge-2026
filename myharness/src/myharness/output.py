@@ -419,6 +419,36 @@ def _finish_reasoning_head(
     marks["head_len"] = len(заголовок)
 
 
+def _warn_if_over_window(state: State, pane: screens_mod.Pane, agent_obj: Agent, предсказание: int) -> None:
+    """Сказать заранее, что запрос не влезет в окно модели, — до отправки, а не после отказа.
+
+    Ради этого и заведён собственный счёт токенов. Проверено живьём 2026-09-09: на третьем
+    вопросе разговора с документом под потолок наше предсказание дало 1 049 323 токена, сервер
+    в отказе насчитал 1 049 324 — расхождение в один токен на миллион. Значит предупредить
+    можно честно, не гадая.
+
+    Место под ответ входит в окно, а не идёт сверх него: в том же отказе сервер сложил
+    1 047 324 токена сообщений и 2000 запрошенного ответа и сравнил сумму с окном.
+
+    Запрос при этом всё равно уходит. Отказать самим значило бы поставить свою оценку выше
+    ответа сервера: ошибись мы в большую сторону — и человек не смог бы отправить запрос,
+    который на самом деле проходит. Наше дело — назвать причину заранее, а решает сервер.
+    """
+    место_под_ответ = agent_obj.profile.params.get("max_tokens") or 0
+    всего = предсказание + (место_под_ответ if isinstance(место_под_ответ, int) else 0)
+    if всего <= tokens.CONTEXT_WINDOW:
+        return
+    append_log(
+        state,
+        ui.hint_fragments(
+            f"запрос не влезет в окно модели: {ui.format_exact(всего)} из "
+            f"{ui.format_exact(tokens.CONTEXT_WINDOW)} (включая {ui.format_exact(место_под_ответ)} "
+            "на ответ) — очистите историю командой /clear или задайте вопрос короче"
+        ),
+        pane,
+    )
+
+
 async def run_turn(
     state: State,
     agent_obj: Agent,
@@ -455,6 +485,7 @@ async def run_turn(
         "wait_at": len(pane.log),
         "wait_len": 0,
     }
+    _warn_if_over_window(state, pane, agent_obj, marks["outgoing"])
     _show_wait(state, pane, marks, mark=marks["frame"])
     spinner_task = asyncio.create_task(_spin(state, pane, marks))
 
