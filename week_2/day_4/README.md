@@ -126,4 +126,5 @@ test/расход.py              вход по ходам: где вырос, �
 
 ## Ссылки
 
-<!-- заполняется навыком /отчет после записи видео -->
+- **Видео**: https://drive.google.com/file/d/1BCxc-fXZtkIwakPHb9nTAg8EpzE4lHiz/view?usp=sharing
+- **Код дня**: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w2d4/week_2/day_4
