@@ -14,11 +14,15 @@ Propose a new change - create the change and generate all artifacts in one step.
 
 **Planning boundary**: This workflow creates planning artifacts only. The user request that selected or triggered this workflow authorizes planning only, even if it asks to build or fix something. Do not edit project code. After the planning artifacts are complete, stop. Do not start implementation in the same response, even if the initial request asks for it. Wait for a new user request after the artifacts are presented; then start the apply workflow.
 
-I'll create a change with the artifacts your schema defines. With the default spec-driven schema that is:
+I'll create a change with the artifacts your schema defines. This project uses the `challenge`
+schema, whose artifacts are:
 - proposal.md (what & why)
 - `specs/<capability-path>/spec.md` (what the system must do - a delta, not the main spec)
-- design.md (how)
-- tasks.md (implementation steps)
+
+This schema has no `design.md` and no `tasks.md` on purpose: the design is approved through the
+project's `/штурм` stage, and there is exactly one plan, produced by `/план` and executed by
+`/исполнение`. A second checklist beside that plan would drift from it. Always take the actual
+artifact set from `openspec status --change "<name>" --json`, never from this list.
 
 `<capability-path>` is the spec directory relative to `specs/` (for example, `user-auth` or `identity/user-auth`). Preserve an existing capability's full path and follow the project's established organization for new capabilities.
 

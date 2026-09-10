@@ -1,9 +1,12 @@
-schema: spec-driven
+# Схема проекта: только требования (proposal + specs). Списка задач у неё нет — план работ
+# в этом проекте один, и ведут его стадии Plan и Executing (навыки /план и /исполнение).
+schema: challenge
 
 context: |
   Language: ru
   All artifacts must be written in ru.
   Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+  Implementation is driven by the project's own stages, not by a tasks checklist.
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
@@ -12,8 +15,10 @@ context: |
 #     proposal:
 #       - Keep proposals under 500 words
 #       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+#     specs:
+#       - One scenario per observable behaviour
+# Артефакты у схемы challenge только два: proposal и specs. Правила для tasks или design
+# писать некуда — таких артефактов у неё нет.
 
 # Per-operation guidance (optional)
 # Add advisory guidance for how apply and archive work should be conducted.

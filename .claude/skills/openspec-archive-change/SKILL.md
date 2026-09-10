@@ -77,6 +77,10 @@ Archive a completed change in the experimental workflow.
 
    Read the tasks file (typically `tasks.md`) to check for incomplete tasks.
 
+   **Schemas without a tasks artifact skip this step entirely** - the `challenge` schema used by
+   this project is one of them (`tracks: null`). Do not create a tasks file to satisfy the check;
+   completeness there is judged by the project's Validation stage, not by a checklist.
+
    Count tasks marked with `- [ ]` (incomplete) vs `- [x]` (complete).
 
    **If incomplete tasks found:**

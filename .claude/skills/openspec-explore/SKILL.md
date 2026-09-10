@@ -164,15 +164,19 @@ If the user mentions a change or you detect one is relevant:
     |----------------------------|-------------------------------------|
     | New requirement discovered | `specs/<capability-path>/spec.md` |
     | Requirement changed        | `specs/<capability-path>/spec.md` |
-    | Design decision made       | `design.md`                       |
+    | Design decision made       | the project's design, approved at the Research stage |
     | Scope changed              | `proposal.md`                     |
-    | New work identified        | `tasks.md`                        |
+    | New work identified        | the project's single plan, kept by the Plan and Executing stages |
     | Assumption invalidated     | Relevant artifact                   |
 
    Example offers:
-   - "That's a design decision. Capture it in design.md?"
+   - "That's a design decision. Take it to the Research stage for approval?"
    - "This is a new requirement. Add it to specs?"
    - "This changes scope. Update the proposal?"
+
+   This project uses the `challenge` schema, which has no `design.md` and no `tasks.md`.
+   Never create either: the design is approved at the Research stage, and there is exactly one
+   plan, kept by the Plan and Executing stages. A second checklist beside it would drift.
 
 4. **The user decides** - Offer and move on. Don't pressure. Don't auto-capture.
 
@@ -298,7 +302,7 @@ You: That changes everything.
 There's no required ending. Discovery might:
 
 - **Flow into a proposal**: "Ready to start? I can create a change proposal."
-- **Result in artifact updates**: "Updated design.md with these decisions"
+- **Result in artifact updates**: "Updated the proposal and specs with these decisions"
 - **Just provide clarity**: User has what they need, moves on
 - **Continue later**: "We can pick this up anytime"
 
