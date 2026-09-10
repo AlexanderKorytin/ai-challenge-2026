@@ -33,7 +33,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
-from . import api, archivist, memory, profiles, team, tokens, ui
+from . import api, archivist, background, memory, profiles, team, tokens, ui
 from . import methods as methods_mod
 from . import params as params_mod
 from . import picker as picker_mod
@@ -103,10 +103,13 @@ class State:
     store: memory.SessionStore | None = None
     # Сколько пар легло в главный разговор с прошлого захода архивариуса.
     since_archive: int = 0
-    # Идущий заход архивариуса. Держим саму задачу, а не признак: по ней видно и что заход
-    # ещё идёт (второго заводить нельзя), и что его пора дождаться при выходе.
-    archivist_task: asyncio.Task | None = None
-    archivist_warned: bool = False  # о сбое архивариуса говорим раз за сеанс, как о журнале
+    # Фоновая служба архивариуса: идущий заход, счёт отказов и признак «о сбое уже сказали».
+    # Одним полем, а не россыпью: скелет у фоновых служб общий и живёт в `background`, и
+    # разложить его части по отдельным полям состояния значило бы собирать их заново в каждой
+    # службе — со своими именами и своими расхождениями.
+    # Имя берём готовое из самого архивариуса, а не пишем строкой второй раз: под ним он уже
+    # известен журналу прогонов, и два написания одного имени однажды разъехались бы.
+    архивариус: background.Служба = field(default_factory=lambda: background.Служба(archivist.AGENT_NAME))
 
     @property
     def main(self) -> screens_mod.Screen:

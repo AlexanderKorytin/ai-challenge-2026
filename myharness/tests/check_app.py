@@ -1221,7 +1221,7 @@ async def main():
         before = len(fake.calls)
         for номер in range(archivist.EVERY_N):
             await send(f"вопрос при выключенном сборе {номер}" + ENTER, pause=0.35)
-        check("при выключенном сборе архивариус не заводится ни разу", state.archivist_task is None)
+        check("при выключенном сборе архивариус не заводится ни разу", state.архивариус.задача is None)
         check("и лишних запросов не делает", len(fake.calls) - before == archivist.EVERY_N, str(len(fake.calls) - before))
 
         await send("/memory on" + ENTER, pause=0.2)
@@ -1230,9 +1230,9 @@ async def main():
         before = len(fake.calls)
         for номер in range(archivist.EVERY_N - 1):
             await send(f"вопрос до срока {номер}" + ENTER, pause=0.35)
-        check("до пятого обмена архивариус не заводится", state.archivist_task is None, str(state.since_archive))
+        check("до пятого обмена архивариус не заводится", state.архивариус.задача is None, str(state.since_archive))
         await send("пятый вопрос" + ENTER, pause=0.35)
-        check("на пятом обмене заход заведён", state.archivist_task is not None)
+        check("на пятом обмене заход заведён", state.архивариус.задача is not None)
         check("счётчик обнулён — следующий заход не раньше чем через пять", state.since_archive == 0, str(state.since_archive))
         # Ввод не блокируется: строка ввода принимает текст, пока архивариус ходит к модели.
         buffer.text = ""
@@ -1240,8 +1240,8 @@ async def main():
         check("ввод при работающем архивариусе не заблокирован", buffer.text == "набрано, пока архивариус работает", repr(buffer.text))
         await send("\x7f" * 60)
         check("пока заход идёт, второго не заводим", not archivist.due(state))
-        await asyncio.wait({state.archivist_task}, timeout=5)
-        check("заход завершился", state.archivist_task.done())
+        await asyncio.wait({state.архивариус.задача}, timeout=5)
+        check("заход завершился", state.архивариус.задача.done())
         всего_запросов = len(fake.calls) - before
         check("на пять обменов пришёлся ровно один запрос архивариуса", всего_запросов == archivist.EVERY_N + 1, str(всего_запросов))
         запрос_архивариуса = fake.calls[-1]

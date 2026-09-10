@@ -17,6 +17,10 @@
 
 Про `cli` модуль не знает — знать ему нужно только состояние, которое ему передали. Тот же
 приём, что в `team` и `methods`: иначе вышел бы круг (`cli` импортирует архивариуса).
+
+Общий с другими фоновыми службами скелет — «заход уже идёт», «о сбое раз за сеанс»,
+«отдельная задача, которую никто не ждёт» — живёт в `background`. Здесь остаётся только то,
+что у архивариуса своё: раз в пять обменов, дешёвая модель, инструкция и разбор ответа.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
-from . import memory, output, ui
+from . import background, memory, output, ui
 from .agent import Agent
 from .profiles import Profile
 
@@ -157,7 +161,7 @@ def parse_facts(raw: str) -> list[str]:
 
 def running(state: State) -> bool:
     """Идёт ли заход прямо сейчас."""
-    return state.archivist_task is not None and not state.archivist_task.done()
+    return background.идёт(state.архивариус)
 
 
 def due(state: State) -> bool:
@@ -211,6 +215,11 @@ async def run(state: State) -> None:
         # заказывал вручную, — и молчать именно о ней было бы хуже всего.
         state.retire([агент])
         if not обмен.ok:
+            # Счёт отказов ведём, а возвращённое значение и `выключена` НЕ читаем — и это
+            # решение, а не недосмотр. Архивариус и до общего скелета повторял попытки
+            # бесконечно; выключать его по `ПРЕДЕЛ_ОТКАЗОВ` значило бы поменять его поведение
+            # заодно с переносом скелета, а такие перемены делаются отдельно и осознанно.
+            background.отказ(state.архивариус)
             warn(state, обмен.error)
             return
         for текст in parse_facts(обмен.text):
@@ -219,12 +228,21 @@ async def run(state: State) -> None:
                 output.append_log(state, ui.fact_added_fragments(сообщение), state.main)
             # Отказ хранилища вслух не называем: чаще всего это «уже записано» — обычный
             # ход работы, а не беда, и строка о нём после каждого захода была бы шумом.
+        # Заход считается удачным ЗДЕСЬ, в самом конце, а не сразу после ответа модели:
+        # удачный обмен с падающей записью фактов (нет прав на каталог, полон диск) — это
+        # неудачный заход. Отметь мы успех раньше, счёт чередовал бы «успех» и «отказ», предела
+        # не достиг бы никогда, и служба, которая по нему выключается, платила бы за запросы
+        # весь сеанс при начисто сломанном применении итога.
+        background.успех(state.архивариус)
     except asyncio.CancelledError:
+        # Отмену заказывает человек (Ctrl+C, выход по сроку), и отказом службы она не
+        # считается: счёт отказов её не замечает, а само исключение уходит наружу.
         raise
     except Exception as exc:
         # Заход живёт отдельной задачей, которую никто не ждёт: выпущенное отсюда исключение
         # никому бы не досталось — оно всплыло бы предупреждением сборщика мусора посреди
         # чужого вывода, уже после того, как причину искать негде.
+        background.отказ(state.архивариус)
         warn(state, str(exc))
 
 
@@ -236,9 +254,9 @@ def warn(state: State, error: str | None) -> None:
     строка вытеснила бы из ленты сами ответы. Молчать совсем тоже нельзя: человек считал бы,
     что память пополняется, а она стоит.
     """
-    if state.archivist_warned:
+    if state.архивариус.предупреждён:
         return
-    state.archivist_warned = True
+    state.архивариус.предупреждён = True
     output.append_log(
         state,
         ui.error_fragments(f"архивариус не смог пополнить память: {error or 'неизвестная причина'}"),
@@ -256,7 +274,7 @@ def start(state: State) -> None:
     if not due(state):
         return
     state.since_archive = 0
-    state.archivist_task = asyncio.create_task(run(state))
+    background.завести(state.архивариус, run(state))
 
 
 async def finish(state: State) -> None:
@@ -270,8 +288,8 @@ async def finish(state: State) -> None:
     """
     if not running(state) and state.config.remember and state.since_archive > 0:
         state.since_archive = 0
-        state.archivist_task = asyncio.create_task(run(state))
-    задача = state.archivist_task
+        background.завести(state.архивариус, run(state))
+    задача = state.архивариус.задача
     if задача is None or задача.done():
         return
     # `asyncio.wait`, а не `wait_for`: он не выпускает наружу ни отмену задачи, ни её
