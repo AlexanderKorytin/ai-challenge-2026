@@ -543,15 +543,30 @@ async def run_turn(
             append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {turn.error}"), pane)
         if marks.get("reasoning") or marks.get("answer"):
             append_log(state, [("", "\n")], pane)
-        if turn is not None and turn.dropped_pairs > 0:
+        if turn is not None and agent_obj.выжимка_отвергнута():
+            # Выжимка есть, а в запрос не идёт: инструкцию правили после её сборки. Сказать
+            # об этом обязаны — иначе кусок памяти пропал молча, и человек ищет поломку,
+            # которой нет. Строка повторяется на каждом обмене намеренно: без пересказа
+            # уходит КАЖДЫЙ запрос, а не первый, и молчать о втором не честнее, чем о первом.
+            # Кончается это само — новой выжимкой под действующей инструкцией.
+            append_log(state, ui.summary_rejected_fragments(), pane)
+        if turn is not None and turn.compacted_pairs > 0:
+            # Замену дословного текста пересказом человек замечает по ответам, но объяснить
+            # не может, если ему не сказали: модель отвечает «в общих чертах» там, где вчера
+            # отвечала подробностями.
+            append_log(state, ui.compacted_fragments(turn.compacted_pairs, turn.passed_pairs), pane)
+        if turn is not None and turn.forgotten_pairs > 0:
             # Молчаливая обрезка недопустима. Первая же потерянная отсылка — «сделай короче»,
             # а того, что сокращать, в памяти уже нет — будет отлажена пользователем как
             # «модель поглупела», и час уйдёт на поиск поломки, которой нет.
+            #
+            # Два числа `Turn` разведены по двум строкам, а не сложены в одно «выброшено N»:
+            # пересказанное и забытое дословно теряются по-разному и стоят разного. Сумма
+            # ответила бы «память похудела на восемь пар» и умолчала бы о том, чего в ней
+            # больше нет вовсе.
             append_log(
                 state,
-                ui.system_fragments(
-                    f"память обрезана: выброшено {turn.dropped_pairs} пар «вопрос — ответ»"
-                ),
+                ui.trimmed_fragments(turn.forgotten_pairs, сжатие=agent_obj.profile.compact_at > 0),
                 pane,
             )
         if turn is not None and turn.ok:
