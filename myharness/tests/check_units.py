@@ -106,6 +106,63 @@ for мусор in ("три", True, -1, 2.5):
 check("окно памяти попадает в слепок для журнала", оконный.snapshot().get("history_window") == 3, str(оконный.snapshot()))
 check("окно памяти сохраняется в файл профиля", оконный.to_dict().get("history_window") == 3, str(оконный.to_dict()))
 
+# Порог сжатия истории. Доля окна модели, при близости к которой память ужимается.
+# Ноль — не край диапазона, а рабочий случай: им сжатие и выключают, поэтому он пригоден
+# и предупреждения не даёт. Верхняя граница — девять десятых: за порогом обязано остаться
+# место на новый вопрос и на ответ, а порог в единицу означал бы сжатие после того, как
+# сервер уже отказал. Логическое значение проверяется отдельно: в Python оно разновидность
+# целого. «true» ловит ещё и верхняя граница, а вот «false» лежит внутри диапазона и без
+# отдельной проверки прошёл бы как ноль — то есть молча выключил бы сжатие.
+(tmp / "profiles" / "compact.json").write_text(
+    json.dumps({"name": "compact", "compact_at": 0.005}, ensure_ascii=False), encoding="utf-8"
+)
+сжимающий, жалобы_сжатия = profiles.load("compact")
+check("compact_at прочитан как есть", сжимающий.compact_at == 0.005, str(сжимающий.compact_at))
+check(
+    "compact_at не уходит в параметры DeepSeek",
+    "compact_at" not in сжимающий.params and not any("неизвестный параметр" in ж for ж in жалобы_сжатия),
+    f"{сжимающий.params} / {жалобы_сжатия}",
+)
+check("умолчание порога — восемь десятых окна", profile.compact_at == 0.8, str(profile.compact_at))
+(tmp / "profiles" / "compact_off.json").write_text(
+    json.dumps({"name": "compact_off", "compact_at": 0}, ensure_ascii=False), encoding="utf-8"
+)
+выключенное, жалобы_выключения = profiles.load("compact_off")
+check(
+    "compact_at = 0 принят и молчит: так сжатие выключают",
+    выключенное.compact_at == 0 and not жалобы_выключения,
+    f"{выключенное.compact_at} / {жалобы_выключения}",
+)
+(tmp / "profiles" / "compact_edge.json").write_text(
+    json.dumps({"name": "compact_edge", "compact_at": 0.9}, ensure_ascii=False), encoding="utf-8"
+)
+предельный, жалобы_предела = profiles.load("compact_edge")
+check(
+    "верхняя граница девять десятых включительна",
+    предельный.compact_at == 0.9 and not жалобы_предела,
+    f"{предельный.compact_at} / {жалобы_предела}",
+)
+for мусор in (0.95, 1, 2, -0.1, "много", True, False):
+    (tmp / "profiles" / "compact_bad.json").write_text(
+        json.dumps({"name": "compact_bad", "compact_at": мусор}, ensure_ascii=False), encoding="utf-8"
+    )
+    плохой_порог, жалобы_порога = profiles.load("compact_bad")
+    check(
+        f"compact_at = {мусор!r} отвергнут с предупреждением",
+        плохой_порог.compact_at == 0.8 and any("compact_at" in ж for ж in жалобы_порога),
+        f"{плохой_порог.compact_at} / {жалобы_порога}",
+    )
+check(
+    "порог сжатия попадает в слепок для журнала",
+    сжимающий.snapshot().get("compact_at") == 0.005,
+    str(сжимающий.snapshot()),
+)
+check(
+    "порог сжатия сохраняется в файл профиля",
+    сжимающий.to_dict().get("compact_at") == 0.005,
+    str(сжимающий.to_dict()),
+)
+
 # Раскладка цепочки. Умолчание — панели рядом на одной вкладке, «tabs» разводит шаги по
 # отдельным вкладкам. Мусор отбрасываем с предупреждением по тому же правилу, что и окно
 # памяти. Поле имеет смысл только у профиля-цепочки: у профиля без «screens» раскладывать

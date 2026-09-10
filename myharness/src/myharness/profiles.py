@@ -38,6 +38,16 @@ from .config import config_dir
 
 DEFAULT_PROFILE_NAME = "default"
 
+# Доля окна модели, при близости к которой память ужимается. Восемь десятых выведены из
+# тарифа, а не выбраны на глаз: вход из живого кэша поставщика дешевле промаха в тридцать
+# раз, а каждое сжатие меняет начало запроса и тем обнуляет кэш всего запроса целиком.
+# Значит, сжимать надо как можно ПОЗЖЕ: восемьсот тысяч токенов из кэша стоят полтора
+# цента, одно преждевременное сжатие — дороже. От окна в 1 048 576 остаётся за порогом
+# около 210 000 — на новый вопрос, ответ, блок выжимки и рассуждения.
+DEFAULT_COMPACT_AT = 0.8
+# Выше этой доли порог не пускаем: за ним обязано остаться место на вопрос и на ответ.
+MAX_COMPACT_AT = 0.9
+
 # Раскладка цепочки шагов: панелями рядом на одной вкладке либо вкладкой на шаг.
 LAYOUT_PANES = "panes"
 LAYOUT_TABS = "tabs"
@@ -80,6 +90,8 @@ class Profile:
     # предел веса запроса в токенах; 0 — предела нет. Окно по парам меряет не то, чем считает
     # контекст и деньги поставщик: пять пар со вставленными файлами весят больше сотни коротких.
     budget_tokens: int = 0
+    # доля окна модели, при близости к которой память ужимается; 0 — сжатие выключено
+    compact_at: float = DEFAULT_COMPACT_AT
     agents: list[str] = field(default_factory=list)  # непусто — профиль ведущего группы
     screens: list[str] = field(default_factory=list)  # непусто — набор рабочих экранов
     # как разложены шаги цепочки: "panes" — панелями рядом, "tabs" — вкладкой на шаг
@@ -99,6 +111,7 @@ class Profile:
             "keep_history": self.keep_history,
             "history_window": self.history_window,
             "budget_tokens": self.budget_tokens,
+            "compact_at": self.compact_at,
             "params": dict(self.params),
         }
         if self.agents:
@@ -131,6 +144,7 @@ class Profile:
         data["keep_history"] = self.keep_history
         data["history_window"] = self.history_window
         data["budget_tokens"] = self.budget_tokens
+        data["compact_at"] = self.compact_at
         if self.agents:
             data["agents"] = list(self.agents)
         if self.screens:
@@ -297,6 +311,42 @@ def _budget_tokens(raw: Any, warnings: list[str]) -> int:
     return raw
 
 
+def _compact_at(raw: Any, warnings: list[str]) -> float:
+    """Порог сжатия памяти: доля окна модели от нуля до девяти десятых включительно.
+
+    Ноль здесь не край диапазона, а рабочий случай: им сжатие и выключают, поэтому он
+    пригоден и предупреждения не даёт. Верхняя граница — девять десятых: за порогом обязано
+    остаться место на новый вопрос и на `max_tokens` ответа, а порог в единицу означал бы
+    сжатие в тот момент, когда запрос уже равен окну, — то есть после отказа сервера, а не
+    до него: успеть по такому порогу нельзя никогда.
+
+    Целое допускаем наравне с дробным — ради того же нуля, который в JSON пишется без точки.
+    `bool` отсеиваем отдельно, он в Python подкласс `int`. `true` поймала бы и верхняя граница,
+    а вот `false` лежит ВНУТРИ диапазона: без отдельной проверки он прошёл бы как ноль, то есть
+    молча выключил бы сжатие у того, кто просто описался. Та же беда однажды была поймана на
+    `history_window`.
+
+    Мусор отбрасываем с предупреждением по той же причине, что и в `_history_window`: молча
+    подставленное умолчание сделало бы поведение необъяснимым — человек написал один порог,
+    harness сжимает по другому и нигде об этом не говорит.
+
+    Отдельного текста для `false` сознательно НЕ заводим, хотя он и подсказал бы точнее:
+    написавший `"compact_at": false` прочтёт про разрешённый ноль и решит, что был прав.
+    Цена расхождения выше цены неточности — `_history_window` и `_budget_tokens` устроены
+    ровно так же, одним условием на все роды мусора, и третья сестра с собственной веткой
+    разошлась бы с ними при первой же общей правке. Само значение в предупреждении печатается
+    как `False`, так что увидеть написанное человек всё равно может."""
+    if raw is None:
+        return DEFAULT_COMPACT_AT
+    if isinstance(raw, bool) or not isinstance(raw, int | float) or not 0 <= raw <= MAX_COMPACT_AT:
+        warnings.append(
+            f"поле «compact_at»: {raw!r} — ожидалась доля окна от 0 до {MAX_COMPACT_AT} "
+            f"(0 — сжатие выключено), взято умолчание {DEFAULT_COMPACT_AT}"
+        )
+        return DEFAULT_COMPACT_AT
+    return float(raw)
+
+
 def _layout(raw: Any, screens: list[str], warnings: list[str]) -> str:
     """Раскладка шагов цепочки: «panes» — панелями рядом на одной вкладке, «tabs» — вкладкой
     на шаг. Умолчание — панели: так поведение прежних профилей не меняется от появления поля.
@@ -360,6 +410,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "keep_history",
         "history_window",
         "budget_tokens",
+        "compact_at",
         "agents",
         "screens",
         "methods",
@@ -422,6 +473,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         keep_history=bool(data.get("keep_history", True)),
         history_window=_history_window(data.get("history_window"), warnings),
         budget_tokens=_budget_tokens(data.get("budget_tokens"), warnings),
+        compact_at=_compact_at(data.get("compact_at"), warnings),
         agents=_profile_names(data.get("agents"), "agents", warnings),
         screens=screen_names,
         layout=_layout(data.get("layout"), screen_names, warnings),
