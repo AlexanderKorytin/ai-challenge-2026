@@ -2392,9 +2392,6 @@ async def handle_submit(
                 ui.queued_fragments(executor.queue.qsize()),
                 addressed_pane,
             )
-    # Продвигается очередь панели, с которой отправлен вопрос, даже если человек успел
-    # перейти на соседнюю до запуска этой асинхронной обработки.
-    next_prefill(state, addressed_pane)
 
 
 # ─────────────────────────────── меню команд ───────────────────────────────
@@ -2437,6 +2434,25 @@ class HarnessCompleter(Completer):
                 yield Completion(
                     "save", start_position=-len(word), display="save", display_meta="сохранить текущие параметры"
                 )
+        elif len(parts) == 2 and parts[0] == "/strategy":
+            for strategy in context_strategy.CONTEXT_STRATEGIES:
+                command = f"use {strategy}"
+                if not word or command.startswith(word) or strategy.startswith(word):
+                    yield Completion(
+                        command,
+                        start_position=-len(word),
+                        display=strategy,
+                        display_meta=STRATEGY_TITLES[strategy],
+                    )
+        elif len(parts) == 3 and parts[:2] == ["/strategy", "use"]:
+            for strategy in context_strategy.CONTEXT_STRATEGIES:
+                if strategy.startswith(word):
+                    yield Completion(
+                        strategy,
+                        start_position=-len(word),
+                        display=strategy,
+                        display_meta=STRATEGY_TITLES[strategy],
+                    )
         elif command == "/model" and len(parts) == 2:
             for name in self.state.known_models:
                 if name.startswith(word):
@@ -2688,6 +2704,17 @@ def build_app(state: State) -> Application:
         text = buffer.text
         buffer.reset()
         destination_pane.draft = ""
+        # Следующую заготовку показываем в том же обработчике клавиши. Асинхронная задача
+        # отправки может начать выполняться уже после перерисовки либо перехода на другой
+        # экран — тогда строка оставалась пустой, хотя вопрос был принят.
+        stripped = text.strip()
+        if (
+            stripped
+            and not stripped.startswith("/")
+            and state.config.is_authorized
+            and not state.switching_profile
+        ):
+            next_prefill(state, destination_pane)
         if not state.screen.interactive:
             switch_screen(state, 0)  # экран агента только для чтения — ответ придёт в главный
         for pane in destination_screen.panes:
