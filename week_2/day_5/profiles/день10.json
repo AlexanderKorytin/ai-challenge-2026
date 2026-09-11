@@ -1,0 +1,12 @@
+{
+  "name": "день10",
+  "title": "День 10",
+  "description": "Три стратегии контекста на одном воспроизводимом сценарии",
+  "screens": [
+    "sliding",
+    "facts",
+    "branching"
+  ],
+  "keep_history": false,
+  "compact_at": 0
+}
