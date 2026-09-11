@@ -1,0 +1,19 @@
+modelRoles:
+  default: openai-codex/gpt-5.6-sol
+  task: "@default"
+  review: "@default"
+  plan: openai-codex/gpt-6-astra
+  architecture: "@plan"
+  smol: openai-codex/gpt-5.6-luna
+  facts: "@smol"
+  spark: openai-codex/gpt-5.3-codex-spark
+  mechanical: "@spark"
+  commit: "@smol"
+
+task:
+  agentModelOverrides:
+    scout: "@facts"
+    task: "@task"
+    reviewer: "@review"
+    security-reviewer: "@review"
+    sonic: "@mechanical"
