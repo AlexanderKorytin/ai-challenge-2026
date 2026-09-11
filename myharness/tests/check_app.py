@@ -82,6 +82,50 @@ class FakeClient:
     async def aclose(self):
         self.closed = True
 
+class УправляемыйКлиент:
+    """Удерживает каждый обмен отдельно и помечает его вопросом из настоящего Enter."""
+
+    def __init__(self):
+        self.calls = []
+        self.started = {}
+        self.releases = {}
+        self.cancelled = {}
+        self.closed = False
+
+    def _event(self, collection, content):
+        return collection.setdefault(content, asyncio.Event())
+
+    async def wait_started(self, content):
+        await self._event(self.started, content).wait()
+
+    def release(self, content):
+        self._event(self.releases, content).set()
+
+    async def wait_cancelled(self, content):
+        await self._event(self.cancelled, content).wait()
+
+    async def stream_chat(self, model, messages, params=None):
+        content = messages[-1]["content"]
+        self.calls.append({"model": model, "messages": messages, "params": dict(params or {})})
+        self._event(self.started, content).set()
+        try:
+            await self._event(self.releases, content).wait()
+        except asyncio.CancelledError:
+            self._event(self.cancelled, content).set()
+            raise
+        yield api.StreamEvent("content", f"ответ:{content}")
+        yield api.StreamEvent(
+            "meta",
+            finish_reason="stop",
+            usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        )
+
+    async def list_models(self):
+        return list(api.FALLBACK_MODELS)
+
+    async def aclose(self):
+        self.closed = True
+
 
 def fragments_text(fragments):
     """Фрагмент — (стиль, текст) либо (стиль, текст, обработчик мыши): вкладки кликабельны."""
@@ -213,10 +257,12 @@ async def main():
     )
 
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-        app = cli.build_app(state)
-        state.app = app
-        worker = asyncio.create_task(cli.worker(state))
-        run = asyncio.create_task(app.run_async())
+        # Запускаем настоящий `repl`, а не отдельно собранное приложение: только так выход
+        # проходит тот же жизненный цикл отмены исполнителей, что и у пользователя.
+        run = asyncio.create_task(cli.repl(state))
+        while state.app is None:
+            await asyncio.sleep(0)
+        app = state.app
         await asyncio.sleep(0.1)
 
         async def send(text, pause=0.12):
@@ -240,6 +286,18 @@ async def main():
         check("команды выжимки есть в меню", {"/context", "/compact"} <= set(имена), str(имена))
         справка = fragments_text(ui.help_fragments())
         check("команды выжимки описаны в справке", "/context" in справка and "/compact" in справка)
+        check(
+            "команды стратегий есть в меню и справке",
+            {"/strategy", "/facts", "/branch"} <= set(имена)
+            and all(command in справка for command in ("/strategy", "/facts", "/branch")),
+            str(имена),
+        )
+        check(
+            "до авторизации команды стратегий не предлагаются",
+            not ({"/strategy", "/facts", "/branch"} & {
+                name for name, *_ in ui.visible_commands(False)
+            }),
+        )
         check("пока агент один, списка агентов нет", not cli.show_agent_panel(state))
 
         await send(DOWN)
@@ -661,14 +719,36 @@ async def main():
         systems = [c["messages"][0]["content"] for c in agent_calls]
         check("каждому агенту ушла своя инструкция", "ты аналитик" in systems and "ты критик" in systems, str(systems))
         check("агенты не видели ответов друг друга", all(len(c["messages"]) == 2 for c in agent_calls[:2]))
+        check("группа запущена ровно один раз", len(agent_calls) == 3, str(len(agent_calls)))
+        check("главная панель не получила отдельного исполнителя", id(state.main.first) not in state.pane_workers)
         summary_call = agent_calls[-1]
         check("ведущему ушли ответы всех агентов", summary_call["messages"][0]["content"] == "сведи ответы" and "Ответ эксперта «critic»" in summary_call["messages"][1]["content"])
 
         check("список агентов появился", cli.show_agent_panel(state))
         check("в списке видны агенты группы", "analyst" in panel_text(app) and "critic" in panel_text(app), panel_text(app))
         handler = next(f[2] for f in panel_fragments(app) if len(f) == 3 and "analyst" in f[1])
+        buffer.text = "черновик главной"
         handler(MouseEvent(position=Point(0, 0), event_type=MouseEventType.MOUSE_UP, button=MouseButton.LEFT, modifiers=frozenset()))
         check("клик по строке списка открывает экран агента", state.active == 1 and state.screen is board)
+        check("экран агента показывает главный черновик", buffer.text == "черновик главной", repr(buffer.text))
+        # Строка под экраном агента всё равно принадлежит главной панели: экран только для
+        # чтения. Набранное при просмотре агента не должно попасть в его панель или исчезнуть.
+        buffer.text = "черновик главной, дополненный у агента"
+        cli.switch_pane(state, 1)
+        check(
+            "переключение панелей агента не меняет главный черновик",
+            buffer.text == "черновик главной, дополненный у агента",
+            repr(buffer.text),
+        )
+        cli.switch_screen(state, 0)
+        check(
+            "текст, набранный у агента, пережил возврат на главный экран",
+            buffer.text == "черновик главной, дополненный у агента",
+            repr(buffer.text),
+        )
+        buffer.text = ""
+        cli.switch_screen(state, 1)
+        cli.switch_pane(state, 0)
 
         # Итог оркестратора возвращается в главный экран: человеку, ведущему разговор, не
         # приходится идти на чужую вкладку и смотреть, чем всё кончилось.
@@ -752,10 +832,17 @@ async def main():
 
         cli.switch_screen(state, 2)
         check("заготовка второго шага подставилась при переходе", buffer.text == "вставьте промпт", repr(buffer.text))
-        buffer.text = "своё"
+        buffer.text = "своё, исправленное человеком"
         cli.switch_screen(state, 1)
-        check("набранное вручную заготовка не затирает", buffer.text == "своё")
+        check("черновик не перенесён на соседний экран", buffer.text == "", repr(buffer.text))
+        cli.switch_screen(state, 2)
+        check(
+            "исправленный черновик пережил уход и возврат",
+            buffer.text == "своё, исправленное человеком",
+            repr(buffer.text),
+        )
         buffer.text = ""
+        cli.switch_screen(state, 1)
 
         # Поведение изменено осознанно: мышь у harness всегда. Прежний переключатель «или клики,
         # или выделение» опирался на ложный выбор — губило выделение отслеживание перетаскивания
@@ -799,6 +886,11 @@ async def main():
         check("в запрос второго шага вошёл текст первого", bool(solve_calls), "промпт первого шага во второй запрос не попал")
         check("у группы панели по экспертам", [p.key for p in board.panes] == ["analyst", "critic"], str([p.key for p in board.panes]))
         check("эксперты отвечали в свои панели", all('"status": "ok"' in log_text(state, pane) for pane in board.panes))
+        check(
+            "набор способов запущен ровно один раз",
+            len(fake.calls[before:]) == 6,
+            str(len(fake.calls[before:])),
+        )
         check("сводка ведущего на своей вкладке", "свожу ответы агентов" in log_text(state, state.screens[4]))
 
         # Итоги всех способов возвращаются в главный экран — и в порядке набора, а не в
@@ -1554,50 +1646,1330 @@ async def main():
             снимок_текст[:200],
         )
 
-        print("\n12и. Вопросы профиля идут очередью")
+        print("\n12и. Вопросы профиля идут отдельными очередями панелей")
 
-        # Заготовки очередью заведены ради повторяемых прогонов: на показе и при разборе
-        # набранный руками вопрос всякий раз чуть другой, и сравнивать нечего.
-        очередь_профиль = profiles.Profile(
-            name="очередь", system="ты краткий помощник", prefills=["вопрос раз", "вопрос два", "вопрос три"]
-        )
-        state.input_buffer.text = ""
-        cli.apply_prefill(state, очередь_профиль)
-        check("первый вопрос очереди встал в строку ввода", state.input_buffer.text == "вопрос раз", state.input_buffer.text)
-        check("сказано, что вопросы пойдут по очереди", "по очереди" in log_text(state), log_text(state)[-200:])
-        check("в очереди остались двое", state.prefill_queue == ["вопрос два", "вопрос три"], str(state.prefill_queue))
-
-        state.input_buffer.text = ""
-        await cli.handle_submit("вопрос раз", state)
-        check("после отправки сам появился следующий", state.input_buffer.text == "вопрос два", state.input_buffer.text)
-
-        state.input_buffer.text = ""
-        await cli.handle_submit("вопрос два", state)
-        check("и третий тоже", state.input_buffer.text == "вопрос три", state.input_buffer.text)
-
-        state.input_buffer.text = ""
-        await cli.handle_submit("вопрос три", state)
-        check("очередь кончилась — строка ввода пуста", state.input_buffer.text == "", state.input_buffer.text)
-        check("и очередь пуста", state.prefill_queue == [], str(state.prefill_queue))
-
-        # Набранное человеком не затираем: он мог начать печатать своё, пока шёл ответ.
-        cli.apply_prefill(state, очередь_профиль)
-        state.input_buffer.text = "своё, набранное руками"
-        await cli.handle_submit("что-то отправленное", state)
+        # Три панели намеренно доводим до трёх разных мест очереди. Так одна общая очередь
+        # вместо трёх собственных не сможет случайно пройти проверку на одинаковых данных.
+        профиль_a = profiles.Profile(name="очередь-a", prefills=["A1", "A2", "A3"])
+        профиль_b = profiles.Profile(name="очередь-b", prefills=["B1", "B2", "B3"])
+        # Одиночная `prefill` остаётся тем же путём: очередью из одного вопроса, после
+        # подстановки которого ожидающий хвост пуст.
+        профиль_c = profiles.Profile(name="очередь-c", prefill="C1")
+        панели_очередей = [
+            screens.Pane(key="queue-a", profile=профиль_a),
+            screens.Pane(key="queue-b", profile=профиль_b),
+            screens.Pane(key="queue-c", profile=профиль_c),
+        ]
         check(
-            "набранное руками очередь не затирает",
-            state.input_buffer.text == "своё, набранное руками",
-            state.input_buffer.text,
+            "списки очередей панелей не разделяют объект",
+            len({id(панель.prefill_queue) for панель in панели_очередей}) == 3,
         )
-        state.input_buffer.text = ""
-        state.prefill_queue = []
+        экран_очередей = screens.Screen(
+            key="очереди",
+            title="очереди",
+            panes=панели_очередей,
+            interactive=True,
+        )
+        state.screens.append(экран_очередей)
+        индекс_очередей = len(state.screens) - 1
+        cli.switch_screen(state, индекс_очередей)
+        панель_a, панель_b, панель_c = панели_очередей
+        check("первая заготовка A встала в её черновик", buffer.text == "A1", repr(buffer.text))
+        check("у A ждут следующие две", панель_a.prefill_queue == ["A2", "A3"], str(панель_a.prefill_queue))
 
-        # Одиночная заготовка — та же очередь длиной в один вопрос, отдельного пути нет.
-        одиночный = profiles.Profile(name="один", prefill="единственный вопрос")
-        cli.apply_prefill(state, одиночный)
-        check("одиночная заготовка подставлена", state.input_buffer.text == "единственный вопрос", state.input_buffer.text)
-        check("и очередь за ней пуста", state.prefill_queue == [], str(state.prefill_queue))
-        state.input_buffer.text = ""
+        cli.switch_pane(state, 1)
+        check("первая заготовка B независима от A", buffer.text == "B1", repr(buffer.text))
+        buffer.text = "B1, исправленный человеком"
+        cli.switch_pane(state, 2)
+        check("одиночная заготовка подставлена", buffer.text == "C1", repr(buffer.text))
+        check(
+            "одиночная заготовка прошла очередь длиной один",
+            панель_c.prefill_initialized and панель_c.prefill_queue == [],
+            str(панель_c.prefill_queue),
+        )
+        cli.switch_pane(state, 1)
+        check(
+            "исправленный черновик панели пережил уход и возврат",
+            buffer.text == "B1, исправленный человеком",
+            repr(buffer.text),
+        )
+
+        cli.switch_pane(state, 0)
+        # Настоящий обработчик Enter запоминает A синхронно, но обработка текста начнётся
+        # задачей позже. До передачи управления переходим на B: выбор открытой панели уже
+        # не вправе поменять адрес очереди отправленного вопроса.
+        press(app, Keys.ControlM, "\r")
+        cli.switch_pane(state, 1)
+        buffer.text = ""
+        await asyncio.sleep(0.15)
+        check("Enter на A не сдвинул очередь B", панель_b.prefill_queue == ["B2", "B3"], str(панель_b.prefill_queue))
+        check("чужая очередь не подставилась в открытую B", buffer.text == "", repr(buffer.text))
+        check(
+            "три панели стоят на разных местах очередей",
+            [len(панель.prefill_queue) for панель in панели_очередей] == [1, 2, 0],
+            str([панель.prefill_queue for панель in панели_очередей]),
+        )
+        cli.switch_pane(state, 0)
+        check("Enter с первой A подготовил вторую A", buffer.text == "A2", repr(buffer.text))
+        buffer.text = ""
+        cli.switch_screen(state, 0)
+        state.screens.remove(экран_очередей)
+
+        print("\n12о. Независимые последовательные исполнители панелей")
+        управляемый = УправляемыйКлиент()
+        state.client = управляемый
+        # Фоновые службы здесь не проверяются и не должны добавлять свои запросы в
+        # управляемый обмен панелей.
+        state.config.remember = False
+        state.since_archive = 0
+        панели_исполнителей = [
+            screens.Pane(key="worker-a", profile=profiles.Profile(name="worker-a")),
+            screens.Pane(key="worker-b", profile=profiles.Profile(name="worker-b")),
+            screens.Pane(key="worker-c", profile=profiles.Profile(name="worker-c")),
+        ]
+        экран_исполнителей = screens.Screen(
+            key="исполнители",
+            title="исполнители",
+            panes=панели_исполнителей,
+            interactive=True,
+        )
+        state.screens.append(экран_исполнителей)
+        индекс_исполнителей = len(state.screens) - 1
+
+        def отправить_в_панель(index, text):
+            cli.switch_screen(state, индекс_исполнителей)
+            cli.switch_pane(state, index)
+            buffer.text = text
+            press(app, Keys.ControlM, "\r")
+
+        отметки = {id(панель): len(панель.log) for панель in панели_исполнителей}
+        отправить_в_панель(0, "первый-a")
+        # Переключение сделано в тот же оборот цикла, до запуска асинхронной обработки Enter.
+        cli.switch_pane(state, 1)
+        отправить_в_панель(1, "первый-b")
+        cli.switch_pane(state, 2)
+        отправить_в_панель(2, "первый-c")
+        cli.switch_pane(state, 0)
+        await asyncio.gather(
+            *(управляемый.wait_started(text) for text in ("первый-a", "первый-b", "первый-c"))
+        )
+        исполнители = [state.pane_workers[id(панель)] for панель in панели_исполнителей]
+        check("у каждой панели свой исполнитель", len({id(item) for item in исполнители}) == 3)
+        check("три панели начали обмены до первого ответа", all(item.busy for item in исполнители))
+
+        # C отпускаем первой. A и B должны остаться удержанными, а её результат — попасть
+        # в захваченную C, хотя открыта уже A.
+        управляемый.release("первый-c")
+        await исполнители[2].queue.join()
+        check("первая завершилась только отпущенная C", "ответ:первый-c" in log_text(state, панели_исполнителей[2]))
+        check(
+            "удержанные ответы A и B не появились раньше времени",
+            "ответ:первый-a" not in log_text(state, панели_исполнителей[0])
+            and "ответ:первый-b" not in log_text(state, панели_исполнителей[1]),
+        )
+        управляемый.release("первый-a")
+        управляемый.release("первый-b")
+        await asyncio.gather(*(item.queue.join() for item in исполнители[:2]))
+        for index, name in enumerate(("первый-a", "первый-b", "первый-c")):
+            свой_текст = log_text(state, панели_исполнителей[index])
+            чужие = [other for other in ("первый-a", "первый-b", "первый-c") if other != name]
+            check(
+                f"ответ {name[-1].upper()} адресован исходной панели",
+                f"ответ:{name}" in свой_текст and all(f"ответ:{other}" not in свой_текст for other in чужие),
+                свой_текст[-200:],
+            )
+            check(
+                f"строка ожидания {name[-1].upper()} осталась в исходной панели",
+                len(строки_ожидания(панели_исполнителей[index], отметки[id(панели_исполнителей[index])])) == 1,
+            )
+
+        # Два Enter подряд в A попадают в одну очередь. Второй сетевой обмен не имеет права
+        # начаться, пока первый удерживается.
+        отправить_в_панель(0, "порядок-a-1")
+        отправить_в_панель(0, "порядок-a-2")
+        await управляемый.wait_started("порядок-a-1")
+        await asyncio.sleep(0)
+        check(
+            "второй вопрос A ждёт завершения первого",
+            not управляемый._event(управляемый.started, "порядок-a-2").is_set(),
+        )
+        управляемый.release("порядок-a-1")
+        await управляемый.wait_started("порядок-a-2")
+        check(
+            "второй обмен A начался после ответа первого",
+            "ответ:порядок-a-1" in log_text(state, панели_исполнителей[0]),
+        )
+        управляемый.release("порядок-a-2")
+        await исполнители[0].queue.join()
+        текст_a = log_text(state, панели_исполнителей[0])
+        check(
+            "два ответа A завершились в порядке отправки",
+            0 <= текст_a.find("ответ:порядок-a-1") < текст_a.find("ответ:порядок-a-2"),
+            текст_a[-300:],
+        )
+
+        # B и C работают одновременно. Открываем B и жмём настоящий Ctrl+C: соседняя C
+        # остаётся живой и получает свой ответ после отдельного разрешения.
+        отправить_в_панель(1, "отмена-b")
+        отправить_в_панель(2, "сосед-c")
+        await asyncio.gather(
+            управляемый.wait_started("отмена-b"),
+            управляемый.wait_started("сосед-c"),
+        )
+        cli.switch_pane(state, 1)
+        press(app, Keys.ControlC, "\x03")
+        await управляемый.wait_cancelled("отмена-b")
+        управляемый.release("сосед-c")
+        await asyncio.gather(исполнители[1].queue.join(), исполнители[2].queue.join())
+        check(
+            "Ctrl+C отменил только открытую B",
+            "запрос отменён" in log_text(state, панели_исполнителей[1])
+            and "ответ:отмена-b" not in log_text(state, панели_исполнителей[1]),
+        )
+        check(
+            "соседняя C завершилась после отмены B",
+            "ответ:сосед-c" in log_text(state, панели_исполнителей[2])
+            and "запрос отменён" not in log_text(state, панели_исполнителей[2]),
+        )
+        check(
+            "состояния отмены и успеха принадлежат своим панелям",
+            панели_исполнителей[1].status == screens.ERROR
+            and панели_исполнителей[2].status == screens.DONE,
+            str([панель.status for панель in панели_исполнителей]),
+        )
+        state.client = fake
+        cli.switch_screen(state, 0)
+        state.screens.remove(экран_исполнителей)
+
+        print("\n12п. Экраны стратегий, факты и ветви")
+        (profiles_dir / "strategy-ui.json").write_text(
+            json.dumps(
+                {
+                    "name": "strategy-ui",
+                    "system": "единая инструкция стратегий",
+                    "keep_history": True,
+                    "compact_at": 0,
+                    "branch_prefills": {
+                        "A": ["A1", "A2"],
+                        "B": ["B1", "B2"],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        вызовов_до_профиля = len(fake.calls)
+        await cli.switch_profile(state, "strategy-ui")
+        check(
+            "открытие исходного профиля не делает сетевой запрос",
+            len(fake.calls) == вызовов_до_профиля,
+        )
+
+        async def отправить_стратегии(screen, pane_index, text):
+            cli.switch_screen(state, state.screens.index(screen))
+            cli.switch_pane(state, pane_index)
+            pane = screen.panes[pane_index]
+            было_прогонов = pane.agent.runs
+            buffer.text = text
+            press(app, Keys.ControlM, "\r")
+            while pane.agent.runs == было_прогонов:
+                await asyncio.sleep(0)
+            await state.pane_workers[id(pane)].queue.join()
+
+        def вызов_с_вопросом(client, text):
+            return next(
+                call
+                for call in reversed(client.calls)
+                if call["messages"][-1]["content"] == text
+            )
+
+        cli.cmd_strategy(state, "use sliding")
+        sliding_screen = state.screen
+        sliding_pane = sliding_screen.first
+        sliding_agent = sliding_pane.agent
+        await отправить_стратегии(sliding_screen, 0, "sliding-one")
+        sliding_request = вызов_с_вопросом(fake, "sliding-one")
+        check(
+            "первый Sliding Window получил только свой вопрос",
+            [message["content"] for message in sliding_request["messages"] if message["role"] == "user"]
+            == ["sliding-one"],
+            str(sliding_request["messages"]),
+        )
+        buffer.text = "черновик Sliding"
+        sliding_history = sliding_agent.history()
+        main_screen = state.main
+        main_agent = state.main_agent
+        cli.cmd_strategy(state, "use standard")
+        standard_window = state.profile.strategy_window
+        cli.cmd_strategy(state, "window 9")
+        check(
+            "standard остаётся прежним main, а строгое окно к нему неприменимо",
+            state.screen is main_screen
+            and state.main_agent is main_agent
+            and state.profile.strategy_window == standard_window,
+        )
+        дочерний_профиль_стратегии = profiles.Profile(
+            name="strategy-child",
+            system="инструкция дочернего профиля",
+            context_strategy="sliding",
+            keep_history=True,
+            compact_at=0,
+            prefills=["дочерняя заготовка", "дочерняя очередь"],
+        )
+        дочерний_экран_стратегии = screens.Screen(
+            key="strategy-child-source",
+            title="дочерний",
+            profile=дочерний_профиль_стратегии,
+            interactive=True,
+        )
+        state.screens.append(дочерний_экран_стратегии)
+        cli.switch_screen(
+            state, state.screens.index(дочерний_экран_стратегии)
+        )
+        дочерний_agent = дочерний_экран_стратегии.first.agent
+        дочерний_agent.remember(
+            "память дочернего профиля",
+            "ответ дочернего профиля",
+            model=state.model,
+        )
+        buffer.text = "черновик дочернего профиля"
+        cli.cmd_strategy(state, "use standard")
+        дочерний_standard = state.screen
+        check(
+            "/strategy use standard дочерней панели сохраняет отдельный Agent её профиля",
+            дочерний_standard is not main_screen
+            and дочерний_standard.strategy_identity
+            == ("strategy-child", "standard")
+            and дочерний_standard.first.agent is not main_agent
+            and дочерний_standard.first.agent is not дочерний_agent
+            and дочерний_standard.profile.name == "strategy-child"
+            and дочерний_standard.profile.system
+            == "инструкция дочернего профиля"
+            and дочерний_standard.profile.context_strategy == "standard"
+            and дочерний_standard.first.agent.history() == []
+            and дочерний_agent.history()[0]["content"]
+            == "память дочернего профиля"
+            and дочерний_экран_стратегии.first.draft
+            == "черновик дочернего профиля"
+            and дочерний_standard.first.draft == "дочерняя заготовка"
+            and дочерний_standard.first.prefill_queue
+            == ["дочерняя очередь"]
+            and дочерний_standard.first.prefill_queue
+            is not дочерний_экран_стратегии.first.prefill_queue,
+            str(
+                (
+                    дочерний_standard.strategy_identity,
+                    дочерний_standard.profile,
+                    дочерний_standard.first.agent.history(),
+                )
+            ),
+        )
+        cli.switch_screen(state, 0)
+        cli.cmd_strategy(state, "use sliding")
+        cli.cmd_strategy(state, "")
+        check(
+            "/strategy показывает режим и окно и открывает выбор",
+            state.picker is not None
+            and "стратегия: sliding" in log_text(state, sliding_pane)
+            and "строгое окно" in log_text(state, sliding_pane),
+        )
+        state.picker = None
+        отметка_чужих_фактов = len(sliding_pane.log)
+        cli.cmd_facts(state, "")
+        check(
+            "/facts на Sliding Window отказала с причиной",
+            "только в Sticky Facts"
+            in fragments_text(sliding_pane.log[отметка_чужих_фактов:]),
+        )
+
+        cli.cmd_strategy(state, "use facts")
+        facts_screen = state.screen
+        facts_pane = facts_screen.first
+        facts_agent = facts_pane.agent
+        check(
+            "переключение создало другой Agent и сохранило Sliding",
+            facts_agent is not sliding_agent and sliding_agent.history() == sliding_history,
+        )
+        отметка_пустых = len(facts_pane.log)
+        cli.cmd_facts(state, "")
+        check(
+            "пустой словарь Sticky Facts назван с редакцией",
+            "редакция 0" in fragments_text(facts_pane.log[отметка_пустых:])
+            and "пусты" in fragments_text(facts_pane.log[отметка_пустых:]),
+        )
+        cli.cmd_facts(state, "set beta второе")
+        cli.cmd_facts(state, "set alpha первое")
+        cli.cmd_facts(state, "set alpha исправленное")
+        отметка_фактов = len(facts_pane.log)
+        cli.cmd_facts(state, "")
+        показ_фактов = fragments_text(facts_pane.log[отметка_фактов:])
+        check(
+            "ручные факты показаны в устойчивом порядке с редакцией",
+            "редакция 3" in показ_фактов
+            and 0 <= показ_фактов.find("alpha → исправленное") < показ_фактов.find("beta → второе"),
+            показ_фактов,
+        )
+        файл_фактов = facts_screen.session_store.path.with_suffix(
+            memory.РАСШИРЕНИЕ_ФАКТОВ_РАЗГОВОРА
+        )
+        журнал_до_отказа = файл_фактов.read_bytes()
+        редакция_до_отказа = facts_agent.conversation_facts()[1]
+        cli.cmd_facts(state, "forget missing")
+        check(
+            "отсутствующий ключ отклонён без записи операции",
+            facts_agent.conversation_facts()[1] == редакция_до_отказа
+            and файл_фактов.read_bytes() == журнал_до_отказа
+            and "нет ключа «missing»" in log_text(state, facts_pane),
+        )
+        cli.cmd_facts(state, "forget beta")
+        check(
+            "ручное удаление стало новой редакцией",
+            facts_agent.conversation_facts() == ({"alpha": "исправленное"}, 4),
+            str(facts_agent.conversation_facts()),
+        )
+
+        class ПозднийИзвлекатель:
+            """Основной ответ готов, но извлечение фактов остаётся в работе."""
+
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+
+            async def stream_chat(self, model, messages, params=None):
+                system = messages[0]["content"] if messages else ""
+                if "обновляешь словарь фактов" in system:
+                    self.started.set()
+                    await self.release.wait()
+                    yield api.StreamEvent(
+                        "content",
+                        '{"set":{"late":"extractor"},"forget":["manual"]}',
+                    )
+                else:
+                    yield api.StreamEvent("content", "основной ответ готов")
+                yield api.StreamEvent(
+                    "meta",
+                    finish_reason="stop",
+                    usage={
+                        "prompt_tokens": 3,
+                        "completion_tokens": 2,
+                        "total_tokens": 5,
+                    },
+                )
+
+            async def aclose(self):
+                pass
+
+        поздний = ПозднийИзвлекатель()
+        state.client = поздний
+        await cli.handle_submit(
+            "позднее извлечение",
+            state,
+            destination_screen=facts_screen,
+            destination_pane=facts_pane,
+        )
+        await поздний.started.wait()
+        facts_worker = state.pane_workers[id(facts_pane)]
+        редакция_до_гонки = facts_agent.conversation_facts()[1]
+        отметка_гонки = len(facts_pane.log)
+        cli.cmd_facts(state, "set manual нельзя")
+        check(
+            "ручная правка фактов явно отклонена, пока извлекатель занят",
+            facts_worker.busy
+            and facts_agent.conversation_facts()[1] == редакция_до_гонки
+            and "панель выполняет или ожидает обмен"
+            in fragments_text(facts_pane.log[отметка_гонки:]),
+        )
+        поздний.release.set()
+        await facts_worker.queue.join()
+        check(
+            "поздний извлекатель применил свой итог без гонки с ручной правкой",
+            facts_agent.conversation_facts()[0].get("late") == "extractor"
+            and "manual" not in facts_agent.conversation_facts()[0],
+            str(facts_agent.conversation_facts()),
+        )
+        state.client = fake
+        await отправить_стратегии(facts_screen, 0, "facts-one")
+        facts_request = вызов_с_вопросом(fake, "facts-one")
+        check(
+            "основной запрос Sticky Facts видит ручную редакцию",
+            "alpha" in facts_request["messages"][0]["content"]
+            and "исправленное" in facts_request["messages"][0]["content"],
+            str(facts_request["messages"]),
+        )
+
+        class КлиентРасходаFacts:
+            def __init__(self, extractor_usage, extractor_text='{"set":{},"forget":[]}'):
+                self.extractor_usage = extractor_usage
+                self.extractor_text = extractor_text
+
+            async def stream_chat(self, model, messages, params=None):
+                system = messages[0]["content"] if messages else ""
+                if "обновляешь словарь фактов" in system:
+                    yield api.StreamEvent("content", self.extractor_text)
+                    yield api.StreamEvent(
+                        "meta",
+                        finish_reason="stop",
+                        usage=self.extractor_usage,
+                    )
+                    return
+                yield api.StreamEvent("content", "ответ основного обмена сохранён")
+                yield api.StreamEvent(
+                    "meta",
+                    finish_reason="stop",
+                    usage={
+                        "prompt_tokens": 60,
+                        "completion_tokens": 40,
+                        "total_tokens": 100,
+                    },
+                )
+
+            async def aclose(self):
+                pass
+
+        редакция_перед_точным = facts_agent.conversation_facts()[1]
+        расход_до_agent = facts_agent.session_usage["total_tokens"]
+        расход_до_сеанса = state.session_usage_total()["total_tokens"]
+        отметка_точного_расхода = len(facts_pane.log)
+        state.client = КлиентРасходаFacts(
+            {
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+            }
+        )
+        await отправить_стратегии(facts_screen, 0, "точный расход facts")
+        точный_вывод = fragments_text(
+            facts_pane.log[отметка_точного_расхода:]
+        )
+        точные_строки_ожидания = строки_ожидания(
+            facts_pane, отметка_точного_расхода
+        )
+        ожидаемый_итог_стратегии = ui.format_tokens(расход_до_agent + 130)
+        ошибочный_двойной_итог = ui.format_tokens(расход_до_agent + 230)
+        check(
+            "основной ответ Sticky Facts сохранён при отдельном выводе расхода",
+            "ответ основного обмена сохранён" in точный_вывод,
+            точный_вывод,
+        )
+        check(
+            "100 основных и 30 извлекателя дали 130 ровно один раз",
+            f"редакция Sticky Facts: {редакция_перед_точным} → "
+            f"{редакция_перед_точным + 1}" in точный_вывод
+            and "основной обмен 100" in точный_вывод
+            and "извлекатель 30" in точный_вывод
+            and точный_вывод.count("расход стратегии 130") == 1
+            and len(точные_строки_ожидания) == 1
+            and итог_из(точные_строки_ожидания[0])
+            == ожидаемый_итог_стратегии
+            and итог_из(точные_строки_ожидания[0])
+            != ошибочный_двойной_итог
+            and facts_agent.session_usage["total_tokens"] - расход_до_agent
+            == 130
+            and state.session_usage_total()["total_tokens"]
+            - расход_до_сеанса
+            == 130,
+            точный_вывод,
+        )
+
+        отметка_ошибки_facts = len(facts_pane.log)
+        state.client = КлиентРасходаFacts(
+            {
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+            },
+            extractor_text="не json",
+        )
+        await отправить_стратегии(facts_screen, 0, "ошибка извлечения facts")
+        вывод_ошибки_facts = fragments_text(
+            facts_pane.log[отметка_ошибки_facts:]
+        )
+        check(
+            "facts_error виден, но основной ответ не потерян",
+            "Sticky Facts не обновлены" in вывод_ошибки_facts
+            and "ответ основного обмена сохранён" in вывод_ошибки_facts,
+            вывод_ошибки_facts,
+        )
+
+        отметка_неизвестного_facts = len(facts_pane.log)
+        state.client = КлиентРасходаFacts({})
+        await отправить_стратегии(facts_screen, 0, "неизвестный расход facts")
+        вывод_неизвестного_facts = fragments_text(
+            facts_pane.log[отметка_неизвестного_facts:]
+        )
+        check(
+            "неизвестный usage извлекателя не стал нулём",
+            "извлекатель неизвестен" in вывод_неизвестного_facts
+            and "расход стратегии неизвестен" in вывод_неизвестного_facts,
+            вывод_неизвестного_facts,
+        )
+
+        cli.switch_screen(state, state.screens.index(facts_screen))
+        state.main_agent.profile.system = "система main " * 7
+        facts_agent.profile.system = "система активного facts " * 13
+        state.main_agent.remember(
+            "история только main " * 11,
+            "ответ только main " * 11,
+            model=state.model,
+        )
+        cli.cmd_facts(
+            state,
+            "set вес_активной_панели " + "отдельный факт facts " * 17,
+        )
+        история_main = state.main_agent.history_tokens()
+        история_facts = facts_agent.history_tokens()
+        система_main = tokens.count_text(state.main_agent.system_text())
+        система_facts = tokens.count_text(facts_agent.system_text())
+        следующий_main = (
+            история_main
+            + система_main
+            + state.main_agent.overhead(state.model)
+        )
+        следующий_facts = (
+            история_facts
+            + система_facts
+            + facts_agent.overhead(state.model)
+        )
+        отметка_активного_расхода = len(facts_pane.log)
+        cli.cmd_tokens(state)
+        вывод_активного_расхода = fragments_text(
+            facts_pane.log[отметка_активного_расхода:]
+        )
+        строка_окна_активного = next(
+            (
+                line
+                for line in вывод_активного_расхода.splitlines()
+                if "следующий запрос займёт" in line
+            ),
+            "",
+        )
+        строка_истории_активного = next(
+            (
+                line
+                for line in вывод_активного_расхода.splitlines()
+                if "история:" in line
+            ),
+            "",
+        )
+        строка_системы_активного = next(
+            (
+                line
+                for line in вывод_активного_расхода.splitlines()
+                if "системная инструкция:" in line
+            ),
+            "",
+        )
+        check(
+            "/tokens показывает вес активного Sticky Facts Agent вместо main",
+            история_facts != история_main
+            and система_facts != система_main
+            and следующий_facts != следующий_main
+            and f"активный Agent «{facts_agent.name}» · Sticky Facts"
+            in вывод_активного_расхода
+            and f"займёт {ui.format_exact(следующий_facts)} "
+            in строка_окна_активного
+            and f"займёт {ui.format_exact(следующий_main)} "
+            not in строка_окна_активного
+            and f"история: {ui.format_exact(история_facts)} "
+            in строка_истории_активного
+            and f"история: {ui.format_exact(история_main)} "
+            not in строка_истории_активного
+            and f"системная инструкция: {ui.format_exact(система_facts)} "
+            in строка_системы_активного
+            and f"системная инструкция: {ui.format_exact(система_main)} "
+            not in строка_системы_активного
+            and "полный серверный расход неизвестен"
+            in вывод_активного_расхода,
+            вывод_активного_расхода,
+        )
+
+        основной_прогноз = output._predict_outgoing(
+            state, state.main_agent, "проверка предупреждения"
+        )
+        прогноз_facts = output._predict_outgoing(
+            state, facts_agent, "проверка предупреждения"
+        )
+        check(
+            "вес активного Sticky Facts учитывает его факты",
+            прогноз_facts > основной_прогноз,
+            f"main={основной_прогноз}, facts={прогноз_facts}",
+        )
+        прежнее_окно_модели = tokens.CONTEXT_WINDOW
+        отметка_предупреждения = len(facts_pane.log)
+        try:
+            tokens.CONTEXT_WINDOW = основной_прогноз
+            state.client = КлиентРасходаFacts(
+                {
+                    "prompt_tokens": 20,
+                    "completion_tokens": 10,
+                    "total_tokens": 30,
+                }
+            )
+            await отправить_стратегии(
+                facts_screen, 0, "проверка предупреждения"
+            )
+        finally:
+            tokens.CONTEXT_WINDOW = прежнее_окно_модели
+        check(
+            "предупреждение переполнения относится к активной панели с её facts",
+            "запрос не влезет в окно модели"
+            in fragments_text(facts_pane.log[отметка_предупреждения:]),
+            fragments_text(facts_pane.log[отметка_предупреждения:]),
+        )
+        state.client = fake
+
+        cli.cmd_strategy(state, "use sliding")
+        check(
+            "/strategy use вернул тот же экран, Agent, историю и черновик",
+            state.screen is sliding_screen
+            and state.screen.first.agent is sliding_agent
+            and sliding_agent.history() == sliding_history
+            and buffer.text == "черновик Sliding",
+            repr(buffer.text),
+        )
+        старое_окно = sliding_screen.profile.strategy_window
+        for bad_window in ("0", "-1", "1.5", "четыре", "4 лишнее"):
+            cli.cmd_strategy(state, f"window {bad_window}")
+        check(
+            "неположительные, дробные, нетекстовые и лишние значения окна отвергнуты",
+            sliding_screen.profile.strategy_window == старое_окно,
+            str(sliding_screen.profile.strategy_window),
+        )
+        state.profile_dirty = False
+        cli.cmd_strategy(state, "window 2")
+        check(
+            "положительное окно меняет только активный профиль и помечает его",
+            sliding_screen.profile.strategy_window == 2
+            and facts_screen.profile.strategy_window == старое_окно
+            and state.profile_dirty,
+        )
+        await отправить_стратегии(sliding_screen, 0, "sliding-two")
+        await отправить_стратегии(sliding_screen, 0, "sliding-three")
+        отметка_строгого_окна = len(sliding_pane.log)
+        await отправить_стратегии(sliding_screen, 0, "sliding-four")
+        вывод_строгого_окна = fragments_text(
+            sliding_pane.log[отметка_строгого_окна:]
+        )
+        check(
+            "завершённый Sliding показывает фактический выбор и сохранённый хвост",
+            "режим: Sliding Window; выбрано 2 пары" in вывод_строгого_окна
+            and "сохранено, но не отправлено: 1 пара"
+            in вывод_строгого_окна
+            and "забыт" not in вывод_строгого_окна,
+            вывод_строгого_окна,
+        )
+        await cli.cmd_profile(state, "save")
+        saved_strategy = json.loads(
+            (profiles.user_profiles_dir() / "strategy-ui.json").read_text(encoding="utf-8")
+        )
+        check(
+            "/profile save сохранил выбранную стратегию и её окно",
+            saved_strategy["context_strategy"] == "sliding"
+            and saved_strategy["strategy_window"] == 2,
+            str(saved_strategy),
+        )
+
+        cli.cmd_strategy(state, "use branching")
+        branch_screen = state.screen
+        branch_store = branch_screen.branch_store
+        окно_branching = branch_screen.profile.strategy_window
+        cli.cmd_strategy(state, "window 9")
+        check(
+            "строгое окно к Branching неприменимо",
+            branch_screen.profile.strategy_window == окно_branching,
+        )
+        branch_root = branch_screen.first.agent
+        отметка_раннего_split = len(branch_screen.first.log)
+        await cli.cmd_branch(state, "split A B")
+        check(
+            "разделение до первой пары отклонено без изменения графа",
+            branch_store.load().checkpoint_id is None
+            and len(branch_screen.panes) == 1
+            and "после завершённой пары"
+            in fragments_text(branch_screen.first.log[отметка_раннего_split:]),
+        )
+        await отправить_стратегии(branch_screen, 0, "общая точка")
+        branch_root_pane_id = id(branch_screen.first)
+        общий_путь = branch_root.history()
+        расход_корня = branch_root.session_usage["total_tokens"]
+        расход_выбывших = state.retired_usage["total_tokens"]
+        прогонов_выбывших = state.retired_runs
+        await cli.cmd_branch(state, "split A B")
+        branch_a, branch_b = branch_screen.panes
+        check(
+            "родитель заменён двумя ветвями с разными Agent",
+            [pane.key for pane in branch_screen.panes] == ["A", "B"]
+            and branch_a.agent is not branch_b.agent
+            and branch_a.agent is not branch_root
+            and branch_b.agent is not branch_root
+            and branch_root_pane_id not in state.pane_workers,
+        )
+        check(
+            "обе ветви получили одно общее прошлое",
+            branch_a.agent.history() == общий_путь
+            and branch_b.agent.history() == общий_путь,
+            str([branch_a.agent.history(), branch_b.agent.history()]),
+        )
+        check(
+            "расход и обмен родителя учтены в сеансе ровно один раз",
+            state.retired_usage["total_tokens"]
+            == расход_выбывших + расход_корня
+            and state.retired_runs
+            == прогонов_выбывших + branch_root.runs,
+            f"{state.retired_usage}; runs={state.retired_runs}",
+        )
+        отметка_расхода_после_split = len(branch_a.log)
+        cli.cmd_tokens(state)
+        расход_после_split = fragments_text(
+            branch_a.log[отметка_расхода_после_split:]
+        )
+        check(
+            "/tokens сохраняет расход завершённого корня ветвей ровно один раз",
+            f"сеанс: {state.retired_runs + sum(agent.runs for agent in state.agents())} "
+            in расход_после_split
+            and f"всего {ui.format_exact(state.session_usage_total()['total_tokens'])}"
+            in расход_после_split,
+            расход_после_split,
+        )
+        check(
+            "заготовки ветвей назначены своим панелям",
+            branch_a.draft == "A1"
+            and branch_a.prefill_queue == ["A2"]
+            and branch_b.draft == "B1"
+            and branch_b.prefill_queue == ["B2"]
+            and branch_a.prefill_queue is not branch_b.prefill_queue,
+            str([(pane.draft, pane.prefill_queue) for pane in branch_screen.panes]),
+        )
+        buffer.text = "черновик A"
+        await cli.cmd_branch(state, "B")
+        check("переход к B открыл её собственную заготовку", buffer.text == "B1", repr(buffer.text))
+        buffer.text = "черновик B"
+        await cli.cmd_branch(state, "A")
+        check("возврат к A восстановил её черновик", buffer.text == "черновик A", repr(buffer.text))
+        await cli.cmd_branch(state, "B")
+        check("возврат к B восстановил её черновик", buffer.text == "черновик B", repr(buffer.text))
+
+        await отправить_стратегии(branch_screen, 0, "только A")
+        check(
+            "отправка в A продвинула только очередь и черновик A",
+            branch_a.draft == "A2"
+            and branch_a.prefill_queue == []
+            and branch_b.draft == "черновик B"
+            and branch_b.prefill_queue == ["B2"],
+            str([(pane.draft, pane.prefill_queue) for pane in branch_screen.panes]),
+        )
+        await отправить_стратегии(branch_screen, 1, "только B")
+        check(
+            "отправка в B продвинула только очередь и черновик B",
+            branch_b.draft == "B2"
+            and branch_b.prefill_queue == []
+            and branch_a.draft == "A2"
+            and branch_a.prefill_queue == [],
+            str([(pane.draft, pane.prefill_queue) for pane in branch_screen.panes]),
+        )
+        отметка_ветви = len(branch_a.log)
+        await отправить_стратегии(branch_screen, 0, "следующий A")
+        request_a = вызов_с_вопросом(fake, "следующий A")
+        request_b = вызов_с_вопросом(fake, "только B")
+        request_a_text = [message["content"] for message in request_a["messages"]]
+        request_b_text = [message["content"] for message in request_b["messages"]]
+        check(
+            "A получила общее прошлое и своё продолжение без B",
+            "общая точка" in request_a_text
+            and "только A" in request_a_text
+            and "только B" not in request_a_text,
+            str(request_a_text),
+        )
+        check(
+            "B получила общее прошлое и своё продолжение без A",
+            "общая точка" in request_b_text
+            and "только B" in request_b_text
+            and "только A" not in request_b_text,
+            str(request_b_text),
+        )
+        вывод_ветви = fragments_text(branch_a.log[отметка_ветви:])
+        checkpoint = branch_store.load().checkpoint_id
+        check(
+            "итог Branching различает активную ветвь и контрольную точку",
+            "активная ветвь: A" in вывод_ветви
+            and f"контрольная точка: {checkpoint}" in вывод_ветви,
+            вывод_ветви,
+        )
+        граф_до_отказов = branch_store.path.read_bytes()
+        агенты_до_отказов = [pane.agent for pane in branch_screen.panes]
+        активная_до_отказов = branch_screen.active_pane
+        await cli.cmd_branch(state, "split C D")
+        await cli.cmd_branch(state, "unknown")
+        check(
+            "повторный split и неизвестная ветвь не меняют граф и панели",
+            branch_store.path.read_bytes() == граф_до_отказов
+            and [pane.agent for pane in branch_screen.panes] == агенты_до_отказов
+            and branch_screen.active_pane == активная_до_отказов,
+        )
+        await cli.cmd_branch(state, "")
+        check(
+            "/branch показывает точку, обе ветви и активную и открывает выбор",
+            state.picker is not None
+            and all(
+                text in log_text(state, branch_screen.pane)
+                for text in ("контрольная точка", "A, B", "активная")
+            ),
+        )
+        state.picker = None
+
+        strategy_screens = tuple(state.screens[1:])
+        histories_before_clear = {
+            id(pane.agent): pane.agent.history()
+            for screen in strategy_screens
+            for pane in screen.panes
+        }
+        facts_before_clear = facts_agent.conversation_facts()
+        graph_before_clear = branch_store.path.read_bytes()
+        state.main_agent.remember("главное до clear", "ответ главного", model=state.model)
+        await cli.handle_command("/clear", state)
+        check(
+            "/clear очистил только main и назвал это на активной ветви",
+            state.main_agent.history() == []
+            and "главный разговор очищен" in log_text(state, branch_screen.pane),
+        )
+        check(
+            "/clear сохранил все экраны, истории, факты и граф стратегий",
+            tuple(state.screens[1:]) == strategy_screens
+            and facts_agent.conversation_facts() == facts_before_clear
+            and branch_store.path.read_bytes() == graph_before_clear
+            and all(
+                pane.agent.history() == histories_before_clear[id(pane.agent)]
+                for screen in strategy_screens
+                for pane in screen.panes
+            ),
+        )
+
+        restored_source, _ = profiles.load("strategy-ui")
+        restored_state = cli.State(
+            config=Config(api_key="sk-test", model="deepseek-v4-flash", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=restored_source,
+        )
+        restored_sliding = restored_state.screens[
+            cli.ensure_strategy_screen(restored_state, "sliding")
+        ]
+        restored_facts = restored_state.screens[
+            cli.ensure_strategy_screen(restored_state, "facts")
+        ]
+        restored_branch = restored_state.screens[
+            cli.ensure_strategy_screen(restored_state, "branching")
+        ]
+        check(
+            "перезапуск поднял полную линейную историю каждой стратегии отдельно",
+            restored_sliding.first.agent.history() == sliding_agent.history()
+            and restored_facts.first.agent.history() == facts_agent.history(),
+            str(
+                [
+                    restored_sliding.first.agent.history(),
+                    restored_facts.first.agent.history(),
+                ]
+            ),
+        )
+        check(
+            "перезапуск поднял ручную редакцию Sticky Facts",
+            restored_facts.first.agent.conversation_facts()
+            == facts_agent.conversation_facts(),
+            str(restored_facts.first.agent.conversation_facts()),
+        )
+
+        class FactsOnlyClient:
+            """Извлекатель успевает записать факт, основной запрос падает."""
+
+            def __init__(self):
+                self.calls = []
+
+            async def stream_chat(self, model, messages, params=None):
+                self.calls.append({"model": model, "messages": messages})
+                system = messages[0]["content"] if messages else ""
+                if "обновляешь словарь фактов" not in system:
+                    raise RuntimeError("основной запрос не удался")
+                yield api.StreamEvent(
+                    "content",
+                    '{"set":{"survived":"да"},"forget":[]}',
+                )
+                yield api.StreamEvent(
+                    "meta",
+                    finish_reason="stop",
+                    usage={
+                        "prompt_tokens": 3,
+                        "completion_tokens": 2,
+                        "total_tokens": 5,
+                    },
+                )
+
+            async def aclose(self):
+                pass
+
+        facts_only_client = FactsOnlyClient()
+        facts_only_source = profiles.Profile(
+            name="facts-survive-main-failure",
+            system="основной разговор",
+            compact_at=0,
+        )
+        facts_only_state = cli.State(
+            config=Config(api_key="sk-test", remember=False),
+            client=facts_only_client,
+            model="deepseek-v4-flash",
+            profile=facts_only_source,
+        )
+        facts_only_screen = facts_only_state.screens[
+            cli.ensure_strategy_screen(facts_only_state, "facts")
+        ]
+        await cli.handle_submit(
+            "сохрани факт при отказе",
+            facts_only_state,
+            destination_screen=facts_only_screen,
+            destination_pane=facts_only_screen.first,
+        )
+        facts_only_pane_id = id(facts_only_screen.first)
+        await cli.switch_profile(facts_only_state, "default")
+        facts_only_restored = cli.State(
+            config=Config(api_key="sk-test", remember=False),
+            client=fake,
+            model="deepseek-v4-flash",
+            profile=facts_only_source,
+        )
+        facts_only_restored_screen = facts_only_restored.screens[
+            cli.ensure_strategy_screen(facts_only_restored, "facts")
+        ]
+        check(
+            "смена профиля дождалась отказа main и сохранила успешные facts",
+            facts_only_screen.first.agent.history() == []
+            and facts_only_restored_screen.first.agent.conversation_facts()
+            == ({"survived": "да"}, 1)
+            and facts_only_pane_id not in facts_only_state.pane_workers
+            and len(facts_only_state.screens) == 1,
+            str(facts_only_restored_screen.first.agent.conversation_facts()),
+        )
+        await cli.close_pane_workers(facts_only_state)
+
+        print("\n12т. Смена профиля дожидается старых очередей")
+        (profiles_dir / "lifecycle-target.json").write_text(
+            json.dumps(
+                {
+                    "name": "lifecycle-target",
+                    "system": "новый профиль",
+                    "compact_at": 0,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        lifecycle_client = УправляемыйКлиент()
+        lifecycle_state = cli.State(
+            config=Config(
+                api_key="sk-test",
+                model="deepseek-v4-flash",
+                remember=False,
+            ),
+            client=lifecycle_client,
+            model="deepseek-v4-flash",
+            profile=profiles.Profile(
+                name="lifecycle-source",
+                system="старый профиль",
+                compact_at=0,
+            ),
+        )
+        lifecycle_screen = lifecycle_state.screens[
+            cli.ensure_strategy_screen(lifecycle_state, "sliding")
+        ]
+        lifecycle_pane = lifecycle_screen.first
+        lifecycle_agent = lifecycle_pane.agent
+        old_main_agent = lifecycle_state.main_agent
+        main_runner = asyncio.create_task(cli.worker(lifecycle_state))
+        await cli.handle_submit(
+            "старый main",
+            lifecycle_state,
+            destination_screen=lifecycle_state.main,
+            destination_pane=lifecycle_state.main.first,
+        )
+        await cli.handle_submit(
+            "старая панель 1",
+            lifecycle_state,
+            destination_screen=lifecycle_screen,
+            destination_pane=lifecycle_pane,
+        )
+        await cli.handle_submit(
+            "старая панель 2",
+            lifecycle_state,
+            destination_screen=lifecycle_screen,
+            destination_pane=lifecycle_pane,
+        )
+        await asyncio.gather(
+            lifecycle_client.wait_started("старый main"),
+            lifecycle_client.wait_started("старая панель 1"),
+        )
+        old_pane_id = id(lifecycle_pane)
+        switch_task = asyncio.create_task(
+            cli.switch_profile(lifecycle_state, "lifecycle-target")
+        )
+        while not lifecycle_state.switching_profile:
+            await asyncio.sleep(0)
+        log_before_rejected = len(lifecycle_pane.log)
+        await cli.handle_submit(
+            "не принимать при смене",
+            lifecycle_state,
+            destination_screen=lifecycle_screen,
+            destination_pane=lifecycle_pane,
+        )
+        check(
+            "при начавшейся смене новый вопрос явно отклонён",
+            "выполняется смена профиля"
+            in fragments_text(lifecycle_pane.log[log_before_rejected:])
+            and "не принимать при смене"
+            not in fragments_text(lifecycle_pane.log[log_before_rejected:]),
+        )
+        lifecycle_client.release("старый main")
+        lifecycle_client.release("старая панель 1")
+        await lifecycle_client.wait_started("старая панель 2")
+        lifecycle_client.release("старая панель 2")
+        await switch_task
+        check(
+            "смена профиля дождалась текущего и очередного ответа старой панели",
+            "ответ:старая панель 1" in log_text(lifecycle_state, lifecycle_pane)
+            and "ответ:старая панель 2"
+            in log_text(lifecycle_state, lifecycle_pane)
+            and lifecycle_agent.history()[-4:]
+            == [
+                {"role": "user", "content": "старая панель 1"},
+                {"role": "assistant", "content": "ответ:старая панель 1"},
+                {"role": "user", "content": "старая панель 2"},
+                {"role": "assistant", "content": "ответ:старая панель 2"},
+            ],
+            str(lifecycle_agent.history()),
+        )
+        old_main_call = вызов_с_вопросом(lifecycle_client, "старый main")
+        check(
+            "старый main завершился со старым профилем и не попал в новый Agent",
+            old_main_call["messages"][0]
+            == {"role": "system", "content": "старый профиль"}
+            and lifecycle_state.main_agent is not old_main_agent
+            and "старый main"
+            not in [
+                message["content"]
+                for message in lifecycle_state.main_agent.history()
+            ],
+            str(
+                (
+                    old_main_call["messages"],
+                    lifecycle_state.main_agent.history(),
+                )
+            ),
+        )
+        check(
+            "окончательный расход перенесён, а ссылка на старый PaneWorker удалена",
+            lifecycle_state.retired_usage["total_tokens"] == 15
+            and lifecycle_state.session_usage_total()["total_tokens"] == 15
+            and old_pane_id not in lifecycle_state.pane_workers
+            and len(lifecycle_state.screens) == 1,
+            str(
+                (
+                    lifecycle_state.retired_usage,
+                    lifecycle_state.pane_workers,
+                )
+            ),
+        )
+        main_runner.cancel()
+        await asyncio.gather(main_runner, return_exceptions=True)
+        await cli.close_pane_workers(lifecycle_state)
+
+        restored_a = restored_branch.pane_by_key("A")
+        restored_b = restored_branch.pane_by_key("B")
+        check(
+            "перезапуск поднял две независимые ветви с общим прошлым",
+            restored_a is not None
+            and restored_b is not None
+            and restored_a.agent is not restored_b.agent
+            and "общая точка" in [
+                message["content"] for message in restored_a.agent.history()
+            ]
+            and "только A" in [
+                message["content"] for message in restored_a.agent.history()
+            ]
+            and "только B" not in [
+                message["content"] for message in restored_a.agent.history()
+            ]
+            and "только B" in [
+                message["content"] for message in restored_b.agent.history()
+            ]
+            and "только A" not in [
+                message["content"] for message in restored_b.agent.history()
+            ],
+        )
+
+        print("\n12р. Три рабочих экрана стратегий начинают одновременно")
+        for name, strategy, prefill in (
+            ("screen-sliding", "sliding", "первый Sliding"),
+            ("screen-facts", "facts", "первый Facts"),
+            ("screen-branch", "branching", "первый Branching"),
+        ):
+            (profiles_dir / f"{name}.json").write_text(
+                json.dumps(
+                    {
+                        "name": name,
+                        "context_strategy": strategy,
+                        "strategy_window": 2,
+                        "compact_at": 0,
+                        "prefill": prefill,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+        (profiles_dir / "three-strategies.json").write_text(
+            json.dumps(
+                {
+                    "name": "three-strategies",
+                    "compact_at": 0,
+                    "screens": ["screen-sliding", "screen-facts", "screen-branch"],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        вызовов_до_трёх = len(fake.calls)
+        await cli.switch_profile(state, "three-strategies")
+        strategy_work_screens = state.screens[1:]
+        check(
+            "три рабочих экрана и три Agent созданы до первого вопроса",
+            [screen.key for screen in strategy_work_screens]
+            == ["screen-sliding", "screen-facts", "screen-branch"]
+            and len({id(screen.first.agent) for screen in strategy_work_screens}) == 3
+            and len(fake.calls) == вызовов_до_трёх,
+        )
+        check(
+            "на каждом экране заранее стоит его первая заготовка",
+            [screen.first.draft for screen in strategy_work_screens]
+            == ["первый Sliding", "первый Facts", "первый Branching"],
+            str([screen.first.draft for screen in strategy_work_screens]),
+        )
+
+        concurrent_client = УправляемыйКлиент()
+        state.client = concurrent_client
+        concurrent_questions = ("одновременно Sliding", "одновременно Facts", "одновременно Branching")
+        for screen, question in zip(strategy_work_screens, concurrent_questions, strict=True):
+            cli.switch_screen(state, state.screens.index(screen))
+            buffer.text = question
+            press(app, Keys.ControlM, "\r")
+        await asyncio.gather(
+            *(concurrent_client.wait_started(question) for question in concurrent_questions)
+        )
+        concurrent_workers = [
+            state.pane_workers[id(screen.first)] for screen in strategy_work_screens
+        ]
+        check(
+            "три стратегии начали запросы до первого ответа",
+            all(worker.busy for worker in concurrent_workers),
+        )
+        check(
+            "каждый вопрос захвачен Agent своего режима",
+            {
+                call["messages"][-1]["content"]
+                for call in concurrent_client.calls
+                if call["messages"][-1]["content"] in concurrent_questions
+            }
+            == set(concurrent_questions)
+            and [
+                screen.first.agent.profile.context_strategy
+                for screen in strategy_work_screens
+            ]
+            == ["sliding", "facts", "branching"],
+        )
+        # Sticky Facts делает четвёртое, вспомогательное обращение. Отпускаем его вместе с
+        # тремя основными: все четыре уже начались, но ни один основной ответ ещё не получен.
+        while len(concurrent_client.calls) < 4:
+            await asyncio.sleep(0)
+        for call in concurrent_client.calls:
+            concurrent_client.release(call["messages"][-1]["content"])
+        await asyncio.gather(*(worker.queue.join() for worker in concurrent_workers))
+        check(
+            "после одновременного старта ответы остались в своих панелях",
+            all(
+                f"ответ:{question}" in log_text(state, screen.first)
+                for screen, question in zip(
+                    strategy_work_screens, concurrent_questions, strict=True
+                )
+            ),
+        )
+        state.client = fake
+
+        print("\n12с. Источник стратегии и тип экрана не зависят от key")
+        collision_name = "strategy:x:sliding"
+        (profiles_dir / f"{collision_name}.json").write_text(
+            json.dumps(
+                {
+                    "name": collision_name,
+                    "system": "инструкция дочернего экрана",
+                    "compact_at": 0,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (profiles_dir / "x.json").write_text(
+            json.dumps(
+                {
+                    "name": "x",
+                    "system": "инструкция родителя",
+                    "compact_at": 0,
+                    "screens": [collision_name],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        await cli.switch_profile(state, "x")
+        collision_work_screen = state.screen
+        check(
+            "произвольный key рабочего экрана допустимо похож на служебный",
+            collision_work_screen.key
+            == screens.strategy_screen_key("x", "sliding")
+            and collision_work_screen.strategy_identity
+            == (collision_name, "standard"),
+            str(
+                (
+                    collision_work_screen.key,
+                    collision_work_screen.strategy_identity,
+                )
+            ),
+        )
+        cli.switch_screen(state, 0)
+        cli.cmd_strategy(state, "use sliding")
+        parent_sliding = state.screen
+        check(
+            "служебная личность не дала рабочему key подменить стратегию родителя",
+            parent_sliding is not collision_work_screen
+            and parent_sliding.strategy_identity == ("x", "sliding")
+            and parent_sliding.first.agent.profile.name == "x",
+            str(
+                (
+                    parent_sliding.strategy_identity,
+                    parent_sliding.first.agent.profile.name,
+                )
+            ),
+        )
+        cli.switch_screen(state, state.screens.index(collision_work_screen))
+        cli.cmd_strategy(state, "use facts")
+        child_facts = state.screen
+        check(
+            "/strategy use взял профиль активной дочерней панели",
+            child_facts.strategy_identity == (collision_name, "facts")
+            and child_facts.first.agent.profile.name == collision_name
+            and child_facts.first.agent.profile.system
+            == "инструкция дочернего экрана",
+            str(
+                (
+                    child_facts.strategy_identity,
+                    child_facts.first.agent.profile.name,
+                )
+            ),
+        )
 
         print("\n12з. О переполнении окна сказано до отправки")
 
@@ -1645,7 +3017,7 @@ async def main():
             str(состояние_смены.session_usage_total()["total_tokens"]),
         )
 
-        cli.switch_profile(состояние_смены, "default")
+        await cli.switch_profile(состояние_смены, "default")
         итог_после = состояние_смены.session_usage_total()["total_tokens"]
         check("расход прежнего собеседника не пропал при смене профиля", итог_после == 1300, str(итог_после))
         check(
@@ -1656,7 +3028,7 @@ async def main():
         check("экраны прежней группы закрыты", len(состояние_смены.screens) == 1, str(len(состояние_смены.screens)))
 
         # Двойной счёт — главная опасность копилки: провожать живого агента нельзя.
-        cli.switch_profile(состояние_смены, "default")
+        await cli.switch_profile(состояние_смены, "default")
         check(
             "вторая смена профиля не удвоила расход",
             состояние_смены.session_usage_total()["total_tokens"] == 1300,
@@ -1829,12 +3201,40 @@ async def main():
         )
 
         print("\n13. Выход")
-        await send("/exit" + ENTER)
-        await asyncio.sleep(0.15)
+        клиент_выхода = УправляемыйКлиент()
+        state.client = клиент_выхода
+        state.config.remember = False
+        панель_выхода = screens.Pane(
+            key="worker-exit",
+            profile=profiles.Profile(name="worker-exit"),
+        )
+        экран_выхода = screens.Screen(
+            key="worker-exit",
+            title="worker-exit",
+            panes=[панель_выхода],
+            interactive=True,
+        )
+        state.screens.append(экран_выхода)
+        cli.switch_screen(state, len(state.screens) - 1)
+        buffer.text = "незавершённый при выходе"
+        press(app, Keys.ControlM, "\r")
+        await клиент_выхода.wait_started("незавершённый при выходе")
+        созданные_исполнители = tuple(state.pane_workers.values())
+        check("перед выходом панельный обмен действительно идёт", state.pane_workers[id(панель_выхода)].busy)
+
+        await send("/exit" + ENTER, pause=0)
+        await run
         check("приложение завершилось", run.done())
-        worker.cancel()
-        with __import__("contextlib").suppress(asyncio.CancelledError):
-            await worker
+        check(
+            "незавершённый обмен отменён при выходе",
+            клиент_выхода._event(клиент_выхода.cancelled, "незавершённый при выходе").is_set(),
+        )
+        check(
+            "все созданные исполнители завершены",
+            all(item.runner is not None and item.runner.done() for item in созданные_исполнители),
+        )
+        check("задачи Enter не оставлены в фоне", not state.submission_tasks)
+        check("клиент закрыт после исполнителей", клиент_выхода.closed)
 
 
 asyncio.run(main())

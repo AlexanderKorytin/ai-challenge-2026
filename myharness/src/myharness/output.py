@@ -286,6 +286,7 @@ def _show_wait(
         итог,
         exact=marks.get("exact", True),
         frozen=frozen,
+        session_known=marks.get("session_known", True),
     )
     replace_log(state, pane, at, marks.get("wait_len", 0), фрагменты)
     marks["wait_len"] = len(фрагменты)
@@ -357,6 +358,7 @@ def draw_event(state: State, pane: screens_mod.Pane, event: api.StreamEvent, mar
 def _freeze_wait(
     state: State,
     pane: screens_mod.Pane,
+    agent_obj: Agent,
     marks: dict[str, Any],
     turn: Turn | None,
     *,
@@ -377,6 +379,16 @@ def _freeze_wait(
     """
     if marks.get("wait_at") is None:
         return
+    if turn is not None:
+        # `exchange` уже положил основной и служебный расход в накопитель Agent. Берём
+        # готовый итог после обмена: прибавление `outgoing + incoming` здесь потеряло бы
+        # извлекатель Sticky Facts, а повторное прибавление — удвоило бы основной запрос.
+        marks["session"] = _session_before(state, pane, agent_obj)
+        marks["session_only"] = True
+        if turn.context_strategy == "facts" and (
+            not turn.usage or turn.facts_usage is None
+        ):
+            marks["session_known"] = False
     if turn is not None and turn.usage:
         счёт = tokens.normalize(turn.usage)
         marks["outgoing"] = счёт["prompt_tokens"]
@@ -463,6 +475,20 @@ def _warn_if_over_window(state: State, pane: screens_mod.Pane, agent_obj: Agent,
     )
 
 
+def _turn_price(turn: Turn) -> float | None:
+    """Цена всего пользовательского обмена, включая извлекатель Sticky Facts."""
+    if turn.context_strategy == "facts" and (
+        not turn.usage or turn.facts_usage is None
+    ):
+        return None
+    parts = [tokens.price(turn.usage, turn.model) if turn.usage else 0.0]
+    if turn.context_strategy == "facts":
+        parts.append(tokens.price(turn.facts_usage, turn.model))
+    if any(part is None for part in parts):
+        return None
+    return sum(part for part in parts if part is not None)
+
+
 async def run_turn(
     state: State,
     agent_obj: Agent,
@@ -533,7 +559,7 @@ async def run_turn(
         spinner_task.cancel()
         with suppress(asyncio.CancelledError):
             await spinner_task
-        _freeze_wait(state, pane, marks, turn, cancelled=cancelled)
+        _freeze_wait(state, pane, agent_obj, marks, turn, cancelled=cancelled)
         _finish_reasoning_head(state, pane, marks, turn)
         pane.status = screens_mod.DONE if (turn is not None and turn.ok) else screens_mod.ERROR
         if turn is not None and not turn.ok and turn.error:
@@ -569,6 +595,24 @@ async def run_turn(
                 ui.trimmed_fragments(turn.forgotten_pairs, сжатие=agent_obj.profile.compact_at > 0),
                 pane,
             )
+        if turn is not None:
+            append_log(
+                state,
+                ui.context_turn_fragments(
+                    turn.context_strategy,
+                    selected_pairs=turn.selected_pairs,
+                    omitted_pairs=turn.omitted_pairs,
+                    usage=turn.usage,
+                    facts_revision=turn.facts_revision,
+                    facts_revision_after=turn.facts_revision_after,
+                    facts_usage=turn.facts_usage,
+                    facts_error=turn.facts_error,
+                    branch=turn.branch,
+                    branch_head=turn.branch_head,
+                    branch_checkpoint=turn.branch_checkpoint,
+                ),
+                pane,
+            )
         if turn is not None and turn.ok:
             append_log(
                 state,
@@ -576,7 +620,7 @@ async def run_turn(
                     turn.finish_reason,
                     turn.usage,
                     agent_obj.profile.name,
-                    tokens.format_price(tokens.price(turn.usage, turn.model)),
+                    tokens.format_price(_turn_price(turn)),
                 ),
                 pane,
             )
@@ -599,9 +643,15 @@ async def run_turn(
                 pane,
             )
         if turn is not None:
-            # Деньги копим тем тарифом, что действовал на этот обмен: модель меняется на
-            # лету, и пересчёт итога по текущей модели врал бы втрое.
-            цена = tokens.price(turn.usage, turn.model) if turn.usage else 0.0
+            # Деньги копим тем тарифом, что действовал на весь пользовательский обмен.
+            # Sticky Facts платит за два обращения; `_turn_price` — одна формула и для этой
+            # строки, и для итога сеанса. Неизвестный usage не превращается в ноль.
+            if turn.context_strategy == "facts" and (
+                not turn.usage or turn.facts_usage is None
+            ):
+                state.session_usage_known = False
+                state.unknown_usage_agent_ids.add(id(agent_obj))
+            цена = _turn_price(turn)
             if цена is None:
                 state.session_cost_known = False
             else:

@@ -2,10 +2,10 @@
 
 Здесь живёт вся логика разговора с моделью, отделённая от того, кто её показывает.
 Модуль намеренно не знает ни про терминал, ни про панели: ему разрешены только `api`,
-`journal`, `memory`, `profiles`, `tokens`, `compact` и стандартная библиотека. Поэтому агента можно
-проверить без терминала, без окон и без единого нажатия клавиши. `memory` в этот список входит по
-праву: он такая же чистая логика — ни сети, ни терминала, только файлы состояния. `compact` — тем
-более: агент берёт у него один тип, а сама выжимка приходит готовой снаружи.
+`journal`, `memory`, `context_strategy`, `sticky_facts`, `profiles`, `tokens`, `compact`
+и стандартная библиотека. Поэтому агента можно проверить без терминала, без окон и без
+единого нажатия клавиши. Модули памяти и стратегий в этот список входят по праву: в них нет
+ни сети, ни терминала, а файловое состояние приходит агенту готовыми хранилищами.
 
 Наружу агент отдаёт только результат — запись `Turn`. Внутренняя память остаётся
 внутренней: её выдают копией, а пополняют единственным методом `remember`.
@@ -24,8 +24,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
-from . import api, journal, memory, tokens
+from . import api, context_strategy, journal, memory, tokens
 
 if TYPE_CHECKING:  # только подсказка типов — на выполнении профиль сюда не импортируется
     # Умолчание окна памяти живёт здесь, рядом с правилом обрезки, а поле профиля берёт его
@@ -200,6 +201,22 @@ class Turn:
     # то же самое про запись разговора на диск: обмен состоялся и оплачен, а память между
     # запусками не сохранилась — молчать об этом нельзя, ронять обмен из-за этого тоже
     store_error: str | None = None
+    # Фактическая политика и выбор завершённых пар для этого запроса. У строгих стратегий
+    # исключённые пары остаются в полной памяти, поэтому эти числа не выводятся из dropped.
+    context_strategy: str = context_strategy.CONTEXT_STANDARD
+    selected_pairs: int = 0
+    omitted_pairs: int = 0
+    # Sticky Facts: редакция, которую видел основной запрос, отдельно от редакции после
+    # извлечения. Отсутствующий серверный расход остаётся None, а не локальной оценкой.
+    facts_revision: int | None = None
+    facts_revision_after: int | None = None
+    facts_usage: dict[str, Any] | None = None
+    facts_error: str | None = None
+    # Branching описывает путь на миг отправки: прежнюю голову, от которой вырос успешный
+    # узел, и неизменяемую контрольную точку разделения.
+    branch: str | None = None
+    branch_head: str | None = None
+    branch_checkpoint: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -216,6 +233,9 @@ class Agent:
         *,
         store: memory.SessionStore | None = None,
         facts: Callable[[], list[str]] | None = None,
+        facts_store: memory.FactsStore | None = None,
+        branch_store: memory.BranchStore | None = None,
+        branch: str | None = None,
     ) -> None:
         self.name = name
         self.profile = profile
@@ -228,6 +248,17 @@ class Agent:
         # меняются по ходу сеанса (командой `/remember` и архивариусом), и список, снятый
         # при создании агента, отстал бы от них к первому же запросу.
         self._facts = facts
+        # Хранилища новых стратегий тоже приходят готовыми. Агент не знает рабочего каталога
+        # и не выбирает путь сам: пакетный агент может законно жить вообще без диска.
+        self._facts_store = facts_store
+        self._conversation_facts = memory.ConversationFacts()
+        self._branch_store = branch_store
+        self._branch = branch
+        self._branch_head: str | None = None
+        self._branch_checkpoint: str | None = None
+        # Непригодный путь и корень после разделения не имеют права даже обратиться к
+        # модели: родитель становится закрытым в момент записи события split.
+        self._branch_error: str | None = None
         # Идёт загрузка прежнего разговора: пополнение памяти на диск не пишется. Иначе
         # чтение файла тут же переписывало бы его самим собой, удваивая каждую пару.
         self._restoring = False
@@ -256,6 +287,11 @@ class Agent:
         self.passed_pairs = 0
         # не удержался ли последний запрос в пределе веса — оттуда же в `Turn` и в журнал
         self._over_budget = False
+        # Фактический выбор последней сборки запроса. Снимается до отправки и потому не
+        # пересчитывается по памяти, уже пополненной ответом.
+        self._selected_pairs = 0
+        self._omitted_pairs = 0
+        self._request_branch_head: str | None = None
         # Ушёл ли в ПОСЛЕДНИЙ собранный запрос блок выжимки. Признак, а не пересчёт условий
         # задним числом: между сборкой запроса и записью прогона выжимка не меняется, но
         # завтра появится повод, по которому она сменится, — и запись прогона начала бы
@@ -310,13 +346,146 @@ class Agent:
         # это в колонке занятия, пока агент занят. Держим здесь, а не в панели: работу знает
         # тот, кто её делает, и агент без панели (пакетный наряд) знает её точно так же.
         self.task = ""
+        self._load_strategy_state()
+
+    def _load_strategy_state(self) -> None:
+        """Поднять переданные состояние фактов или путь ветви, не выбирая им место на диске."""
+        strategy = self.profile.context_strategy
+        if strategy == context_strategy.CONTEXT_FACTS and self._facts_store is not None:
+            restored, warnings = self._facts_store.load()
+            self._conversation_facts = restored
+            if warnings:
+                self.store_error = "; ".join(warnings)
+
+        if strategy != context_strategy.CONTEXT_BRANCHING or self._branch_store is None:
+            return
+        restored = self._branch_store.load()
+        self._branch_checkpoint = restored.checkpoint_id
+        if restored.warnings:
+            self.store_error = "; ".join(restored.warnings)
+        if restored.checkpoint_id is None:
+            if self._branch is not None:
+                self._branch_error = f"ветвь {self._branch!r} ещё не создана"
+                self.store_error = self._branch_error
+                return
+            self._branch_head = restored.root_head
+        else:
+            if self._branch is None:
+                self._branch_error = "родительский разговор уже разделён и недоступен"
+                self.store_error = self._branch_error
+                return
+            if self._branch not in restored.branches:
+                self._branch_error = f"неизвестная активная ветвь {self._branch!r}"
+                self.store_error = self._branch_error
+                return
+            if self._branch in restored.unavailable or self._branch not in restored.heads:
+                self._branch_error = (
+                    f"ветвь {self._branch!r} недоступна из-за повреждения графа"
+                )
+                self.store_error = self._branch_error
+                return
+            self._branch_head = restored.heads[self._branch]
+        self.restore(restored.path(self._branch))
+
+    def conversation_facts(self) -> tuple[dict[str, str], int]:
+        """Словарь текущего разговора и его редакция — копией."""
+        return dict(self._conversation_facts.values), self._conversation_facts.revision
+
+    def _apply_conversation_facts(
+        self,
+        set_values: dict[str, str],
+        forget_keys: tuple[str, ...],
+        *,
+        turn_id: str,
+        source: str,
+    ) -> str | None:
+        """Применить одну проверенную операцию; при отказе диска редакцию не менять."""
+        from . import sticky_facts
+
+        current = self._conversation_facts
+        changes = sticky_facts.FactChanges(dict(set_values), tuple(forget_keys))
+        updated = sticky_facts.apply_changes(current.values, changes)
+        if self._facts_store is None:
+            self._conversation_facts = memory.ConversationFacts(updated, current.revision + 1)
+            return None
+
+        error = self._facts_store.append(
+            changes.set_values,
+            changes.forget_keys,
+            turn_id=turn_id,
+            source=source,
+        )
+        if error is not None:
+            return error
+        restored, warnings = self._facts_store.load()
+        self._conversation_facts = restored
+        return "; ".join(warnings) or None
+
+    def set_conversation_fact(self, key: str, value: str) -> str | None:
+        """Записать правку человека в словарь текущего разговора."""
+        if not isinstance(key, str) or not key.strip():
+            return "ключ факта должен быть непустым текстом"
+        if not isinstance(value, str) or not value.strip():
+            return "значение факта должно быть непустым текстом"
+        return self._apply_conversation_facts(
+            {key.strip(): value.strip()},
+            (),
+            turn_id=uuid4().hex,
+            source="user",
+        )
+
+    def forget_conversation_fact(self, key: str) -> str | None:
+        """Записать удаление ключа человеком; отсутствие ключа безопасно."""
+        if not isinstance(key, str) or not key.strip():
+            return "ключ факта должен быть непустым текстом"
+        return self._apply_conversation_facts(
+            {},
+            (key.strip(),),
+            turn_id=uuid4().hex,
+            source="user",
+        )
+
+    def split_branches(
+        self, left: str, right: str
+    ) -> tuple[dict[str, Agent] | None, str | None]:
+        """Разделить корень у его головы и вернуть два агента с независимыми путями."""
+        if self.profile.context_strategy != context_strategy.CONTEXT_BRANCHING:
+            return None, "разделение доступно только в режиме branching"
+        if self._branch_store is None:
+            return None, "для разделения не передано хранилище ветвей"
+        if self._branch is not None:
+            return None, "активную ветвь нельзя разделить повторно"
+        error = self._branch_store.split(self._branch_head, left, right)
+        if error is not None:
+            return None, error
+        self._branch_checkpoint = self._branch_head
+        self._branch_error = "родительский разговор уже разделён и недоступен"
+        branches = {
+            name: Agent(
+                f"{self.name}:{name}",
+                self.profile,
+                facts=self._facts,
+                branch_store=self._branch_store,
+                branch=name,
+            )
+            for name in (left.strip(), right.strip())
+        }
+        return branches, None
 
     def set_store(self, store: memory.SessionStore | None) -> None:
-        """Сменить хранилище разговора — например, когда `/clear` открывает новую сессию.
+        """Сменить линейное хранилище и связанное с ним хранилище Sticky Facts.
 
-        Отдельный метод, а не открытое поле: тогда место, где хранилище появляется и
-        исчезает, одно, и его видно в дереве вызовов."""
+        При `/clear` прежний FactsStore уже отвязан в `forget`, а новая сессия приходит
+        сюда одним объектом. Вывести путь фактов из пути пары надёжнее, чем заставить
+        вызывающего синхронно переставить два поля: забытый второй вызов воскресил бы
+        старый словарь при ближайшей операции append → load."""
         self._store = store
+        if self.profile.context_strategy == context_strategy.CONTEXT_FACTS:
+            self._facts_store = (
+                memory.FactsStore(store.path)
+                if store is not None
+                else None
+            )
 
     def history(self) -> list[dict]:
         """Память разговора — копией.
@@ -483,6 +652,13 @@ class Agent:
         того, кто её завёл."""
         self._messages.clear()
         self._generation += 1
+        if self.profile.context_strategy == context_strategy.CONTEXT_FACTS:
+            # Факты принадлежат тому же разговору, что и пары. `/clear` не должен оставить
+            # после себя системный блок от уже забытой задачи.
+            self._conversation_facts = memory.ConversationFacts()
+            # Старый дописываемый файл остаётся нетронутым, но больше не принадлежит этому
+            # очищенному разговору. Следующее хранилище привяжет `set_store`.
+            self._facts_store = None
         self.restored_pairs = 0
         self._summary = None
         self._prepared = None
@@ -510,21 +686,32 @@ class Agent:
         У вопроса такого прошлого нет — его написал человек."""
         self._messages.append({"role": "user", "content": question})
         self._messages.append({"role": "assistant", "content": answer})
-        if self._store is None or self._restoring or not self.profile.keep_history:
+        if self._restoring or not self.profile.keep_history:
             return
-        # Ошибку берём первую: причина у обеих строк одна и та же (нет прав, нет места), и
-        # второй раз повторять её человеку незачем.
-        ошибка = self._store.append("user", question)
-        ошибка = ошибка or self._store.append(
-            "assistant",
-            answer,
-            {
-                "profile": self.profile.name,
-                "model": model,
-                "system_fp": memory.fingerprint(self.profile.system),
-            },
-        )
-        self.store_error = ошибка
+        meta = {
+            "profile": self.profile.name,
+            "model": model,
+            "system_fp": memory.fingerprint(self.profile.system),
+        }
+        if self.profile.context_strategy == context_strategy.CONTEXT_BRANCHING:
+            if self._branch_store is None:
+                return
+            turn, error = self._branch_store.append_turn(
+                self._branch,
+                self._branch_head,
+                question,
+                answer,
+                **meta,
+            )
+            if turn is not None:
+                self._branch_head = turn.id
+            self.store_error = error
+            return
+        if self._store is None:
+            return
+        # Пара сериализуется и дописывается одним обращением: несериализуемая пометка или
+        # обрыв до записи не могут оставить на диске одинокий вопрос.
+        self.store_error = self._store.append_pair(question, answer, meta)
 
     def restore(self, pairs: list[tuple[str, str]]) -> None:
         """Поднять прежний разговор — тем же единственным методом пополнения.
@@ -562,8 +749,15 @@ class Agent:
         ронять на нём весь harness нельзя даже ради собственной уверенности."""
         if not self.profile.keep_history:
             return 0
+        selected = context_strategy.select_history(
+            self._messages,
+            self.profile.context_strategy,
+            self.profile.strategy_window,
+        )
         return sum(
-            tokens.count_text(m["content"]) for m in self._messages if isinstance(m.get("content"), str)
+            tokens.count_text(message["content"])
+            for message in selected.messages
+            if isinstance(message.get("content"), str)
         )
 
     def overhead(self, model: str) -> int:
@@ -606,7 +800,8 @@ class Agent:
         фоновая задача ходила к модели.
         """
         return (
-            выжимка is not None
+            self.profile.context_strategy == context_strategy.CONTEXT_STANDARD
+            and выжимка is not None
             and self.profile.compact_at > 0
             and выжимка.system_fp == memory.fingerprint(self.profile.system)
         )
@@ -664,13 +859,20 @@ class Agent:
             return ""
 
     def system_text(self) -> str:
-        """Системная часть запроса целиком: инструкция, блок глобальных фактов, блок выжимки.
-
-        Нужна снаружи затем, чтобы показ и предупреждение о переполнении считали ТО ЖЕ, что
-        уйдёт в модель. Сборка запроса эту часть собирает сама, но звать её ради взвешивания
-        нельзя: `build_messages` обрезает память, то есть меняет состояние.
-        """
-        return self._система(self.блок_фактов())
+        """Системная часть следующего запроса без изменения памяти."""
+        global_facts = self.блок_фактов()
+        if self.profile.context_strategy == context_strategy.CONTEXT_STANDARD:
+            return self._система(global_facts)
+        conversation = ""
+        if self.profile.context_strategy == context_strategy.CONTEXT_FACTS:
+            conversation = context_strategy.conversation_facts_block(
+                self._conversation_facts.values
+            )
+        return "\n\n".join(
+            block
+            for block in (self.profile.system or "", global_facts, conversation)
+            if block
+        )
 
     def порог_сжатия(self) -> int:
         """Порог сжатия в токенах: доля окна модели, заданная профилем. Ноль — выключено.
@@ -686,6 +888,8 @@ class Agent:
         без нового вопроса — то есть на своём единственном случае («человек вставил файл в
         вопрос») опаздывал ровно на ход, когда деньги уже потрачены.
         """
+        if self.profile.context_strategy != context_strategy.CONTEXT_STANDARD:
+            return 0
         доля = self.profile.compact_at
         if доля <= 0:
             return 0
@@ -715,6 +919,8 @@ class Agent:
         каталога памяти с чтением файлов. Обязательный довод, а не умолчание: забытый блок
         фактов молча занизил бы вес, а по весу режется память.
         """
+        if self.profile.context_strategy != context_strategy.CONTEXT_STANDARD:
+            return []
         список: list[Ограничитель] = []
         окно = self.profile.history_window
         if окно > 0:
@@ -991,25 +1197,63 @@ class Agent:
             try:
                 block = memory.facts_block(self._facts())
             except Exception as exc:  # noqa: BLE001 — источник фактов приходит снаружи
-                # Сборка запроса идёт ДО начала обмена, и исключение отсюда улетело бы мимо
-                # всей обработки: ни ответа, ни записи прогона в журнал. Сегодня чтение фактов
-                # не бросает по построению, но гарантия «вспомогательный механизм не роняет
-                # обмен» не имеет права держаться на чужом обещании.
                 self.store_error = f"не удалось прочитать глобальную память: {exc}"
-        self._dropped_pairs = self._trim(content, facts=block, model=model)
-        # Профиль без инструкции, но с фактами получает системное сообщение из одного блока
-        # фактов: иначе факты пропадали бы ровно у встроенного `default`, которым пользуются
-        # чаще всего. То же и с выжимкой.
-        system = self._система(block)
-        # Снимаем ПОСЛЕ обрезки: именно в ней заготовка становится действующей выжимкой, и
-        # снятый до неё признак говорил бы о запросе, которого не было.
-        self._summary_sent = bool(self._блок_выжимки())
+
+        strategy = self.profile.context_strategy
+        self._request_branch_head = (
+            self._branch_head
+            if strategy == context_strategy.CONTEXT_BRANCHING
+            else None
+        )
+        if strategy == context_strategy.CONTEXT_STANDARD:
+            self._dropped_pairs = self._trim(content, facts=block, model=model)
+            system = self._система(block)
+            self._summary_sent = bool(self._блок_выжимки())
+            selected_messages = (
+                [dict(message) for message in self._messages]
+                if self.profile.keep_history
+                else []
+            )
+            self._selected_pairs = len(selected_messages) // 2
+            self._omitted_pairs = 0
+        else:
+            # Строгий выбор не меняет полную память и не прикасается к выжимке. Новый вопрос
+            # добавляется только после выбора и поэтому не занимает место завершённой пары.
+            self._dropped_pairs = 0
+            self._compacted_pairs = 0
+            self._forgotten_pairs = 0
+            self._summary_sent = False
+            selection = context_strategy.select_history(
+                self._messages if self.profile.keep_history else [],
+                strategy,
+                self.profile.strategy_window,
+            )
+            selected_messages = selection.messages
+            self._selected_pairs = selection.selected_pairs
+            self._omitted_pairs = selection.omitted_pairs
+            conversation = (
+                context_strategy.conversation_facts_block(
+                    self._conversation_facts.values
+                )
+                if strategy == context_strategy.CONTEXT_FACTS
+                else ""
+            )
+            system = "\n\n".join(
+                part
+                for part in (self.profile.system or "", block, conversation)
+                if part
+            )
+
         messages: list[dict] = []
         if system:
             messages.append({"role": "system", "content": system})
-        if self.profile.keep_history:
-            messages.extend(dict(m) for m in self._messages)
+        messages.extend(selected_messages)
         messages.append({"role": "user", "content": content})
+        if strategy != context_strategy.CONTEXT_STANDARD:
+            limit = self.profile.budget_tokens
+            self._over_budget = bool(
+                limit > 0 and self.predict_tokens(messages, model) > limit
+            )
         return messages
 
     async def exchange(
@@ -1022,24 +1266,32 @@ class Agent:
         agent: str | None = None,
         run_id: str | None = None,
     ) -> Turn:
-        """Обмен с моделью: отправить вопрос, собрать поток ответа, записать прогон."""
-        # Ошибка описывает ИМЕННО этот обмен. Не сбрось её здесь — и вчерашний отказ диска
-        # показывался бы после каждого следующего запроса до конца сеанса. Сброс стоит ДО
-        # сборки запроса: сборка читает глобальную память и при её сбое сама кладёт сюда
-        # текст, а сброс после сборки стирал бы его, не показав никому.
+        """Обмен с моделью; Sticky Facts завершает его только после обоих обращений."""
+        # Ошибка описывает именно этот обмен. Сборка ниже может записать сюда сбой чтения
+        # глобальной памяти, поэтому сброс обязан стоять перед ней.
         self.store_error = None
+        strategy = self.profile.context_strategy
+        facts_revision = (
+            self._conversation_facts.revision
+            if strategy == context_strategy.CONTEXT_FACTS
+            else None
+        )
+        facts_revision_after = facts_revision
+        effective_run_id = run_id
+        if strategy == context_strategy.CONTEXT_FACTS and effective_run_id is None:
+            effective_run_id = uuid4().hex
         request_messages = self.build_messages(content, model)
-        # Вес памяти снимаем ЗДЕСЬ: обрезка уже прошла, а ответ в память ещё не лёг. Сними
-        # его после обмена — и число описывало бы память следующего запроса, а не этого.
+        selected_pairs = self._selected_pairs
+        omitted_pairs = self._omitted_pairs
+        branch_head = self._request_branch_head
+        branch_checkpoint = self._branch_checkpoint
+        # Оба числа снимаются до ответа: память и запрос ещё описывают один и тот же ход.
         history_tokens = self.history_tokens()
-        # Вес одного текста, без надбавки, — мерка для калибровки: сервер пришлёт
-        # `prompt_tokens` за ровно то же самое, и разность двух чисел и есть обёртка разговора.
         text_tokens = tokens.count_messages(request_messages, overhead=0)
         predicted = self.predict_tokens(request_messages, model)
         self.task = content
-        # Поколение памяти на момент начала обмена: если к концу оно сменилось, память этого
-        # обмена уже забыли, и пополнять её результатом нельзя.
         generation = self._generation
+
         answer_text = ""
         reasoning_text = ""
         finish_reason: str | None = None
@@ -1047,21 +1299,24 @@ class Agent:
         status = "error"
         error_text: str | None = None
         render_error: str | None = None
+        facts_usage: dict[str, Any] | None = None
+        facts_error: str | None = None
+        cancelled = False
         started = time.monotonic()
-        try:
-            async for event in client.stream_chat(model, request_messages, self.profile.params):
+
+        async def consume_main() -> None:
+            nonlocal answer_text, reasoning_text, finish_reason, usage, render_error
+            async for event in client.stream_chat(
+                model, request_messages, self.profile.params
+            ):
                 if on_event is not None:
                     try:
                         on_event(event)
                     except Exception as exc:
-                        # `on_event` — это отрисовка, она живёт СНАРУЖИ агента. Выпусти её
-                        # исключение отсюда — и оно попадёт в общий обработчик ошибок обмена
-                        # ниже, а пользователь увидит «ошибка запроса к DeepSeek» при
-                        # полностью живой сети: прямая ложь, из-за которой он пойдёт чинить
-                        # то, что не сломано. Проглотить совсем тоже нельзя — причину
-                        # запоминаем и отдаём в `Turn.error`, но только если обмен в
-                        # остальном удался, и текстом, где нет слова DeepSeek.
-                        render_error = f"ответ получен, но показать его не удалось: {exc}"
+                        # Отрисовка живёт снаружи агента: её сбой не является сетевым.
+                        render_error = (
+                            f"ответ получен, но показать его не удалось: {exc}"
+                        )
                 if event.kind == "meta":
                     finish_reason = event.finish_reason
                     usage = event.usage
@@ -1070,169 +1325,240 @@ class Agent:
                     reasoning_text += event.text
                 else:
                     answer_text += event.text
-            status = "ok"
-        except asyncio.CancelledError:
-            status = "cancelled"
-            raise
-        except Exception as exc:  # сеть, лимиты, ошибки API — не роняем harness
-            error_text = str(exc)
-        finally:
-            elapsed = time.monotonic() - started
-            snapshot = self.profile.snapshot()
-            if status == "ok" and not answer_text:
-                # Поток дошёл до конца, а ответа нет. Наверх обязан уйти внятный отказ,
-                # а не бодрое «успех» с пустой строкой, которую вызывающий покажет
-                # пользователю как ответ модели.
-                #
-                # Причину называем, когда она известна, и называем ТУ САМУЮ. Обрыв по длине
-                # (`length`) бывает по двум разным причинам, и совет у них противоположный:
-                #
-                #   * упёрлись в свой `max_tokens` — лечится увеличением предела;
-                #   * места не осталось в самом окне модели: разговор занял его почти целиком,
-                #     и на ответ ничего не оставил. Увеличивать тут нечего — надо укорачивать
-                #     разговор. Замечено на живом прогоне: вход занял 1 048 495 из 1 048 576,
-                #     и совет «увеличьте max_tokens» отправлял чинить то, чего нет.
-                #
-                # Отличаем по остатку окна: если вход почти доверху, дело в окне, а не в пределе.
-                status = "error"
-                if finish_reason == "length":
-                    вход = tokens.normalize(usage)["prompt_tokens"]
-                    остаток = tokens.CONTEXT_WINDOW - вход
-                    предел = self.profile.params.get("max_tokens")
-                    if вход and остаток < ОСТАТОК_НА_ОТВЕТ:
-                        error_text = (
-                            f"в окне модели не осталось места на ответ: занято {вход} "
-                            f"из {tokens.CONTEXT_WINDOW}, свободно {остаток} — "
-                            "очистите историю командой /clear или задайте вопрос короче"
-                        )
-                    elif предел:
-                        error_text = (
-                            "весь max_tokens ушёл на рассуждения, ответ не начат — увеличьте max_tokens"
-                        )
-                    else:
-                        error_text = "ответ оборван по длине, не начавшись"
-                else:
-                    error_text = "модель вернула пустой ответ"
-            if status == "ok":
-                if render_error:
-                    error_text = render_error
-                # Пара кладётся ТОЛЬКО через `remember` — второй точки записи в память нет.
-                # Поколение сверяем здесь: `forget`, пришедший посреди обмена (командой
-                # `/clear` или сменой профиля), означает, что этот разговор уже забыт, — и
-                # дописывать в него ответ на давно снятый вопрос нельзя.
-                if self.profile.keep_history and self._generation == generation:
-                    # Запись на диск живёт внутри `remember` и своих исключений не выпускает:
-                    # мы в `finally`, до записи в журнал и до сборки результата, и исключение
-                    # отсюда уничтожило бы и полученный ответ, и запись прогона. Перехват
-                    # всё же ставим: гарантия «не бросает» обязана быть с обеих сторон, а
-                    # не только в чужом модуле, который завтра поправят.
-                    try:
-                        self.remember(content, answer_text, model=model)
-                    except Exception as exc:  # обмен дороже любой записи на диск
-                        self.store_error = f"не удалось сохранить разговор: {exc}"
-            # При любом неуспехе память не трогаем вовсе: вопроса там нет, `build_messages`
-            # его туда не клал, — вычищать нечего.
-            # Счётчики пополняем здесь, в `finally`: сюда приходит и успех, и отказ, и отмена
-            # (после `raise` тело `finally` всё равно выполняется). Пополни их в ветке успеха —
-            # и статистика молча потеряла бы самые дорогие обмены.
-            self.runs += 1
-            self.total_ms += int(elapsed * 1000)
-            self.total_tokens += usage_tokens(usage)
-            self.session_usage = tokens.add_usage(self.session_usage, usage)
-            # Самокалибровка надбавки: сервер только что назвал вес того же самого текста,
-            # и разность — это обёртка разговора, какой она есть сегодня, а не какой её
-            # замерили однажды. Подстраивается надбавка ИМЕННО ЭТОЙ модели: у соседней она
-            # своя. `bool` отсеиваем отдельно: в Python он подкласс `int`.
-            #
-            # Принимаем только правдоподобное значение — от нуля до `OVERHEAD_LIMIT`.
-            # Отрицательная обёртка означала бы, что разговор отнимает токены; надбавка в
-            # сотни тысяч — что сервер прислал счёт не от нашего запроса. И то и другое надо
-            # не «поджать к границе», а ОТВЕРГНУТЬ целиком, оставив прежнее число: поджатая
-            # к тысяче нелепость точно так же выбросила бы половину памяти. Молча: это сбой
-            # чужой стороны, а не событие разговора, и человеку тут делать нечего.
-            prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
-            if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool):
-                measured = prompt_tokens - text_tokens
-                if 0 <= measured <= OVERHEAD_LIMIT:
-                    self._overhead[model] = measured
-            entry: dict[str, Any] = {
-                "status": status,
-                "model": model,
-                "profile": snapshot,
-                "query": content,
-                "messages": request_messages,
-                "response": answer_text or None,
-                "reasoning": reasoning_text or None,
-                "finish_reason": finish_reason,
-                "usage": usage or None,
-                # Номер обмена в сеансе: `self.runs` уже пополнен, значит первый обмен — 1.
-                # Без номера кривая расхода по журналу строилась бы по времени записи, а оно
-                # у одновременных обменов группы совпадает.
-                "index": self.runs,
-                "history_tokens": history_tokens,
-                "predicted_prompt_tokens": predicted,
-                "agent_session_tokens": self.session_usage["total_tokens"],
-                "elapsed_ms": int(elapsed * 1000),
-                "error": error_text,
-            }
-            # Денег в записи нет намеренно: тариф — не источник правды, он живёт на странице
-            # цен поставщика и протухнет молча. Записанная цена через полгода была бы враньём,
-            # которое уже не проверить, а токены останутся токенами: деньги считаются поверх
-            # журнала, действующим тарифом.
-            if self._over_budget:
-                # Ключ появляется только при превышении: у обмена, уместившегося в предел,
-                # «over_budget: false» в каждой строке журнала — шум, за которым перестают
-                # замечать настоящие случаи.
-                entry["over_budget"] = True
-            if self.restored_pairs:
-                # Ключ появляется только когда пары действительно поднимались с диска: у
-                # чистого сеанса ноль здесь ничего не объясняет, а строку записи удлиняет.
-                entry["restored_pairs"] = self.restored_pairs
-            # Поля о выжимке — часть того, что вообще позволило допустить пересказ в запрос:
-            # без них по журналу не отличить обмен, где модель видела дословный разговор, от
-            # обмена, где она видела его пересказ. Ключи появляются ТОЛЬКО когда выжимка
-            # участвовала, по тому же правилу, что у `over_budget` и `restored_pairs`: ноль в
-            # каждой строке — шум, за которым перестают замечать настоящие случаи.
-            if self._summary_sent and self._summary is not None:
-                entry["summary_used"] = True
-                # Сколько разговора стоит за пересказом и какое это пересжатие по счёту.
-                # Поколение обязательно: строка в ленте, поле прогона и файл на диске обязаны
-                # сходиться в ОДНО событие, а не в «какое-то сжатие когда-то».
-                entry["passed_pairs"] = self.passed_pairs
-                entry["summary_generation"] = self._summary.поколение
-            if self._compacted_pairs:
-                entry["compacted_pairs"] = self._compacted_pairs
-            if self._forgotten_pairs:
-                # Отдельным ключом от заменённых: это два разных исхода с разной ценой —
-                # после замены содержание разговора у модели есть в пересказе, после
-                # забывания его нет нигде, кроме дословного файла.
-                entry["forgotten_pairs"] = self._forgotten_pairs
-            if agent:
-                entry["agent"] = agent
-            if run_id:
-                entry["run_id"] = run_id
-            journal_error = journal.append(entry)
-            turn = Turn(
-                status=status,
-                text=answer_text,
-                reasoning=reasoning_text,
-                finish_reason=finish_reason,
-                usage=usage,
-                elapsed_ms=int(elapsed * 1000),
-                error=error_text,
-                request_messages=request_messages,
-                model=model,
-                profile_snapshot=snapshot,
-                dropped_pairs=self._dropped_pairs,
-                compacted_pairs=self._compacted_pairs,
-                forgotten_pairs=self._forgotten_pairs,
-                passed_pairs=self.passed_pairs,
-                index=self.runs,
-                history_tokens=history_tokens,
-                predicted_prompt=predicted,
-                agent_session_tokens=self.session_usage["total_tokens"],
-                over_budget=self._over_budget,
-                journal_error=journal_error,
-                store_error=self.store_error,
+
+        main_task: asyncio.Task[None] | None = None
+        facts_task: asyncio.Task[Turn] | None = None
+        if strategy == context_strategy.CONTEXT_FACTS:
+            # Поздний импорт разрывает действующий круг profiles → agent: профиль
+            # извлекателя можно собирать только после полной загрузки обоих модулей.
+            from . import sticky_facts
+
+            previous_values = dict(self._conversation_facts.values)
+            extractor = Agent(
+                sticky_facts.EXTRACTOR_NAME,
+                sticky_facts.extractor_profile(self.profile),
             )
+            extraction_request = sticky_facts.extract_request(
+                previous_values, content
+            )
+            # Обе задачи созданы до первого ожидания: ни быстрый основной ответ, ни быстрый
+            # извлекатель не превращают договор одновременного старта в последовательный.
+            main_task = asyncio.create_task(consume_main())
+            facts_task = asyncio.create_task(
+                extractor.exchange(
+                    client,
+                    model,
+                    extraction_request,
+                    agent=sticky_facts.EXTRACTOR_NAME,
+                    run_id=effective_run_id,
+                )
+            )
+
+        if (
+            strategy == context_strategy.CONTEXT_BRANCHING
+            and self._branch_error is not None
+        ):
+            error_text = self._branch_error
+        else:
+            try:
+                if main_task is None:
+                    await consume_main()
+                else:
+                    await main_task
+                status = "ok"
+            except asyncio.CancelledError:
+                cancelled = True
+                status = "cancelled"
+                if main_task is not None and not main_task.done():
+                    main_task.cancel()
+                if facts_task is not None and not facts_task.done():
+                    facts_task.cancel()
+            except Exception as exc:  # сеть, лимиты, ошибки API — не роняем harness
+                error_text = str(exc)
+
+        facts_turn: Turn | None = None
+        if facts_task is not None:
+            if cancelled and not facts_task.done():
+                facts_task.cancel()
+            try:
+                facts_turn = await facts_task
+            except asyncio.CancelledError:
+                # Сюда попадает как отмена во время основного потока, так и Ctrl+C после
+                # готового основного ответа, пока извлекатель ещё работает.
+                cancelled = True
+                status = "cancelled"
+                facts_task.cancel()
+                await asyncio.gather(facts_task, return_exceptions=True)
+            except Exception as exc:  # собственный сбой вспомогательного агента
+                facts_error = f"извлекатель фактов завершился с ошибкой: {exc}"
+
+        if facts_turn is not None and facts_turn.usage:
+            # Только серверные числа. Предсказанный расход одноразового агента сюда не
+            # подставляется даже при пустом usage.
+            facts_usage = dict(facts_turn.usage)
+
+        if strategy == context_strategy.CONTEXT_FACTS:
+            if cancelled:
+                facts_error = facts_error or "извлечение фактов отменено"
+            elif self._generation != generation:
+                facts_error = (
+                    "результат извлечения фактов отброшен: разговор уже очищен"
+                )
+            elif facts_turn is None:
+                facts_error = facts_error or "извлекатель фактов не вернул результат"
+            elif not facts_turn.ok:
+                facts_error = facts_turn.error or (
+                    f"извлечение фактов завершилось со статусом {facts_turn.status}"
+                )
+            else:
+                try:
+                    changes = sticky_facts.parse_changes(facts_turn.text)
+                except (TypeError, ValueError) as exc:
+                    facts_error = str(exc)
+                else:
+                    facts_error = self._apply_conversation_facts(
+                        changes.set_values,
+                        changes.forget_keys,
+                        turn_id=uuid4().hex,
+                        source="extractor",
+                    )
+            # После `/clear` редакция уже нулевая; при любой ошибке — прежняя. Поле должно
+            # описывать реальное состояние на выходе, а не только успешную запись.
+            facts_revision_after = self._conversation_facts.revision
+
+        elapsed = time.monotonic() - started
+        snapshot = self.profile.snapshot()
+        if status == "ok" and not answer_text:
+            status = "error"
+            if finish_reason == "length":
+                вход = tokens.normalize(usage)["prompt_tokens"]
+                остаток = tokens.CONTEXT_WINDOW - вход
+                предел = self.profile.params.get("max_tokens")
+                if вход and остаток < ОСТАТОК_НА_ОТВЕТ:
+                    error_text = (
+                        f"в окне модели не осталось места на ответ: занято {вход} "
+                        f"из {tokens.CONTEXT_WINDOW}, свободно {остаток} — "
+                        "очистите историю командой /clear или задайте вопрос короче"
+                    )
+                elif предел:
+                    error_text = (
+                        "весь max_tokens ушёл на рассуждения, ответ не начат — "
+                        "увеличьте max_tokens"
+                    )
+                else:
+                    error_text = "ответ оборван по длине, не начавшись"
+            else:
+                error_text = "модель вернула пустой ответ"
+
+        if status == "ok":
+            if render_error:
+                error_text = render_error
+            if self.profile.keep_history and self._generation == generation:
+                try:
+                    self.remember(content, answer_text, model=model)
+                except Exception as exc:  # обмен дороже любой записи на диск
+                    self.store_error = f"не удалось сохранить разговор: {exc}"
+
+        # Один пользовательский обмен — один run, но расход у facts состоит из двух
+        # независимых серверных usage. Они входят в накопитель ровно здесь и ровно по разу.
+        self.runs += 1
+        self.total_ms += int(elapsed * 1000)
+        self.total_tokens += usage_tokens(usage)
+        self.session_usage = tokens.add_usage(self.session_usage, usage)
+        if facts_usage is not None:
+            self.total_tokens += usage_tokens(facts_usage)
+            self.session_usage = tokens.add_usage(self.session_usage, facts_usage)
+
+        # Самокалибровка относится только к основному запросу: у извлекателя свой одноразовый
+        # Agent и своя надбавка, смешивать их измерения нельзя.
+        prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+        if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool):
+            measured = prompt_tokens - text_tokens
+            if 0 <= measured <= OVERHEAD_LIMIT:
+                self._overhead[model] = measured
+
+        entry: dict[str, Any] = {
+            "status": status,
+            "model": model,
+            "profile": snapshot,
+            "query": content,
+            "messages": request_messages,
+            "response": answer_text or None,
+            "reasoning": reasoning_text or None,
+            "finish_reason": finish_reason,
+            "usage": usage or None,
+            "context_strategy": strategy,
+            "selected_pairs": selected_pairs,
+            "omitted_pairs": omitted_pairs,
+            "index": self.runs,
+            "history_tokens": history_tokens,
+            "predicted_prompt_tokens": predicted,
+            "agent_session_tokens": self.session_usage["total_tokens"],
+            "elapsed_ms": int(elapsed * 1000),
+            "error": error_text,
+        }
+        if self._over_budget:
+            entry["over_budget"] = True
+        if self.restored_pairs:
+            entry["restored_pairs"] = self.restored_pairs
+        if self._summary_sent and self._summary is not None:
+            entry["summary_used"] = True
+            entry["passed_pairs"] = self.passed_pairs
+            entry["summary_generation"] = self._summary.поколение
+        if self._compacted_pairs:
+            entry["compacted_pairs"] = self._compacted_pairs
+        if self._forgotten_pairs:
+            entry["forgotten_pairs"] = self._forgotten_pairs
+        if strategy == context_strategy.CONTEXT_FACTS:
+            entry["facts_revision"] = facts_revision
+            entry["facts_revision_after"] = facts_revision_after
+            if facts_usage is not None:
+                entry["facts_usage"] = facts_usage
+            if facts_error is not None:
+                entry["facts_error"] = facts_error
+        if strategy == context_strategy.CONTEXT_BRANCHING:
+            entry["branch"] = self._branch
+            entry["branch_head"] = branch_head
+            entry["branch_checkpoint"] = branch_checkpoint
+        if agent:
+            entry["agent"] = agent
+        if effective_run_id:
+            entry["run_id"] = effective_run_id
+        journal_error = journal.append(entry)
+
+        turn = Turn(
+            status=status,
+            text=answer_text,
+            reasoning=reasoning_text,
+            finish_reason=finish_reason,
+            usage=usage,
+            elapsed_ms=int(elapsed * 1000),
+            error=error_text,
+            request_messages=request_messages,
+            model=model,
+            profile_snapshot=snapshot,
+            dropped_pairs=self._dropped_pairs,
+            compacted_pairs=self._compacted_pairs,
+            forgotten_pairs=self._forgotten_pairs,
+            passed_pairs=self.passed_pairs,
+            index=self.runs,
+            history_tokens=history_tokens,
+            predicted_prompt=predicted,
+            agent_session_tokens=self.session_usage["total_tokens"],
+            over_budget=self._over_budget,
+            journal_error=journal_error,
+            store_error=self.store_error,
+            context_strategy=strategy,
+            selected_pairs=selected_pairs,
+            omitted_pairs=omitted_pairs,
+            facts_revision=facts_revision,
+            facts_revision_after=facts_revision_after,
+            facts_usage=facts_usage,
+            facts_error=facts_error,
+            branch=self._branch if strategy == context_strategy.CONTEXT_BRANCHING else None,
+            branch_head=branch_head,
+            branch_checkpoint=branch_checkpoint,
+        )
+        if cancelled:
+            raise asyncio.CancelledError
         return turn

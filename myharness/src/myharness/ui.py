@@ -100,13 +100,31 @@ COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("/params", "", "параметры профиля: показать и изменить", True),
     ("/set", "<параметр>", "изменить параметр — меню выбора значения", True),
     ("/system", "", "показать текущую системную инструкцию", True),
+    (
+        "/strategy",
+        "[use <standard|sliding|facts|branching>|window <N>]",
+        "открыть отдельный разговор стратегии или задать строгое окно",
+        True,
+    ),
+    (
+        "/facts",
+        "[set <ключ> <значение>|forget <ключ>]",
+        "факты текущего разговора Sticky Facts",
+        True,
+    ),
+    (
+        "/branch",
+        "[<имя>|split <A> <B>]",
+        "показать, выбрать или разделить ветви Branching",
+        True,
+    ),
     ("/team", "[вопрос]", "поднять группу агентов из профиля-ведущего", True),
     ("/mouse", "", "вернуть мышь терминалу и обратно (F2)", False),
-    ("/clear", "", "очистить историю диалога и начать новый разговор", True),
+    ("/clear", "", "очистить только главный разговор и начать новый", True),
     ("/remember", "<текст>", "запомнить факт о себе — он будет известен в любой папке", True),
     ("/memory", "[on|off]", "глобальная память: список фактов, сбор фактов вкл/выкл", True),
     ("/forget", "<номер>", "убрать факт из глобальной памяти", True),
-    ("/tokens", "", "расход токенов и денег за сеанс", True),
+    ("/tokens", "", "расход активного Agent и общий расход сеанса", True),
     ("/budget", "[токены]", "предел веса запроса; 0 — без предела", True),
     ("/context", "", "показать выжимку разговора целиком", True),
     ("/compact", "", "сжать память сейчас: все пары, кроме последней", True),
@@ -457,6 +475,7 @@ def waiting_fragments(
     *,
     exact: bool = True,
     frozen: bool = False,
+    session_known: bool = True,
 ) -> Fragments:
     """Строка под вопросом, пока идёт обмен, и она же — замершая — после его конца.
 
@@ -494,7 +513,7 @@ def waiting_fragments(
     время = format_duration(round(elapsed * 1000))
     исходящие = ("" if exact else "~") + format_exact(outgoing)
     входящие = format_exact(incoming)
-    итог = format_tokens(session)
+    итог = format_tokens(session) if session_known else "неизв."
     return [
         ("class:dim", f"{mark} "),
         ("class:dim", " " * len(WAITING_WORD) if frozen else WAITING_WORD),
@@ -840,6 +859,105 @@ def meta_fragments(
     return [(style, "· " + "  ·  ".join(parts)), ("", "\n")]
 
 
+CONTEXT_STRATEGY_TITLES = {
+    "standard": "Standard",
+    "sliding": "Sliding Window",
+    "facts": "Sticky Facts",
+    "branching": "Branching",
+}
+
+
+def context_turn_fragments(
+    strategy: str,
+    *,
+    selected_pairs: int,
+    omitted_pairs: int,
+    usage: dict[str, Any] | None = None,
+    facts_revision: int | None = None,
+    facts_revision_after: int | None = None,
+    facts_usage: dict[str, Any] | None = None,
+    facts_error: str | None = None,
+    branch: str | None = None,
+    branch_head: str | None = None,
+    branch_checkpoint: str | None = None,
+) -> Fragments:
+    """Фактический состав завершённого обмена, снятый из `Turn`.
+
+    Выбранные пары не считаются здесь повторно: агент зафиксировал их до отправки, и только
+    эти числа могут честно описать уже состоявшийся запрос. Не вошедшие в строгое окно пары
+    названы сохранёнными — они остаются в полной записи и не являются потерей памяти.
+    """
+    title = CONTEXT_STRATEGY_TITLES.get(strategy, strategy)
+    selected_word = _plural(selected_pairs, "пара", "пары", "пар")
+    out = system_fragments(
+        f"режим: {title}; выбрано {selected_pairs} {selected_word}"
+    )
+    if strategy in ("sliding", "facts"):
+        omitted_word = _plural(omitted_pairs, "пара", "пары", "пар")
+        out.extend(
+            [
+                (
+                    "class:dim",
+                    f"  сохранено, но не отправлено: {omitted_pairs} {omitted_word}\n",
+                )
+            ]
+        )
+    if strategy == "branching":
+        out.append(
+            (
+                "class:dim",
+                "  активная ветвь: "
+                f"{branch or 'родитель'}; голова: {branch_head or 'начало'}; "
+                f"контрольная точка: {branch_checkpoint or 'не создана'}\n",
+            )
+        )
+    if strategy != "facts":
+        return out
+
+    before = "неизвестна" if facts_revision is None else str(facts_revision)
+    after = "неизвестна" if facts_revision_after is None else str(facts_revision_after)
+    out.append(("class:dim", f"  редакция Sticky Facts: {before} → {after}\n"))
+
+    main_known = bool(usage)
+    main_normalized = tokens_mod.normalize(usage) if main_known else None
+    facts_known = facts_usage is not None
+    facts_normalized = (
+        tokens_mod.normalize(facts_usage) if facts_known else None
+    )
+    main_total = main_normalized["total_tokens"] if main_normalized else 0
+    facts_total = facts_normalized["total_tokens"] if facts_normalized else 0
+    main_text = (
+        f"{format_exact(main_total)} "
+        f"(↑ {format_exact(main_normalized['prompt_tokens'])}, "
+        f"↓ {format_exact(main_normalized['completion_tokens'])})"
+        if main_normalized
+        else "неизвестен"
+    )
+    facts_text = (
+        f"{format_exact(facts_total)} "
+        f"(↑ {format_exact(facts_normalized['prompt_tokens'])}, "
+        f"↓ {format_exact(facts_normalized['completion_tokens'])})"
+        if facts_normalized
+        else "неизвестен"
+    )
+    strategy_text = (
+        format_exact(main_total + facts_total)
+        if main_known and facts_known
+        else "неизвестен"
+    )
+    out.append(
+        (
+            "class:dim",
+            "  серверный расход: "
+            f"основной обмен {main_text}; извлекатель {facts_text}; "
+            f"расход стратегии {strategy_text}\n",
+        )
+    )
+    if facts_error:
+        out.extend(error_fragments(f"Sticky Facts не обновлены: {facts_error}"))
+    return out
+
+
 def params_fragments(profile_name: str, values: dict[str, Any], system: str | None) -> Fragments:
     out: Fragments = [("class:system", f"· параметры профиля «{profile_name}»"), ("", "\n")]
     for name in params_mod.ORDER:
@@ -904,6 +1022,12 @@ def tokens_report_fragments(
     usage: dict[str, Any],
     budget: int,
     cost: str,
+    active_name: str | None = None,
+    active_strategy: str = "standard",
+    active_runs: int | None = None,
+    active_usage: dict[str, Any] | None = None,
+    active_usage_known: bool = True,
+    session_usage_known: bool = True,
 ) -> Fragments:
     """Снимок расхода по `/tokens`: что уйдёт в следующий запрос и во что обошёлся сеанс.
 
@@ -930,7 +1054,6 @@ def tokens_report_fragments(
     # бы «занято 1 354» там, где занят почти весь контекст. Замечено на живом прогоне.
     занято = system + history + overhead
     пар_истории = _plural(pairs, "паре", "парах", "парах")
-    обменов = _plural(runs, "обмен", "обмена", "обменов")
     # Строки собираем в переменные, а не прямо во фрагментах: там пропущенная запятая
     # склеила бы соседние куски в одну строку молча, и подпись стиля уехала бы на строку ниже.
     окно = (
@@ -964,23 +1087,75 @@ def tokens_report_fragments(
                 f"  с диска поднято {restored} {поднято} — в итог сеанса не входят, в запрос — да\n",
             )
         )
-    вход = format_exact(int(usage.get("prompt_tokens") or 0))
-    выход = format_exact(int(usage.get("completion_tokens") or 0))
-    рассуждения = format_exact(int(usage.get("reasoning_tokens") or 0))
-    сеанс = (
-        f"  сеанс: {runs} {обменов}, вход {вход}, выход {выход} "
-        f"(из них рассуждения {рассуждения}), {cost}\n"
+    def usage_line(
+        label: str,
+        count: int,
+        values: dict[str, Any],
+        *,
+        known: bool,
+        include_cost: bool = False,
+    ) -> str:
+        normalized = tokens_mod.normalize(values)
+        вход = format_exact(normalized["prompt_tokens"])
+        выход = format_exact(normalized["completion_tokens"])
+        рассуждения = format_exact(normalized["reasoning_tokens"])
+        всего = format_exact(normalized["total_tokens"])
+        result = (
+            f"  {label}: {count} {_plural(count, 'обмен', 'обмена', 'обменов')}, "
+            f"вход {вход}, выход {выход} (из них рассуждения {рассуждения}), "
+            f"всего {всего}"
+        )
+        if not known:
+            result += " известного расхода; полный серверный расход неизвестен"
+        if include_cost:
+            result += f", {cost}"
+        return result + "\n"
+
+    if active_name is not None:
+        active_title = CONTEXT_STRATEGY_TITLES.get(
+            active_strategy, active_strategy
+        )
+        out.append(
+            (
+                "class:dim",
+                usage_line(
+                    f"активный Agent «{active_name}» · {active_title}",
+                    active_runs if active_runs is not None else runs,
+                    active_usage if active_usage is not None else usage,
+                    known=active_usage_known,
+                ),
+            )
+        )
+    out.append(
+        (
+            "class:dim",
+            usage_line(
+                "сеанс",
+                runs,
+                usage,
+                known=session_usage_known,
+                include_cost=True,
+            ),
+        )
     )
-    out.append(("class:dim", сеанс))
     if budget > 0:
         out.append(("class:dim", f"  предел веса запроса: {format_exact(budget)} (/budget 0 — снять)\n"))
     else:
         out.append(("class:dim", "  предел веса запроса не задан (/budget <токены> — задать)\n"))
     if not tokens_mod.exact():
-        # Приблизительны ровно два верхних числа: их считаем мы сами. Расход сеанса назвал
-        # сервер, и валить его в ту же оговорку значило бы наводить тень на точные числа.
+        # Приблизительны ровно два верхних числа: их считаем мы сами. Серверный расход
+        # обычно точен; если одно из обращений не прислало usage, это названо отдельно и
+        # здесь нельзя обещать точность полного итога.
+        расход = (
+            "известная часть расхода сеанса точна, полный расход неизвестен"
+            if not session_usage_known
+            else "расход сеанса точен"
+        )
         out.append(
-            ("class:dim", "  словаря нет: вес истории и занятое окно — оценка, расход сеанса точен\n")
+            (
+                "class:dim",
+                f"  словаря нет: вес истории и занятое окно — оценка, {расход}\n",
+            )
         )
     return out
 

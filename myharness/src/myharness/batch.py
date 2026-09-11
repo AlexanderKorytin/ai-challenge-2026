@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from . import api, config, profiles
+from . import api, config, context_strategy, profiles
 from .agent import Agent, Turn, usage_tokens
 from .profiles import Profile, Substitution
 
@@ -270,23 +270,42 @@ def summary_lines(order: Order, turns: list[Turn]) -> list[str]:
     lines = [f"Наряд: модель {order.model}, заданий {len(order.tasks)}, одновременно {order.concurrency}"]
     width = max((len(task.agent) for task in order.tasks), default=0)
     tokens_total = 0
+    tokens_total_known = True
     ok_count = 0
     for task, turn in zip(order.tasks, turns, strict=True):
-        # Счёт токенов — один на весь harness (`agent.usage_tokens`). Своя копия правила
-        # здесь уже была и считала иначе: она складывала слагаемые через `int()` и падала,
-        # если сервер клал в `usage` строку вместо числа, — то есть роняла сводку по уже
-        # выполненному и оплаченному наряду.
-        tokens = usage_tokens(turn.usage)
+        # Sticky Facts оплачивает два запроса, поэтому его расход точен только при наличии
+        # обоих серверных `usage`. Накопитель Agent содержит известную часть даже при обрыве,
+        # но пакетная сводка не умеет подписывать частичную сумму и не вправе выдавать её за
+        # полный расход. У остальных стратегий сохраняем прежнее правило по серверному
+        # `usage`: оно важно и для результатов, созданных при внутреннем сбое до запуска
+        # агента.
+        facts = turn.context_strategy == context_strategy.CONTEXT_FACTS
+        tokens_known = not facts or (
+            bool(turn.usage) and turn.facts_usage is not None
+        )
+        tokens = turn.agent_session_tokens if facts else usage_tokens(turn.usage)
         tokens_total += tokens
+        tokens_total_known = tokens_total_known and tokens_known
+        tokens_text = (
+            f"{tokens:6d} токенов" if tokens_known else "расход неизвестен"
+        )
         if turn.ok:
             ok_count += 1
             state = "ок"
-            tail = f"{turn.elapsed_ms / 1000:6.1f} с  {tokens:6d} токенов"
+            tail = f"{turn.elapsed_ms / 1000:6.1f} с  {tokens_text}"
         else:
             state = "сбой"
-            tail = f"{turn.elapsed_ms / 1000:6.1f} с  {tokens:6d} токенов  — {turn.error or turn.status}"
+            tail = (
+                f"{turn.elapsed_ms / 1000:6.1f} с  {tokens_text}"
+                f"  — {turn.error or turn.status}"
+            )
         lines.append(f"  {task.agent.ljust(width)}  {state:4}  {tail}")
-    lines.append(f"Итог: ответили {ok_count} из {len(order.tasks)}, израсходовано {tokens_total} токенов")
+    total = (
+        f"израсходовано {tokens_total} токенов"
+        if tokens_total_known
+        else "расход неизвестен"
+    )
+    lines.append(f"Итог: ответили {ok_count} из {len(order.tasks)}, {total}")
     return lines
 
 

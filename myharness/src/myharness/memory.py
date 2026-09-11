@@ -23,6 +23,7 @@ import contextlib
 import hashlib
 import json
 import os
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -152,6 +153,34 @@ class SessionStore:
             return f"не удалось записать разговор ({self.path}): {exc}"
         return None
 
+    def append_pair(
+        self,
+        user: str,
+        assistant: str,
+        meta: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Дописывает завершённую пару за одно открытие файла.
+
+        Обе записи сериализуются до первого обращения к диску. Поэтому непригодная пометка
+        ответа не может оставить в разговоре одинокий вопрос.
+        """
+        try:
+            отметка = datetime.now(UTC).isoformat(timespec="seconds")
+            вопрос: dict[str, Any] = {"ts": отметка, "role": "user", "content": user}
+            ответ: dict[str, Any] = {"ts": отметка, "role": "assistant", "content": assistant}
+            for ключ, значение in (meta or {}).items():
+                if ключ not in ответ:
+                    ответ[ключ] = значение
+            payload = (
+                json.dumps(вопрос, ensure_ascii=False)
+                + "\n"
+                + json.dumps(ответ, ensure_ascii=False)
+                + "\n"
+            ).encode("utf-8")
+        except (AttributeError, TypeError, ValueError) as exc:
+            return f"не удалось записать разговор ({self.path}): {exc}"
+        return _append_bytes(self.path, payload, "разговор")
+
 
 @dataclass
 class Restored:
@@ -253,39 +282,32 @@ def read_session(path: Path, *, window: int, system_fp: str) -> Restored:
     return итог
 
 
-def profile_dir(cwd: Path, profile: str) -> Path:
-    """Каталог разговоров пары «рабочий каталог, профиль».
+def profile_dir(cwd: Path, profile: str, strategy: str = "standard") -> Path:
+    """Каталог разговоров ключа «рабочий каталог, профиль, стратегия».
 
-    Профиль — уровень каталога, а не часть имени файла. Найти последнюю сессию пары надо, не
-    читая файлы: держи профиль в имени — пришлось бы снова разбирать имя, заведи оглавление —
-    появилось бы общее изменяемое состояние, ровно то, от чего ушли в глобальных фактах.
-    Каталог решает это без единой разборки имени: сессии профиля — просто его содержимое.
-
-    Имя профиля кодируется тем же обратимым правилом, что и путь рабочего каталога: два разных
-    профиля не имеют права попасть в один каталог и читать переписку друг друга. Заодно это
-    закрывает имя `..`: поле `profile` в файле настроек правят руками, и незакодированные две
-    точки увели бы разговор вон из каталога проекта.
-
-    Пустой код имени заменяется на `-`: `Path("/a") / ""` возвращает сам `/a`, и файлы сессий
-    легли бы в каталог проекта вперемешку с каталогами профилей. Цена замены — единственная
-    пара, схлопывающаяся в один каталог: профиль без имени и профиль с именем `/`. Оба —
-    невозможные в работе имена, и такой обмен выгоднее рассыпанных сессий."""
-    return sessions_dir(cwd) / (_safe_name(profile) or "-")
+    Для `standard` возвращает прежний каталог профиля без дополнительного уровня. Остальные
+    стратегии лежат ниже него и кодируются тем же правилом, что профиль: даже значение `..`
+    не может вывести запись наружу.
+    """
+    каталог = sessions_dir(cwd) / (_safe_name(profile) or "-")
+    if strategy == "standard":
+        return каталог
+    return каталог / (_safe_name(strategy) or "-")
 
 
-def latest_session(cwd: Path, profile: str) -> Path | None:
-    """Самая свежая сессия пары «каталог, профиль» — или `None`, если её ещё не было.
+def latest_session(cwd: Path, profile: str, strategy: str = "standard") -> Path | None:
+    """Самая свежая сессия соответствующего ключа — или `None`, если её ещё не было.
 
-    Свежесть считается по времени изменения файла, а не по имени. «Продолжить последний
-    разговор» — это про тот, с которым работали последним, а не про тот, который раньше начат:
-    вернулись вчера к старой сессии — продолжать надо её."""
+    Свежесть считается по времени изменения файла, а не по имени. Посторонние расширения и
+    вложенные каталоги с окончанием `.jsonl` сессиями не считаются.
+    """
     свежайшая: Path | None = None
     # Ключ сравнения — пара «время, имя»: наносекундный st_mtime совпадает редко, но после
     # копирования каталога состояния или rsync — запросто, и тогда выбор разговора решался бы
     # порядком, в котором каталог отдала файловая система, то есть жребием.
     ключ_свежайшей: tuple[float, str] = (float("-inf"), "")
     try:
-        содержимое = list(profile_dir(cwd, profile).iterdir())
+        содержимое = list(profile_dir(cwd, profile, strategy).iterdir())
     except OSError:
         # Каталога ещё нет — это первый запуск с этим профилем, обычное дело, а не беда.
         return None
@@ -307,16 +329,587 @@ def latest_session(cwd: Path, profile: str) -> Path | None:
     return свежайшая
 
 
-def new_session(cwd: Path, profile: str) -> Path:
-    """Путь новой сессии. Файла не заводит: пустой файл разговора неотличим от начатого и
-    брошенного, и файл появляется при первой записи.
+def new_session(cwd: Path, profile: str, strategy: str = "standard") -> Path:
+    """Возвращает путь новой сессии, не создавая файл.
 
-    Имя случайное и ничего не сообщает — намеренно. Осмысленное имя тянуло за собой целый класс
-    бед: время в имени, две сессии в одну секунду, счётчик, сдвиг момента вперёд и, как
-    следствие, «следующий запуск вернул более старый разговор», плюс сверку формы имени, чтобы
-    посторонний файл не побеждал в выборе. Случайное имя снимает всё это разом, а когда разговор
-    начат — видно из первой записи внутри файла."""
-    return profile_dir(cwd, profile) / f"{uuid4().hex}.jsonl"
+    Случайное имя исключает гонку счётчика и ничего не сообщает о времени разговора.
+    Дополнительный уровень появляется только у новых стратегий; старый вызов из двух
+    аргументов остаётся на прежнем пути.
+    """
+    return profile_dir(cwd, profile, strategy) / f"{uuid4().hex}.jsonl"
+
+РАСШИРЕНИЕ_ФАКТОВ_РАЗГОВОРА = ".facts.json"
+
+
+def _is_utc_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() == UTC.utcoffset(parsed)
+
+
+def _append_bytes(path: Path, payload: bytes, subject: str) -> str | None:
+    """Дописывает готовые строки, отделяя их от оборванного хвоста без `\n`."""
+    try:
+        _make_private_dir(path.parent)
+        with path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell():
+                handle.seek(-1, os.SEEK_END)
+                if handle.read(1) != b"\n":
+                    payload = b"\n" + payload
+                handle.seek(0, os.SEEK_END)
+            handle.write(payload)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        return f"не удалось записать {subject} ({path}): {exc}"
+    return None
+
+
+def _append_serialized(path: Path, line: str, subject: str) -> str | None:
+    """Дописывает одну уже сериализованную строку в защищённый файл."""
+    return _append_bytes(path, (line + "\n").encode("utf-8"), subject)
+
+
+def _decode_lines(raw: bytes, subject: str) -> tuple[list[tuple[int, str]], list[str]]:
+    """Строго декодирует строки: один битый знак не заражает соседние записи."""
+    decoded: list[tuple[int, str]] = []
+    warnings: list[str] = []
+    for number, raw_line in enumerate(raw.splitlines(), 1):
+        try:
+            decoded.append((number, raw_line.decode("utf-8")))
+        except UnicodeDecodeError:
+            warnings.append(f"строка {number} {subject} содержит непригодные байты — пропущена")
+    return decoded, warnings
+
+
+@dataclass
+class ConversationFacts:
+    """Последняя целая редакция фактов текущего разговора."""
+
+    values: dict[str, str] = field(default_factory=dict)
+    revision: int = 0
+
+
+def _fact_values(
+    set_values: Mapping[str, str],
+    forget_keys: Iterable[str],
+) -> tuple[dict[str, str], list[str]] | str:
+    if not isinstance(set_values, Mapping):
+        return "set должен быть объектом"
+    if isinstance(forget_keys, (str, bytes)) or not isinstance(forget_keys, Iterable):
+        return "forget должен быть списком ключей"
+
+    очищенные: dict[str, str] = {}
+    try:
+        for key, value in set_values.items():
+            if not isinstance(key, str) or not key.strip():
+                return "ключ set должен быть непустым текстом"
+            if not isinstance(value, str) or not value.strip():
+                return f"значение set для {key!r} должно быть непустым текстом"
+            очищенные[key.strip()] = value.strip()
+
+        забываемые: list[str] = []
+        for key in forget_keys:
+            if not isinstance(key, str) or not key.strip():
+                return "ключ forget должен быть непустым текстом"
+            забываемые.append(key.strip())
+    except (TypeError, ValueError) as exc:
+        return f"не удалось разобрать операцию фактов: {exc}"
+    return очищенные, забываемые
+
+
+class FactsStore:
+    """Дописываемый журнал операций Sticky Facts рядом с линейной сессией."""
+
+    def __init__(self, session: Path) -> None:
+        self.session = session
+        self.path = session.with_suffix(РАСШИРЕНИЕ_ФАКТОВ_РАЗГОВОРА)
+
+    def load(self) -> tuple[ConversationFacts, list[str]]:
+        facts = ConversationFacts()
+        warnings: list[str] = []
+        if not self.path.exists():
+            return facts, warnings
+        try:
+            raw = self.path.read_bytes()
+        except OSError as exc:
+            return facts, [f"не удалось прочитать журнал фактов ({self.path}): {exc}"]
+        decoded, decode_warnings = _decode_lines(raw, "журнала фактов")
+        warnings.extend(decode_warnings)
+
+        for number, line in decoded:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                warnings.append(f"строка {number} журнала фактов испорчена — пропущена")
+                continue
+            if not isinstance(record, dict):
+                warnings.append(f"строка {number} журнала фактов испорчена — пропущена")
+                continue
+
+            revision = record.get("revision")
+            source = record.get("source")
+            turn_id = record.get("turn_id")
+            operation = _fact_values(record.get("set"), record.get("forget"))
+            пригодна = (
+                isinstance(revision, int)
+                and not isinstance(revision, bool)
+                and revision > facts.revision
+                and source in ("extractor", "user")
+                and isinstance(turn_id, str)
+                and bool(turn_id.strip())
+                and _is_utc_timestamp(record.get("ts"))
+                and not isinstance(operation, str)
+            )
+            if not пригодна:
+                warnings.append(f"строка {number} журнала фактов непригодна — пропущена")
+                continue
+
+            set_values, forget_keys = operation
+            for key, value in set_values.items():
+                facts.values[key] = value
+            for key in forget_keys:
+                facts.values.pop(key, None)
+            facts.revision = revision
+        return facts, warnings
+
+    def append(
+        self,
+        set_values: Mapping[str, str],
+        forget_keys: Iterable[str],
+        *,
+        turn_id: str,
+        source: str,
+    ) -> str | None:
+        operation = _fact_values(set_values, forget_keys)
+        if isinstance(operation, str):
+            return operation
+        if source not in ("extractor", "user"):
+            return "источник фактов должен быть extractor или user"
+        if not isinstance(turn_id, str) or not turn_id.strip():
+            return "turn_id операции фактов должен быть непустым текстом"
+
+        facts, _ = self.load()
+        set_record, forget_record = operation
+        record = {
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "revision": facts.revision + 1,
+            "turn_id": turn_id.strip(),
+            "source": source,
+            "set": set_record,
+            "forget": forget_record,
+        }
+        try:
+            line = json.dumps(record, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            return f"не удалось сериализовать операцию фактов: {exc}"
+        return _append_serialized(self.path, line, "журнал фактов")
+
+
+@dataclass(frozen=True)
+class BranchTurn:
+    """Один неизменяемый узел графа Branching — завершённая пара целиком."""
+
+    id: str
+    parent_id: str | None
+    branch: str | None
+    user: str
+    assistant: str
+    ts: str
+    profile: str
+    model: str
+    system_fp: str
+
+
+@dataclass
+class RestoredBranches:
+    """Восстановленный граф с независимыми головами доступных ветвей."""
+
+    turns: dict[str, BranchTurn] = field(default_factory=dict)
+    heads: dict[str, str] = field(default_factory=dict)
+    checkpoint_id: str | None = None
+    branches: tuple[str, ...] = ()
+    root_head: str | None = None
+    warnings: list[str] = field(default_factory=list)
+    unavailable: set[str] = field(default_factory=set)
+
+    def path(self, branch: str | None) -> list[tuple[str, str]]:
+        """Возвращает пары от корня до головы, не включая соседние ветви."""
+        if self.checkpoint_id is None:
+            if branch is not None:
+                return []
+            head = self.root_head
+        else:
+            if branch not in self.heads or branch in self.unavailable:
+                return []
+            head = self.heads[branch]
+
+        reversed_path: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        while head is not None:
+            if head in seen:
+                return []
+            seen.add(head)
+            turn = self.turns.get(head)
+            if turn is None:
+                return []
+            reversed_path.append((turn.user, turn.assistant))
+            head = turn.parent_id
+        reversed_path.reverse()
+        return reversed_path
+
+
+@dataclass(frozen=True)
+class _BranchSplit:
+    checkpoint_id: str
+    left: str
+    right: str
+    line: int
+
+
+def _branch_name(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _parse_branch_turn(record: dict[str, Any]) -> BranchTurn | None:
+    turn_id = _branch_name(record.get("id"))
+    parent = record.get("parent_id")
+    branch_value = record.get("branch")
+    branch = _branch_name(branch_value)
+    if parent is not None:
+        parent = _branch_name(parent)
+        if parent is None:
+            return None
+    if branch_value is not None and branch is None:
+        return None
+    if (
+        turn_id is None
+        or not isinstance(record.get("user"), str)
+        or not isinstance(record.get("assistant"), str)
+        or not isinstance(record.get("profile"), str)
+        or not isinstance(record.get("model"), str)
+        or not isinstance(record.get("system_fp"), str)
+        or not _is_utc_timestamp(record.get("ts"))
+    ):
+        return None
+    return BranchTurn(
+        id=turn_id,
+        parent_id=parent,
+        branch=branch,
+        user=record["user"],
+        assistant=record["assistant"],
+        ts=record["ts"],
+        profile=record["profile"],
+        model=record["model"],
+        system_fp=record["system_fp"],
+    )
+
+
+def _parse_split(record: dict[str, Any], line: int) -> _BranchSplit | None:
+    checkpoint = _branch_name(record.get("checkpoint_id"))
+    left = _branch_name(record.get("left"))
+    right = _branch_name(record.get("right"))
+    if (
+        checkpoint is None
+        or left is None
+        or right is None
+        or left == right
+        or not _is_utc_timestamp(record.get("ts"))
+    ):
+        return None
+    return _BranchSplit(checkpoint, left, right, line)
+
+
+def _cycle_in_branch(turns: dict[str, BranchTurn]) -> bool:
+    for start in turns:
+        seen: set[str] = set()
+        current: str | None = start
+        while current in turns:
+            if current in seen:
+                return True
+            seen.add(current)
+            current = turns[current].parent_id
+    return False
+
+
+class BranchStore:
+    """Один дописываемый файл графа Branching."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def load(self) -> RestoredBranches:
+        restored = RestoredBranches()
+        if not self.path.exists():
+            return restored
+        try:
+            raw = self.path.read_bytes()
+        except OSError as exc:
+            restored.warnings.append(f"не удалось прочитать граф ветвей ({self.path}): {exc}")
+            return restored
+        decoded, decode_warnings = _decode_lines(raw, "графа ветвей")
+        restored.warnings.extend(decode_warnings)
+
+        entries: list[tuple[int, BranchTurn]] = []
+        split: _BranchSplit | None = None
+        invalid_branches: set[str] = set()
+        for number, line in decoded:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                restored.warnings.append(f"строка {number} графа ветвей испорчена — пропущена")
+                continue
+            if not isinstance(record, dict):
+                restored.warnings.append(f"строка {number} графа ветвей испорчена — пропущена")
+                continue
+
+            if record.get("type") == "turn":
+                turn = _parse_branch_turn(record)
+                if turn is None:
+                    branch = _branch_name(record.get("branch"))
+                    if branch is not None:
+                        invalid_branches.add(branch)
+                    restored.warnings.append(f"строка {number}: узел ветви непригоден — пропущен")
+                    continue
+                entries.append((number, turn))
+            elif record.get("type") == "split":
+                candidate = _parse_split(record, number)
+                if candidate is None:
+                    restored.warnings.append(f"строка {number}: разделение непригодно — пропущено")
+                elif split is None:
+                    split = candidate
+                else:
+                    restored.warnings.append(f"строка {number}: повторное разделение — пропущено")
+            else:
+                restored.warnings.append(f"строка {number}: неизвестное событие графа — пропущено")
+
+        unique: dict[str, tuple[int, BranchTurn]] = {}
+        for number, turn in entries:
+            if turn.id in unique:
+                if turn.branch is not None:
+                    invalid_branches.add(turn.branch)
+                restored.warnings.append(f"строка {number}: повтор id {turn.id!r} — узел пропущен")
+                continue
+            unique[turn.id] = (number, turn)
+
+        root_head: str | None = None
+        safe_turns: dict[str, BranchTurn] = {}
+        split_line = split.line if split is not None else None
+        for number, turn in entries:
+            if unique.get(turn.id) != (number, turn) or turn.branch is not None:
+                continue
+            if split_line is not None and number > split_line:
+                restored.warnings.append(f"строка {number}: корень продолжен после разделения — узел пропущен")
+                continue
+            if turn.parent_id != root_head:
+                restored.warnings.append(f"строка {number}: нарушена цепочка корня — узел пропущен")
+                continue
+            safe_turns[turn.id] = turn
+            root_head = turn.id
+        restored.root_head = root_head
+
+        if split is not None:
+            if root_head is None or split.checkpoint_id != root_head:
+                restored.warnings.append(
+                    f"строка {split.line}: контрольная точка разделения не является головой корня"
+                )
+                split = None
+            else:
+                restored.checkpoint_id = split.checkpoint_id
+                restored.branches = (split.left, split.right)
+
+        if split is None:
+            for number, turn in entries:
+                if turn.branch is not None:
+                    restored.warnings.append(f"строка {number}: ветвь задана до разделения — узел пропущен")
+            restored.turns = safe_turns
+            return restored
+
+        declared = set(restored.branches)
+        for number, turn in entries:
+            if turn.branch is not None and turn.branch not in declared:
+                invalid_branches.add(turn.branch)
+                restored.warnings.append(
+                    f"строка {number}: неизвестная ветвь {turn.branch!r} — узел пропущен"
+                )
+        restored.unavailable.update(invalid_branches - declared)
+
+        for branch in restored.branches:
+            branch_entries = [
+                (number, turn)
+                for number, turn in entries
+                if turn.branch == branch and unique.get(turn.id) == (number, turn)
+            ]
+            branch_turns = {turn.id: turn for _, turn in branch_entries}
+            broken = branch in invalid_branches
+
+            for number, turn in branch_entries:
+                if number < split.line:
+                    restored.warnings.append(
+                        f"строка {number}: ветвь {branch!r} записана до разделения"
+                    )
+                    broken = True
+                    continue
+                parent = unique.get(turn.parent_id) if turn.parent_id is not None else None
+                if parent is None:
+                    restored.warnings.append(
+                        f"строка {number}: неизвестный родитель узла ветви {branch!r}"
+                    )
+                    broken = True
+                elif turn.parent_id != restored.checkpoint_id and parent[1].branch != branch:
+                    restored.warnings.append(
+                        f"строка {number}: узел ветви {branch!r} ссылается на чужую ветвь"
+                    )
+                    broken = True
+
+            if _cycle_in_branch(branch_turns):
+                restored.warnings.append(f"в ветви {branch!r} обнаружен цикл")
+                broken = True
+
+            children: dict[str, int] = {}
+            for turn in branch_turns.values():
+                if turn.parent_id in branch_turns:
+                    children[turn.parent_id] = children.get(turn.parent_id, 0) + 1
+            if any(count > 1 for count in children.values()):
+                restored.warnings.append(f"ветвь {branch!r} содержит развилку после разделения")
+                broken = True
+
+            if branch_turns:
+                tips = [turn_id for turn_id in branch_turns if turn_id not in children]
+                if len(tips) != 1:
+                    restored.warnings.append(f"у ветви {branch!r} нет единственной головы")
+                    broken = True
+                    head = restored.checkpoint_id
+                else:
+                    head = tips[0]
+                    reached: set[str] = set()
+                    current: str | None = head
+                    while current != restored.checkpoint_id and current in branch_turns:
+                        if current in reached:
+                            break
+                        reached.add(current)
+                        current = branch_turns[current].parent_id
+                    if current != restored.checkpoint_id or reached != set(branch_turns):
+                        restored.warnings.append(
+                            f"ветвь {branch!r} не образует путь от контрольной точки"
+                        )
+                        broken = True
+            else:
+                head = restored.checkpoint_id
+
+            if broken:
+                restored.unavailable.add(branch)
+                continue
+            safe_turns.update(branch_turns)
+            restored.heads[branch] = head
+
+        restored.turns = safe_turns
+        return restored
+
+    def append_turn(
+        self,
+        branch: str | None,
+        parent_id: str | None,
+        user: str,
+        assistant: str,
+        *,
+        profile: str,
+        model: str,
+        system_fp: str,
+    ) -> tuple[BranchTurn | None, str | None]:
+        if branch is not None:
+            branch = _branch_name(branch)
+            if branch is None:
+                return None, "имя ветви должно быть непустым текстом"
+        if parent_id is not None and _branch_name(parent_id) is None:
+            return None, "parent_id должен быть непустым текстом или None"
+        if not all(isinstance(value, str) for value in (user, assistant, profile, model, system_fp)):
+            return None, "тексты пары и пометки узла должны быть строками"
+
+        restored = self.load()
+        if restored.checkpoint_id is None:
+            if branch is not None:
+                return None, "до разделения пару можно записать только в корень"
+            expected_parent = restored.root_head
+        else:
+            if branch not in restored.branches:
+                return None, f"неизвестная ветвь {branch!r}"
+            if branch in restored.unavailable or branch not in restored.heads:
+                return None, f"ветвь {branch!r} недоступна из-за повреждения графа"
+            expected_parent = restored.heads[branch]
+        if parent_id != expected_parent:
+            return None, f"родитель не является головой: ожидался {expected_parent!r}"
+
+        turn_id = uuid4().hex
+        while turn_id in restored.turns:
+            turn_id = uuid4().hex
+        turn = BranchTurn(
+            id=turn_id,
+            parent_id=parent_id,
+            branch=branch,
+            user=user,
+            assistant=assistant,
+            ts=datetime.now(UTC).isoformat(timespec="seconds"),
+            profile=profile,
+            model=model,
+            system_fp=system_fp,
+        )
+        record = {
+            "type": "turn",
+            "ts": turn.ts,
+            "id": turn.id,
+            "parent_id": turn.parent_id,
+            "branch": turn.branch,
+            "user": turn.user,
+            "assistant": turn.assistant,
+            "profile": turn.profile,
+            "model": turn.model,
+            "system_fp": turn.system_fp,
+        }
+        try:
+            line = json.dumps(record, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            return None, f"не удалось сериализовать узел ветви: {exc}"
+        error = _append_serialized(self.path, line, "граф ветвей")
+        return (None, error) if error else (turn, None)
+
+    def split(self, checkpoint_id: str | None, left: str, right: str) -> str | None:
+        left_name = _branch_name(left)
+        right_name = _branch_name(right)
+        if left_name is None or right_name is None:
+            return "имена двух ветвей должны быть непустым текстом"
+        if left_name == right_name:
+            return "имена двух ветвей должны различаться"
+
+        restored = self.load()
+        if restored.checkpoint_id is not None:
+            return "разговор уже разделён"
+        if restored.root_head is None:
+            return "разделение возможно только после завершённой пары"
+        if checkpoint_id != restored.root_head:
+            return f"контрольная точка не является головой: ожидалась {restored.root_head!r}"
+
+        record = {
+            "type": "split",
+            "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+            "checkpoint_id": checkpoint_id,
+            "left": left_name,
+            "right": right_name,
+        }
+        try:
+            line = json.dumps(record, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            return f"не удалось сериализовать разделение: {exc}"
+        return _append_serialized(self.path, line, "разделение ветвей")
+
 
 
 # Расширение файла выжимки. Оно нарочно НЕ `.jsonl`: выбор последней сессии перебирает

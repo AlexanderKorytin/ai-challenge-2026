@@ -31,6 +31,15 @@ from pathlib import Path
 from string import Template
 from typing import Any
 
+from .context_strategy import (
+    CONTEXT_BRANCHING,
+    CONTEXT_FACTS,
+    CONTEXT_STANDARD,
+    CONTEXT_STRATEGIES,
+    CONTEXT_SLIDING,
+    DEFAULT_CONTEXT_STRATEGY,
+    DEFAULT_STRATEGY_WINDOW,
+)
 from . import params as params_mod
 from . import tokens
 from .agent import DEFAULT_WINDOW_PAIRS
@@ -47,6 +56,7 @@ DEFAULT_PROFILE_NAME = "default"
 DEFAULT_COMPACT_AT = 0.8
 # Выше этой доли порог не пускаем: за ним обязано остаться место на вопрос и на ответ.
 MAX_COMPACT_AT = 0.9
+
 
 # Раскладка цепочки шагов: панелями рядом на одной вкладке либо вкладкой на шаг.
 LAYOUT_PANES = "panes"
@@ -65,6 +75,21 @@ class Substitution(Template):
     """
 
     idpattern = r"(?:[^\W\d]\w*)"
+
+
+class _JSONObject(dict[str, Any]):
+    """Обычный JSON-объект, который дополнительно помнит исходные пары ключей.
+
+    Как словарь он сохраняет привычное поведение `json.loads`: при точном повторе ключа
+    доступно последнее значение. Исходные пары нужны только разбору `branch_prefills`,
+    где повтор имени обязан быть виден и отброшен с предупреждением.
+    """
+
+    __slots__ = ("pairs",)
+
+    def __init__(self, pairs: list[tuple[str, Any]]) -> None:
+        super().__init__(pairs)
+        self.pairs = pairs
 
 
 def user_profiles_dir() -> Path:
@@ -92,6 +117,13 @@ class Profile:
     budget_tokens: int = 0
     # доля окна модели, при близости к которой память ужимается; 0 — сжатие выключено
     compact_at: float = DEFAULT_COMPACT_AT
+    # Политика выбора истории. Отдельное окно стратегии не заменяет прежнее history_window:
+    # оно действует только в новых режимах, а standard сохраняет прежнее поведение.
+    context_strategy: str = DEFAULT_CONTEXT_STRATEGY
+    strategy_window: int = DEFAULT_STRATEGY_WINDOW
+    # Очереди заготовок ветвей хранятся и при другом выбранном режиме: пользователь может
+    # вернуться к branching, не потеряв настройки профиля.
+    branch_prefills: dict[str, list[str]] = field(default_factory=dict)
     agents: list[str] = field(default_factory=list)  # непусто — профиль ведущего группы
     screens: list[str] = field(default_factory=list)  # непусто — набор рабочих экранов
     # как разложены шаги цепочки: "panes" — панелями рядом, "tabs" — вкладкой на шаг
@@ -112,8 +144,14 @@ class Profile:
             "history_window": self.history_window,
             "budget_tokens": self.budget_tokens,
             "compact_at": self.compact_at,
+            "context_strategy": self.context_strategy,
+            "strategy_window": self.strategy_window,
             "params": dict(self.params),
         }
+        if self.branch_prefills:
+            snapshot["branch_prefills"] = {
+                name: list(prefills) for name, prefills in self.branch_prefills.items()
+            }
         if self.agents:
             snapshot["agents"] = list(self.agents)
         if self.screens:
@@ -145,6 +183,12 @@ class Profile:
         data["history_window"] = self.history_window
         data["budget_tokens"] = self.budget_tokens
         data["compact_at"] = self.compact_at
+        data["context_strategy"] = self.context_strategy
+        data["strategy_window"] = self.strategy_window
+        if self.branch_prefills:
+            data["branch_prefills"] = {
+                name: list(prefills) for name, prefills in self.branch_prefills.items()
+            }
         if self.agents:
             data["agents"] = list(self.agents)
         if self.screens:
@@ -347,6 +391,79 @@ def _compact_at(raw: Any, warnings: list[str]) -> float:
     return float(raw)
 
 
+def _context_strategy(raw: Any, warnings: list[str]) -> str:
+    """Разбирает закрытый набор стратегий, сохраняя прежний режим для старых профилей."""
+    if raw is None:
+        return DEFAULT_CONTEXT_STRATEGY
+    if not isinstance(raw, str) or raw not in CONTEXT_STRATEGIES:
+        allowed = ", ".join(f"«{strategy}»" for strategy in CONTEXT_STRATEGIES)
+        warnings.append(
+            f"поле «context_strategy»: {raw!r} — ожидалось одно из значений {allowed}, "
+            f"взято умолчание «{DEFAULT_CONTEXT_STRATEGY}»"
+        )
+        return DEFAULT_CONTEXT_STRATEGY
+    return raw
+
+
+def _strategy_window(raw: Any, warnings: list[str]) -> int:
+    """Строгое окно новых стратегий в завершённых парах."""
+    if raw is None:
+        return DEFAULT_STRATEGY_WINDOW
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        warnings.append(
+            f"поле «strategy_window»: {raw!r} — ожидалось положительное целое число, "
+            f"взято умолчание {DEFAULT_STRATEGY_WINDOW}"
+        )
+        return DEFAULT_STRATEGY_WINDOW
+    return raw
+
+
+def _branch_prefills(raw: Any, warnings: list[str]) -> dict[str, list[str]]:
+    """Очереди заготовок по именам ветвей с порядком из файла профиля."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        warnings.append("поле «branch_prefills» — не объект очередей ветвей, пропущено")
+        return {}
+
+    branches: dict[str, list[str]] = {}
+    seen: set[str] = set()
+    pairs = raw.pairs if isinstance(raw, _JSONObject) else raw.items()
+    for raw_name, raw_prefills in pairs:
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            warnings.append(
+                f"поле «branch_prefills»: {raw_name!r} — не имя ветви, пропущено"
+            )
+            continue
+        name = raw_name.strip()
+        if name in seen:
+            warnings.append(
+                f"поле «branch_prefills»: ветвь «{name}» указана повторно — "
+                "второе упоминание пропущено"
+            )
+            continue
+        # Имя занято первым упоминанием независимо от пригодности его очереди: иначе
+        # повтор смог бы молча заменить ошибочное первое значение.
+        seen.add(name)
+        if not isinstance(raw_prefills, list):
+            warnings.append(
+                f"поле «branch_prefills»: очередь ветви «{name}» — не список, пропущена"
+            )
+            continue
+
+        prefills: list[str] = []
+        for item in raw_prefills:
+            if isinstance(item, str) and item.strip():
+                prefills.append(item.strip())
+            else:
+                warnings.append(
+                    f"поле «branch_prefills», ветвь «{name}»: "
+                    f"непригодная заготовка {item!r} пропущена"
+                )
+        branches[name] = prefills
+    return branches
+
+
 def _layout(raw: Any, screens: list[str], warnings: list[str]) -> str:
     """Раскладка шагов цепочки: «panes» — панелями рядом на одной вкладке, «tabs» — вкладкой
     на шаг. Умолчание — панели: так поведение прежних профилей не меняется от появления поля.
@@ -411,6 +528,9 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "history_window",
         "budget_tokens",
         "compact_at",
+        "context_strategy",
+        "strategy_window",
+        "branch_prefills",
         "agents",
         "screens",
         "methods",
@@ -460,6 +580,19 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
 
     screen_names = _profile_names(data.get("screens"), "screens", warnings)
     result_names = _chain_result(data.get("result"), screen_names, warnings)
+    context_strategy = _context_strategy(data.get("context_strategy"), warnings)
+    strategy_window = _strategy_window(data.get("strategy_window"), warnings)
+    branch_prefills = _branch_prefills(data.get("branch_prefills"), warnings)
+    compact_at = _compact_at(data.get("compact_at"), warnings)
+    if context_strategy != CONTEXT_STANDARD and compact_at != 0:
+        warnings.append(
+            f"поле «compact_at» сохранено, но в режиме «{context_strategy}» сжатие не применяется"
+        )
+    if "branch_prefills" in data and context_strategy != CONTEXT_BRANCHING:
+        warnings.append(
+            f"поле «branch_prefills» сохранено, но применяется только в режиме "
+            f"«{CONTEXT_BRANCHING}»"
+        )
 
     profile = Profile(
         name=data.get("name") or name,
@@ -473,7 +606,10 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         keep_history=bool(data.get("keep_history", True)),
         history_window=_history_window(data.get("history_window"), warnings),
         budget_tokens=_budget_tokens(data.get("budget_tokens"), warnings),
-        compact_at=_compact_at(data.get("compact_at"), warnings),
+        compact_at=compact_at,
+        context_strategy=context_strategy,
+        strategy_window=strategy_window,
+        branch_prefills=branch_prefills,
         agents=_profile_names(data.get("agents"), "agents", warnings),
         screens=screen_names,
         layout=_layout(data.get("layout"), screen_names, warnings),
@@ -507,7 +643,10 @@ def load(name: str) -> tuple[Profile, list[str]]:
         if not path.is_file():
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(
+                path.read_text(encoding="utf-8"),
+                object_pairs_hook=_JSONObject,
+            )
         except (json.JSONDecodeError, OSError) as exc:
             return builtin_default(), [f"профиль «{name}» испорчен ({exc}) — взят default"]
         if not isinstance(data, dict):

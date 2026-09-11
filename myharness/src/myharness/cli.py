@@ -8,7 +8,7 @@ import argparse
 import asyncio
 import os
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +33,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
-from . import api, archivist, background, compact, memory, profiles, team, tokens, ui
+from . import api, archivist, background, compact, context_strategy, memory, profiles, team, tokens, ui
 from . import methods as methods_mod
 from . import params as params_mod
 from . import picker as picker_mod
@@ -46,15 +46,53 @@ from .config import save as save_config
 from .output import Fragments, append_log, deliver, refresh, run_turn
 from .profiles import Profile
 
+def profile_for_strategy(source: Profile, strategy: str) -> Profile:
+    """Независимый рабочий профиль режима из одной исходной пары файлов.
+
+    Изменяемые поля копируются: `/strategy window` и очереди заготовок одного экрана не
+    вправе менять соседний режим или главный разговор.
+    """
+
+    return replace(
+        source,
+        context_strategy=strategy,
+        prefills=list(source.prefills),
+        branch_prefills={
+            name: list(prefills) for name, prefills in source.branch_prefills.items()
+        },
+        agents=list(source.agents),
+        screens=list(source.screens),
+        methods=list(source.methods),
+        result=list(source.result),
+        vars=dict(source.vars),
+        params=dict(source.params),
+    )
+
+
+def active_profile(state: State) -> Profile:
+    """Профиль панели, с которой человек сейчас работает."""
+
+    pane = _active_input_pane(state)
+    return pane.profile or state.profile
+
+
+def active_strategy(state: State) -> str:
+    return active_profile(state).context_strategy
+
+
 
 @dataclass
 class Request:
-    """Единица очереди. Ведущий задаётся только для разового запуска группы через /team —
-    в остальных случаях берётся профиль, активный на момент отправки."""
+    """Единица очереди с точным местом назначения.
+
+    `lead` задаётся только для разового запуска группы через `/team`. Обычный разговор,
+    группа и набор способов остаются в общей очереди главной панели; интерактивные
+    неглавные панели передают такие единицы собственному `PaneWorker`.
+    """
 
     content: str
+    pane: screens_mod.Pane
     lead: Profile | None = None
-    screen: screens_mod.Screen | None = None  # ввод с рабочего экрана уходит в него же
 
 
 @dataclass
@@ -68,11 +106,25 @@ class State:
     active: int = 0
     queue: asyncio.Queue[Request] = field(default_factory=asyncio.Queue)
     current_task: asyncio.Task | None = None
+    # Главный разговор, группа и набор способов сохраняют прежние общие поля выше.
+    # Неглавная интерактивная панель получает собственный последовательный исполнитель:
+    # ключом служит тождество панели, а сам объект повторно проверяется при поиске.
+    pane_workers: dict[int, PaneWorker] = field(default_factory=dict)
+    # Обработчик Enter запускает короткую асинхронную передачу запроса. Эти задачи тоже
+    # принадлежат приложению: при выходе их отменяют и дожидаются вместе с исполнителями,
+    # иначе Enter непосредственно перед выходом мог пережить закрытие клиента.
+    submission_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    # Пока смена профиля дожидается старых очередей, новые команды и вопросы не должны
+    # попасть ни в старое дерево экранов, ни в ещё не установленный новый профиль.
+    switching_profile: bool = False
     busy: bool = False
     awaiting_key: bool = False
     awaiting_custom: str | None = None  # имя параметра, для которого ждём своё значение
     picker: picker_mod.Picker | None = None
     profile_dirty: bool = False  # параметры меняли, но профиль не сохранён
+    # Режим, записанный в исходном профиле, открывается после восстановления standard.
+    # Сам главный собеседник при этом остаётся прежним standard и прежним путём на диске.
+    initial_strategy: str = field(init=False, default=context_strategy.CONTEXT_STANDARD)
     known_models: list[str] = field(default_factory=lambda: list(api.FALLBACK_MODELS))
     journal_warned: bool = False
     # Расход агентов, которых в дереве экранов больше нет: собеседника, смещённого сменой
@@ -80,6 +132,13 @@ class State:
     # собеседника: деньги за прежний разговор списаны и никуда не делись оттого, что человек
     # сменил профиль. Без копилки итог падал бы посреди работы почти до нуля — то есть врал.
     retired_usage: dict[str, int] = field(default_factory=dict)
+    # Число завершённых обменов выбывших агентов нужно `/tokens` по той же причине, что и
+    # расход: смена профиля или разделение ветви не отменяют уже сделанной работы.
+    retired_runs: int = 0
+    # Неизвестный серверный расход нельзя превращать в ноль. Общий признак переживает
+    # удаление панели, множество тождеств сохраняет ту же правду для живого активного Agent.
+    session_usage_known: bool = True
+    unknown_usage_agent_ids: set[int] = field(default_factory=set)
     # Деньги за сеанс копим по ходу, а не считаем задним числом по накопленным токенам:
     # тариф зависит от модели и от часа, а модель меняется на лету. Пересчёт по текущей
     # модели врал втрое — расход, сделанный на `pro`, дешевел от одной лишь команды /model.
@@ -88,11 +147,7 @@ class State:
     # от «тариф неизвестен»: ноль на экране читается как «денег не потрачено».
     session_cost_known: bool = True
     store_warned: bool = False  # о сбое записи разговора говорим один раз за сеанс
-    input_buffer: Any = None  # буфер строки ввода: профиль подставляет в него заготовку
-    # Ещё не показанные заготовки профиля. Очередь живёт в состоянии, а не в профиле: профиль
-    # — это описание, одинаковое для всех запусков, а очередь расходуется по ходу разговора,
-    # и хранить расходуемое в описании значило бы менять описание на лету.
-    prefill_queue: list[str] = field(default_factory=list)
+    input_buffer: Any = None  # общее отображение черновика активной интерактивной панели
     # Мышь включена всегда: клики и выделение текста уживаются, если не просить у терминала
     # отслеживание перетаскивания (см. click_only_mouse). Команда /mouse оставлена аварийным
     # выходом для терминала, который так не умеет.
@@ -179,7 +234,11 @@ class State:
         ссылка на него потеряна. Проводи живого — и его расход посчитался бы дважды: раз в
         копилке, раз при обходе панелей."""
         for агент in агенты:
-            self.retired_usage = tokens.add_usage(self.retired_usage, агент.session_usage)
+            self.retired_usage = tokens.add_usage(
+                self.retired_usage, агент.session_usage
+            )
+            self.retired_runs += агент.runs
+            self.unknown_usage_agent_ids.discard(id(агент))
 
     def session_usage_total(self) -> dict[str, int]:
         """Расход за сеанс по ВСЕМ поднятым агентам, одной суммой.
@@ -193,22 +252,210 @@ class State:
         return tokens.total_usage([self.retired_usage, *живые])
 
     def __post_init__(self) -> None:
+        # `context_strategy` в файле выбирает экран при запуске, а не превращает главный
+        # разговор в другой режим. Главный экран всегда standard и сохраняет прежний путь.
+        self.initial_strategy = self.profile.context_strategy
+        if self.initial_strategy != context_strategy.CONTEXT_STANDARD:
+            self.profile = profile_for_strategy(
+                self.profile, context_strategy.CONTEXT_STANDARD
+            )
         # Панель главного экрана заводит `screens.main_screen()`, профиля у неё нет, а
         # собеседник нужен: главный разговор ведёт он. Заводим здесь, а не в `_main`, чтобы
         # у любого состояния — в том числе собранного проверками — главный агент был на месте.
         self.main.first.agent = Agent(screens_mod.MAIN_KEY, self.profile, facts=user_facts)
 
+@dataclass
+class PaneWorker:
+    """Последовательная очередь одной точной интерактивной панели.
+
+    Исполнитель живёт до закрытия приложения. Его текущая задача отделена от общей задачи
+    главной панели, поэтому отмена в одной панели не затрагивает соседнюю.
+    """
+
+    state: State
+    pane: screens_mod.Pane
+    queue: asyncio.Queue[Request] = field(default_factory=asyncio.Queue)
+    runner: asyncio.Task[None] | None = None
+    current_task: asyncio.Task[Any] | None = None
+    busy: bool = False
+    accepting: bool = True
+
+    def start(self) -> None:
+        if self.accepting and (self.runner is None or self.runner.done()):
+            self.runner = asyncio.create_task(self.run())
+
+    async def run(self) -> None:
+        while True:
+            request = await self.queue.get()
+            self.busy = True
+            assert self.pane.agent is not None
+            task = asyncio.create_task(
+                run_turn(self.state, self.pane.agent, request.content, pane=self.pane)
+            )
+            self.current_task = task
+            try:
+                await task
+                self._ensure_facts_session_is_findable()
+                # Сохраняем прежний побочный жизненный цикл общего исполнителя. Эти службы
+                # сами решают, есть ли для них работа, и не задерживают следующую реплику.
+                archivist.start(self.state)
+                compact.start(self.state)
+            except asyncio.CancelledError:
+                # Отмена самого исполнителя означает закрытие приложения и обязана выйти
+                # из цикла. Ctrl+C отменяет только дочерний обмен, поэтому у runner нет
+                # собственного запроса на отмену и он продолжает брать очередь.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                append_log(self.state, ui.system_fragments("запрос отменён"), self.pane)
+            finally:
+                self.current_task = None
+                self.busy = False
+                self.queue.task_done()
+
+    def _ensure_facts_session_is_findable(self) -> None:
+        """Связать записанный журнал фактов с обнаруживаемой линейной сессией.
+
+        Извлечение может успеть успешно записать редакцию при отказе основного запроса.
+        Тогда пары нет и SessionStore ещё не создал `.jsonl`; без этой отметки следующий
+        запуск не нашёл бы лежащий рядом журнал фактов.
+        """
+
+        profile = self.pane.profile
+        if (
+            profile is None
+            or profile.context_strategy != context_strategy.CONTEXT_FACTS
+            or self.pane.agent is None
+            or self.pane.agent.conversation_facts()[1] == 0
+        ):
+            return
+        screen = next(
+            (
+                screen
+                for screen in self.state.screens
+                if any(candidate is self.pane for candidate in screen.panes)
+            ),
+            None,
+        )
+        store = screen.session_store if screen is not None else None
+        if store is None or store.path.exists():
+            return
+        error = store.touch()
+        if error:
+            append_log(self.state, ui.error_fragments(error), self.pane)
+
+    def enqueue(self, request: Request) -> bool:
+        """Принять вопрос, пока экран не начал закрываться."""
+
+        if not self.accepting:
+            return False
+        self.queue.put_nowait(request)
+        return True
+
+    async def drain_and_close(self) -> None:
+        """Закрыть вход, закончить текущий обмен и очередь, затем остановить цикл."""
+
+        self.accepting = False
+        await self.queue.join()
+        if self.runner is not None and not self.runner.done():
+            self.runner.cancel()
+        if self.runner is not None:
+            with suppress(asyncio.CancelledError):
+                await self.runner
+
+
+    def cancel_active(self) -> None:
+        if self.busy and self.current_task is not None:
+            self.current_task.cancel()
+
+    async def close(self) -> None:
+        self.accepting = False
+        if self.runner is not None and not self.runner.done():
+            self.runner.cancel()
+        if self.runner is not None:
+            with suppress(asyncio.CancelledError):
+                await self.runner
+        # Оставшиеся единицы ещё не стали задачами обмена. На выходе приложения они
+        # намеренно отбрасываются и отмечаются выполненными для целостного состояния очереди.
+        while not self.queue.empty():
+            self.queue.get_nowait()
+            self.queue.task_done()
+
+
+def pane_worker(state: State, pane: screens_mod.Pane) -> PaneWorker:
+    """Вернуть единственного исполнителя точного объекта панели."""
+    key = id(pane)
+    existing = state.pane_workers.get(key)
+    if existing is not None and existing.pane is pane:
+        existing.start()
+        return existing
+    created = PaneWorker(state=state, pane=pane)
+    state.pane_workers[key] = created
+    created.start()
+    return created
+
+
+async def close_pane_workers(state: State) -> None:
+    """Остановить и дождаться всех исполнителей, которые ещё принадлежат приложению."""
+    await asyncio.gather(*(item.close() for item in tuple(state.pane_workers.values())))
+
+
+def _track_submission(state: State, task: asyncio.Task[None]) -> None:
+    """Привязать короткую задачу Enter к жизненному циклу приложения."""
+    state.submission_tasks.add(task)
+
+    def finished(done: asyncio.Task[None]) -> None:
+        state.submission_tasks.discard(done)
+        if not done.cancelled():
+            # Получаем возможное исключение, чтобы цикл не напечатал предупреждение о
+            # необработанной фоновой задаче поверх интерфейса.
+            done.exception()
+
+    task.add_done_callback(finished)
+
+
+def _active_input_pane(state: State) -> screens_mod.Pane:
+    """Панель, чей черновик сейчас показан в общей строке ввода.
+
+    Экран агента служит только для чтения, поэтому строка под ним по-прежнему принадлежит
+    главной панели: набранное там не должно исчезать при возврате.
+    """
+    return state.screen.pane if state.screen.interactive else state.main.first
+
+
+def _save_active_draft(state: State) -> None:
+    pane = _active_input_pane(state)
+    if state.input_buffer is not None:
+        pane.draft = state.input_buffer.text
+
+
+def _restore_active_draft(state: State) -> None:
+    if state.input_buffer is None:
+        return
+    pane = _active_input_pane(state)
+    state.input_buffer.text = pane.draft
+    state.input_buffer.cursor_position = len(pane.draft)
+
+
+def _pane_profile(state: State, pane: screens_mod.Pane) -> Profile | None:
+    if pane is state.main.first:
+        return state.profile
+    return pane.profile or state.screen.profile
+
 
 def switch_screen(state: State, index: int) -> None:
     if not 0 <= index < len(state.screens) or index == state.active:
         return
+    _save_active_draft(state)
     state.active = index
     screen = state.screen
     for pane in screen.panes:
         pane.autoscroll = True  # переключились — показываем свежий конец ленты
-    if screen.interactive and screen.profile is not None:
-        # набранное пользователем не затираем: заготовка подставляется только в пустую строку
-        apply_prefill(state, screen.profile, only_if_empty=True)
+    pane = _active_input_pane(state)
+    _restore_active_draft(state)
+    profile = _pane_profile(state, pane)
+    if profile is not None:
+        apply_prefill(state, profile, pane)
     refresh(state)
 
 
@@ -217,8 +464,17 @@ def switch_pane(state: State, index: int) -> None:
     screen = state.screen
     if len(screen.panes) < 2:
         return
-    screen.active_pane = index % len(screen.panes)
+    new_index = index % len(screen.panes)
+    if new_index == screen.active_pane:
+        return
+    _save_active_draft(state)
+    screen.active_pane = new_index
     screen.pane.autoscroll = True
+    _restore_active_draft(state)
+    pane = _active_input_pane(state)
+    profile = _pane_profile(state, pane)
+    if profile is not None:
+        apply_prefill(state, profile, pane)
     refresh(state)
 
 
@@ -232,16 +488,39 @@ def toggle_zoom(state: State) -> None:
     refresh(state)
 
 
-def drop_agent_screens(state: State) -> None:
-    """Экраны агентов и рабочие экраны живут ровно столько, сколько профиль, который их
-    завёл: сменился профиль — прежние ленты уже не о чем.
+async def drop_agent_screens(state: State) -> None:
+    """Закончить работу закрываемых экранов, учесть расход и только затем удалить их.
 
-    Расход экспертов провожаем в копилку прежде, чем закрыть их экраны: ленты не о чем, а
-    деньги за их ответы заплачены."""
-    выбывают = [pane.agent for screen in state.screens[1:] for pane in screen.panes if pane.agent is not None]
-    state.retire(выбывают)
+    Смена профиля не отменяет уже оплаченный вопрос и не переносит его поздний ответ в
+    новый профиль. Сначала каждый исполнитель перестаёт принимать новые единицы, затем
+    дорабатывает текущую и всю свою очередь. После этого его окончательный расход можно
+    перенести в копилку, а ссылки на панели — удалить без риска повторного `id`.
+    """
+
+    closing_screens = list(state.screens[1:])
+    closing_panes = [pane for screen in closing_screens for pane in screen.panes]
+    closing_workers: list[PaneWorker] = []
+    for pane in closing_panes:
+        executor = state.pane_workers.get(id(pane))
+        if executor is not None and executor.pane is pane:
+            executor.accepting = False
+            closing_workers.append(executor)
+    await asyncio.gather(*(executor.drain_and_close() for executor in closing_workers))
+
+    closing_agents: list[Agent] = []
+    for pane in closing_panes:
+        if pane.agent is not None and not any(pane.agent is item for item in closing_agents):
+            closing_agents.append(pane.agent)
+    state.retire(closing_agents)
+
+    for pane in closing_panes:
+        key = id(pane)
+        executor = state.pane_workers.get(key)
+        if executor is not None and executor.pane is pane:
+            del state.pane_workers[key]
+    if state.active != 0:
+        switch_screen(state, 0)
     del state.screens[1:]
-    state.active = 0
 
 
 # ─────────────────────────────── память разговора ───────────────────────────────
@@ -440,94 +719,349 @@ def restore_conversation(state: State) -> None:
         )
 
 
-# ─────────────────────────────── профиль и запрос ───────────────────────────────
+STRATEGY_TITLES = {
+    context_strategy.CONTEXT_STANDARD: "Standard",
+    context_strategy.CONTEXT_SLIDING: "Sliding Window",
+    context_strategy.CONTEXT_FACTS: "Sticky Facts",
+    context_strategy.CONTEXT_BRANCHING: "Branching",
+}
 
 
-def switch_profile(state: State, name: str) -> None:
-    profile, warnings = profiles.load(name)
-    state.profile = profile
-    state.profile_dirty = False
-    state.config.profile = profile.name
-    save_config(state.config)
-    for warning in warnings:
-        append_log(state, ui.error_fragments(warning))
-    # История, набранная под прежней инструкцией, исказила бы следующий ответ. Забыть её
-    # мало: у собеседника главного экрана сменились и инструкция, и параметры — значит это
-    # уже другой собеседник. Смотрим на прежнюю память ДО замены, иначе сообщение об очистке
-    # появилось бы и при первой смене профиля на пустом разговоре.
-    had_history = bool(state.main_agent.history())
-    # Прежнего собеседника прямо объявляем забывшим разговор, а не просто выбрасываем ссылку
-    # на него: его обмен мог ещё идти, и в своём `finally` он дописал бы пару в память,
-    # которой мы уже не пользуемся. Смена поколения делает это дописывание невозможным —
-    # брошенный агент не оставит после себя ни строчки.
-    state.main.first.agent.forget()
-    # Расход уходящего собеседника провожаем в копилку до замены: сеанс продолжается, и
-    # потраченное им не должно исчезнуть с экрана вместе с ним.
-    state.retire([state.main.first.agent])
-    state.main.first.agent = Agent(screens_mod.MAIN_KEY, profile, facts=user_facts)
-    if had_history:
-        append_log(state, ui.system_fragments("история диалога очищена — профиль сменился"))
-    if len(state.screens) > 1:
-        drop_agent_screens(state)
-        append_log(state, ui.system_fragments("экраны прежней группы закрыты"))
-    source = str(profile.source) if profile.source else "встроенный"
-    append_log(state, ui.system_fragments(f"профиль: {profile.name} ({source})"))
-    # Разговор принадлежит паре «каталог, профиль», значит смена профиля — это переход в
-    # другой разговор, а не только смена инструкции. Прежняя сессия остаётся на диске и
-    # поднимется обратно, когда человек вернётся к тому профилю.
-    restore_conversation(state)
-    if not profile.keep_history:
-        append_log(state, ui.system_fragments("в этом профиле каждый запрос уходит без истории"))
-    if profile.agents:
-        append_log(state, ui.team_list_fragments(profile.name, profile.agents))
+def _linear_strategy_agent(
+    profile: Profile,
+    pane_key: str,
+) -> tuple[Agent, memory.SessionStore, memory.Restored | None, list[str]]:
+    """Завести линейного собеседника и поднять полную запись его стратегии."""
+
+    path = memory.latest_session(Path.cwd(), profile.name, profile.context_strategy)
+    store = memory.SessionStore(
+        path or memory.new_session(Path.cwd(), profile.name, profile.context_strategy)
+    )
+    facts_store = (
+        memory.FactsStore(store.path)
+        if profile.context_strategy == context_strategy.CONTEXT_FACTS
+        else None
+    )
+    agent = Agent(
+        pane_key,
+        profile,
+        store=store,
+        facts_store=facts_store,
+    )
+    if path is None:
+        return agent, store, None, [agent.store_error] if agent.store_error else []
+
+    restored = memory.read_session(
+        path,
+        window=0,
+        system_fp=memory.fingerprint(profile.system),
+    )
+    agent.restore(restored.pairs)
+    warnings = list(restored.warnings)
+    if restored.fingerprint_changed:
+        warnings.append(
+            "инструкция профиля изменилась с прошлого запуска — "
+            "прежние ответы получены под другой"
+        )
+    if agent.store_error:
+        warnings.append(agent.store_error)
+    return agent, store, restored, warnings
+
+
+def _branch_prefill(
+    state: State,
+    profile: Profile,
+    pane: screens_mod.Pane,
+    branch: str,
+) -> None:
+    """Назначить панели только очередь её ветви, не задевая общий буфер ввода."""
+
+    pane.prefill_initialized = True
+    pane.prefill_queue = list(profile.branch_prefills.get(branch, []))
+    if not pane.prefill_queue:
+        return
+    count = len(pane.prefill_queue)
+    pane.draft = pane.prefill_queue.pop(0)
+    message = (
+        "заготовка ветви подставлена в строку ввода — Enter отправит её"
+        if count == 1
+        else f"вопросы ветви ({count}) пойдут по очереди — Enter отправляет и подставляет следующий"
+    )
+    append_log(state, ui.system_fragments(message), pane)
+
+
+def create_strategy_screen(
+    state: State,
+    source: Profile,
+    strategy: str,
+    *,
+    key: str,
+    title: str,
+) -> screens_mod.Screen:
+    """Создать сохраняемый экран стратегии и восстановить только его собственный ключ."""
+
+    profile = profile_for_strategy(source, strategy)
+    if strategy != context_strategy.CONTEXT_BRANCHING:
+        agent, store, restored, warnings = _linear_strategy_agent(profile, key)
+        pane = screens_mod.Pane(
+            key=key,
+            title=title,
+            profile=profile,
+            agent=agent,
+        )
+        screen = screens_mod.Screen(
+            key=key,
+            title=title,
+            panes=[pane],
+            profile=profile,
+            strategy_identity=(source.name, strategy),
+            interactive=True,
+            session_store=store,
+        )
+        for warning in warnings:
+            append_log(state, ui.error_fragments(warning), pane)
+        if restored is not None and restored.saved_pairs:
+            append_log(
+                state,
+                ui.restored_fragments(
+                    len(restored.pairs),
+                    restored.saved_pairs,
+                    restored.last_ts,
+                ),
+                pane,
+            )
+        apply_prefill(state, profile, pane)
+        return screen
+
+    path = memory.latest_session(Path.cwd(), profile.name, strategy)
+    store = memory.BranchStore(
+        path or memory.new_session(Path.cwd(), profile.name, strategy)
+    )
+    graph = store.load()
+    panes: list[screens_mod.Pane] = []
+    if graph.checkpoint_id is None:
+        root = Agent(key, profile, branch_store=store)
+        panes.append(
+            screens_mod.Pane(
+                key=key,
+                title=title,
+                profile=profile,
+                agent=root,
+            )
+        )
+    else:
+        for branch in graph.branches:
+            agent = Agent(
+                f"{key}:{branch}",
+                profile,
+                branch_store=store,
+                branch=branch,
+            )
+            pane = screens_mod.Pane(
+                key=branch,
+                title=branch,
+                profile=profile,
+                agent=agent,
+            )
+            _branch_prefill(state, profile, pane, branch)
+            panes.append(pane)
+    screen = screens_mod.Screen(
+        key=key,
+        title=title,
+        panes=panes,
+        profile=profile,
+        strategy_identity=(source.name, strategy),
+        interactive=True,
+        branch_store=store,
+    )
+    for warning in graph.warnings:
+        append_log(state, ui.error_fragments(warning), screen.first)
+    if graph.turns:
+        last_ts = max(turn.ts for turn in graph.turns.values())
+        for pane in screen.panes:
+            path_pairs = pane.agent.history() if pane.agent is not None else []
+            if path_pairs:
+                append_log(
+                    state,
+                    ui.restored_fragments(
+                        len(path_pairs) // 2,
+                        len(graph.turns),
+                        last_ts,
+                    ),
+                    pane,
+                )
+    if graph.checkpoint_id is None:
+        apply_prefill(state, profile, screen.first)
+    return screen
+
+
+def ensure_strategy_screen(
+    state: State,
+    strategy: str,
+    *,
+    source: Profile | None = None,
+) -> int:
+    """Вернуть прежний экран режима исходного профиля либо создать новый."""
+
+    origin = source or active_profile(state)
+    if (
+        strategy == context_strategy.CONTEXT_STANDARD
+        and origin.name == state.profile.name
+    ):
+        return 0
+    identity = (origin.name, strategy)
+    for index, screen in enumerate(state.screens):
+        if screen.strategy_identity == identity:
+            return index
+    key = screens_mod.strategy_screen_key(origin.name, strategy)
+    screen = create_strategy_screen(
+        state,
+        origin,
+        strategy,
+        key=key,
+        title=STRATEGY_TITLES[strategy],
+    )
+    state.screens.append(screen)
+    return len(state.screens) - 1
+
+
+def use_strategy(
+    state: State,
+    strategy: str,
+    *,
+    source: Profile | None = None,
+) -> None:
+    """Открыть сохранённый экран режима; разговоры соседей остаются на месте."""
+
+    switch_screen(
+        state,
+        ensure_strategy_screen(state, strategy, source=source),
+    )
+
+
+
+def open_profile_surfaces(state: State, initial_strategy: str) -> None:
+    """Развернуть профиль до первого вопроса, не начиная ни одного обмена."""
+
+    profile = state.profile
     if profile.screens:
         open_work_screens(state, profile)
         return
     if profile.methods:
         open_method_screens(state, profile)
-    apply_prefill(state, profile)
+    apply_prefill(state, profile, state.main.first)
+    if initial_strategy != context_strategy.CONTEXT_STANDARD:
+        use_strategy(state, initial_strategy)
 
 
-def apply_prefill(state: State, profile: Profile, *, only_if_empty: bool = False) -> None:
-    """Заготовки профиля кладём в строку ввода, а не отправляем сами: человек видит текст,
-    может его поправить и отправляет сам — Enter'ом.
+# ─────────────────────────────── профиль и запрос ───────────────────────────────
 
-    Заготовок может быть несколько (`prefills`): тогда следующая встаёт в строку ввода, как
-    только отправлена предыдущая, — прогон повторяется в точности, и на показе не приходится
-    ничего набирать. Одиночная `prefill` — та же очередь длиной в один вопрос, отдельного
-    пути для неё не заводим."""
-    if state.input_buffer is None:
+
+async def switch_profile(state: State, name: str) -> None:
+    """Дождаться старого дерева разговоров и целиком заменить профиль."""
+
+    if state.switching_profile:
+        append_log(state, ui.error_fragments("смена профиля уже выполняется"))
         return
-    if only_if_empty and state.input_buffer.text.strip():
+    state.switching_profile = True
+    try:
+        loaded, warnings = profiles.load(name)
+        initial_strategy = loaded.context_strategy
+        profile = profile_for_strategy(loaded, context_strategy.CONTEXT_STANDARD)
+
+        # Общий исполнитель берёт `state.main_agent` в момент начала единицы. Пока в его
+        # очереди остаётся старый вопрос, заменять ссылку нельзя: иначе тот вопрос получил
+        # бы уже новый собеседник. Новые единицы на время ожидания отклоняет handle_submit.
+        await state.queue.join()
+        if len(state.screens) > 1:
+            await drop_agent_screens(state)
+            append_log(state, ui.system_fragments("экраны прежней группы закрыты"))
+
+        # История, набранная под прежней инструкцией, исказила бы следующий ответ. К этому
+        # месту старые очереди завершены, поэтому поздний ответ уже не сможет попасть в
+        # новый профиль, а расход всех удалённых экранов снят окончательным.
+        had_history = bool(state.main_agent.history())
+        state.main.first.agent.forget()
+        state.retire([state.main.first.agent])
+
+        state.profile = profile
+        state.initial_strategy = initial_strategy
+        state.main.first.agent = Agent(
+            screens_mod.MAIN_KEY,
+            profile,
+            facts=user_facts,
+        )
+        state.main.first.prefill_queue.clear()
+        state.main.first.prefill_initialized = False
+        state.profile_dirty = False
+        state.config.profile = profile.name
+        save_config(state.config)
+        for warning in warnings:
+            append_log(state, ui.error_fragments(warning))
+        if had_history:
+            append_log(
+                state,
+                ui.system_fragments("история диалога очищена — профиль сменился"),
+            )
+        source = str(profile.source) if profile.source else "встроенный"
+        append_log(
+            state,
+            ui.system_fragments(f"профиль: {profile.name} ({source})"),
+        )
+        # Разговор принадлежит паре «каталог, профиль», значит смена профиля — это переход
+        # в другой разговор. Прежняя сессия остаётся на диске и поднимется при возврате.
+        restore_conversation(state)
+        if not profile.keep_history:
+            append_log(
+                state,
+                ui.system_fragments(
+                    "в этом профиле каждый запрос уходит без истории"
+                ),
+            )
+        if profile.agents:
+            append_log(
+                state,
+                ui.team_list_fragments(profile.name, profile.agents),
+            )
+        open_profile_surfaces(state, initial_strategy)
+    finally:
+        state.switching_profile = False
+
+
+def apply_prefill(state: State, profile: Profile, pane: screens_mod.Pane) -> None:
+    """Один раз завести очередь заготовок конкретной панели.
+
+    Заготовки кладём в строку ввода, а не отправляем сами: человек видит текст, может его
+    поправить и отправляет сам — Enter'ом. Одиночная `prefill` проходит тем же путём, что
+    список `prefills`, как очередь длиной один.
+    """
+    if pane.prefill_initialized:
         return
+    pane.prefill_initialized = True
     очередь = list(profile.prefills) or ([profile.prefill.strip()] if profile.prefill else [])
     if not очередь:
         return
-    state.prefill_queue = очередь
+    pane.prefill_queue = очередь
     сказать = (
         "заготовка вопроса подставлена в строку ввода — Enter отправит её"
         if len(очередь) == 1
         else f"вопросы профиля ({len(очередь)}) пойдут по очереди — Enter отправляет и подставляет следующий"
     )
-    append_log(state, ui.system_fragments(сказать))
-    next_prefill(state)
+    append_log(state, ui.system_fragments(сказать), pane)
+    next_prefill(state, pane)
 
 
-def next_prefill(state: State) -> None:
-    """Поставить в строку ввода следующий вопрос очереди, если он есть.
-
-    Текст, набранный человеком, не затираем: он мог начать печатать своё, пока шёл ответ, и
-    подстановка поверх стёрла бы работу. Очередь тогда просто ждёт — она про удобство, а не
-    про власть над строкой ввода."""
-    if not state.prefill_queue or state.input_buffer is None:
+def next_prefill(state: State, pane: screens_mod.Pane) -> None:
+    """Поставить следующий вопрос очереди в черновик только указанной панели."""
+    if _active_input_pane(state) is pane:
+        _save_active_draft(state)
+    if not pane.prefill_queue or pane.draft.strip():
         return
-    if state.input_buffer.text.strip():
-        return
-    текст = state.prefill_queue.pop(0)
-    state.input_buffer.text = текст
-    state.input_buffer.cursor_position = len(текст)
-    if state.app is not None:
-        state.app.invalidate()
+    pane.draft = pane.prefill_queue.pop(0)
+    if _active_input_pane(state) is pane:
+        _restore_active_draft(state)
+        if state.app is not None:
+            state.app.invalidate()
 
 
 def open_method_screens(state: State, profile: Profile) -> None:
@@ -552,9 +1086,15 @@ def open_work_screens(state: State, profile: Profile) -> None:
         if step.name == profiles.DEFAULT_PROFILE_NAME and name != profiles.DEFAULT_PROFILE_NAME:
             append_log(state, ui.error_fragments(f"экран «{name}» пропущен: профиль не найден"))
             continue
-        # Панель рабочего экрана делает `Screen.__post_init__`, а собеседника — сама панель
-        # по своему профилю: у каждого шага приёма своя ветка разговора, значит и своя память.
-        screen = screens_mod.Screen(key=name, title=name, profile=step, interactive=True)
+        # Любой рабочий экран получает тот же сохраняемый договор стратегии, что экран,
+        # открытый `/strategy use`: отдельного несохраняемого пути для `screens` нет.
+        screen = create_strategy_screen(
+            state,
+            step,
+            step.context_strategy,
+            key=name,
+            title=step.title or name,
+        )
         state.screens.append(screen)
         # описание профиля — вводная для шага («вставьте промпт с первого экрана»). Держим её
         # в ленте, а не в строке ввода: заготовка ввода ушла бы в модель вместе с вопросом.
@@ -572,6 +1112,7 @@ def open_work_screens(state: State, profile: Profile) -> None:
 
 
 async def worker(state: State) -> None:
+    """Прежний единый исполнитель только главной панели и её оркестраторов."""
     while True:
         request = await state.queue.get()
         lead = request.lead or state.profile
@@ -579,10 +1120,7 @@ async def worker(state: State) -> None:
         # Чем занят запрос, помним отдельно: по одному лишь возвращённому значению не
         # отличить итог оркестратора от обмена, который сам себя уже показал.
         kind = "обмен"
-        if request.screen is not None and request.screen.profile is not None:
-            pane = request.screen.first
-            task = asyncio.create_task(run_turn(state, pane.agent, request.content, pane=pane))
-        elif lead.methods:
+        if lead.methods:
             kind = "набор"
             task = asyncio.create_task(methods_mod.run_all(state, request.content, lead))
         elif lead.agents:
@@ -592,7 +1130,7 @@ async def worker(state: State) -> None:
             # Вопрос в память не дописываем: памятью владеет агент, и кладёт он туда только
             # отвеченную пару — иначе после сетевого сбоя в истории остался бы вопрос,
             # на который никто не отвечал.
-            task = asyncio.create_task(run_turn(state, state.main_agent, request.content, pane=state.main.first))
+            task = asyncio.create_task(run_turn(state, state.main_agent, request.content, pane=request.pane))
         state.current_task = task
         # Сколько пар лежало в главном разговоре ДО обмена. Считать обмены по их исходу
         # нельзя: обмен главного экрана, итог группы и итог набора способов кладут пару
@@ -619,7 +1157,10 @@ async def worker(state: State) -> None:
             # подбирает то, что решила выбросить обрезка.
             compact.start(state)
         except asyncio.CancelledError:
-            append_log(state, ui.system_fragments("запрос отменён"))
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            append_log(state, ui.system_fragments("запрос отменён"), request.pane)
         finally:
             state.current_task = None
             state.busy = False
@@ -683,7 +1224,13 @@ async def cmd_model(state: State, arg: str) -> None:
     for name in models:
         if name == state.model:
             marked = len(items)
-        items.append(picker_mod.Item(label=name, hint="текущая" if name == state.model else "", payload=name))
+        items.append(
+            picker_mod.Item(
+                label=name,
+                hint="текущая" if name == state.model else "",
+                payload=name,
+            )
+        )
 
     def choose(payload: Any) -> None:
         state.picker = None
@@ -707,11 +1254,14 @@ def open_profile_picker(state: State) -> None:
         if name == state.profile.name:
             marked = len(items)
         hint = str(source.parent) if source else "встроенный"
-        items.append(picker_mod.Item(label=name, hint=hint, payload=name))
+        items.append(
+            picker_mod.Item(label=name, hint=hint, payload=name)
+        )
 
     def choose(payload: Any) -> None:
         state.picker = None
-        switch_profile(state, str(payload))
+        task = asyncio.create_task(switch_profile(state, str(payload)))
+        _track_submission(state, task)
 
     description = "какой профиль генерации применить"
     if len(items) <= 1:
@@ -732,25 +1282,428 @@ def open_profile_picker(state: State) -> None:
     refresh(state)
 
 
-def cmd_profile(state: State, arg: str) -> None:
+async def cmd_profile(state: State, arg: str) -> None:
     if not arg:
         open_profile_picker(state)
         return
     parts = arg.split(maxsplit=1)
     if parts[0] == "save":
-        name = parts[1].strip() if len(parts) > 1 else state.profile.name
-        state.profile.name = name
+        target = active_profile(state)
+        name = parts[1].strip() if len(parts) > 1 else target.name
+        target.name = name
         try:
-            path = profiles.save(state.profile)
+            path = profiles.save(target)
         except OSError as exc:
-            append_log(state, ui.error_fragments(f"не удалось сохранить профиль: {exc}"))
+            append_log(
+                state,
+                ui.error_fragments(f"не удалось сохранить профиль: {exc}"),
+            )
             return
         state.profile_dirty = False
         state.config.profile = name
         save_config(state.config)
         append_log(state, ui.system_fragments(f"профиль сохранён: {path}"))
         return
-    switch_profile(state, parts[0])
+    await switch_profile(state, parts[0])
+
+
+def open_strategy_picker(state: State) -> None:
+    source = active_profile(state)
+    current = source.context_strategy
+    items = [
+        picker_mod.Item(
+            label=STRATEGY_TITLES[strategy],
+            hint="текущая" if strategy == current else "",
+            payload=strategy,
+        )
+        for strategy in context_strategy.CONTEXT_STRATEGIES
+    ]
+
+    def choose(payload: Any) -> None:
+        state.picker = None
+        use_strategy(state, str(payload), source=source)
+
+    state.picker = picker_mod.Picker(
+        title="/strategy — стратегия контекста",
+        description="какой независимый разговор открыть",
+        items=items,
+        on_choose=choose,
+        index=context_strategy.CONTEXT_STRATEGIES.index(current),
+        marked=context_strategy.CONTEXT_STRATEGIES.index(current),
+    )
+    refresh(state)
+
+
+def cmd_strategy(state: State, arg: str) -> None:
+    """Показать, открыть либо настроить независимый экран стратегии."""
+
+    if not arg:
+        profile = active_profile(state)
+        append_log(
+            state,
+            ui.system_fragments(
+                f"стратегия: {profile.context_strategy}; "
+                f"строгое окно: {profile.strategy_window} пар"
+            ),
+        )
+        open_strategy_picker(state)
+        return
+
+    parts = arg.split()
+    action = parts[0].lower()
+    if action == "use":
+        if len(parts) != 2 or parts[1] not in context_strategy.CONTEXT_STRATEGIES:
+            append_log(
+                state,
+                ui.error_fragments(
+                    "нужен режим: /strategy use <standard|sliding|facts|branching>"
+                ),
+            )
+            return
+        use_strategy(state, parts[1], source=active_profile(state))
+        return
+
+    if action == "window":
+        if len(parts) != 2:
+            append_log(
+                state,
+                ui.error_fragments(
+                    "нужно одно положительное целое число: /strategy window <N>"
+                ),
+            )
+            return
+        profile = active_profile(state)
+        if profile.context_strategy not in (
+            context_strategy.CONTEXT_SLIDING,
+            context_strategy.CONTEXT_FACTS,
+        ):
+            append_log(
+                state,
+                ui.error_fragments(
+                    "строгое окно применяется только в sliding и facts"
+                ),
+            )
+            return
+        raw_window = parts[1]
+        window = int(raw_window) if raw_window.isdecimal() else 0
+        if window <= 0:
+            append_log(
+                state,
+                ui.error_fragments(
+                    "размер окна должен быть положительным целым числом"
+                ),
+            )
+            return
+        profile.strategy_window = window
+        state.profile_dirty = True
+        append_log(
+            state,
+            ui.system_fragments(
+                f"строгое окно стратегии {profile.context_strategy}: {window} пар"
+            ),
+        )
+        append_log(
+            state,
+            ui.hint_fragments("сохранить в профиль: /profile save <имя>"),
+        )
+        return
+
+    append_log(
+        state,
+        ui.error_fragments(
+            "форма команды: /strategy [use <режим>|window <N>]"
+        ),
+    )
+
+
+def cmd_facts(state: State, arg: str) -> None:
+    """Показать или вручную изменить факты активного разговора Sticky Facts."""
+
+    pane = _active_input_pane(state)
+    profile = active_profile(state)
+    if (
+        profile.context_strategy != context_strategy.CONTEXT_FACTS
+        or pane.agent is None
+    ):
+        append_log(
+            state,
+            ui.error_fragments("команда /facts работает только в Sticky Facts"),
+        )
+        return
+
+    values, revision = pane.agent.conversation_facts()
+    if not arg:
+        append_log(
+            state,
+            ui.system_fragments(f"факты разговора, редакция {revision}"),
+        )
+        if not values:
+            append_log(
+                state,
+                ui.system_fragments("факты текущего разговора пусты"),
+            )
+            return
+        for key in sorted(values):
+            append_log(state, [("", f"  {key} → {values[key]}\n")])
+        return
+
+    def ensure_session_record() -> bool:
+        store = state.screen.session_store
+        if store is None or store.path.exists():
+            return True
+        error = store.touch()
+        if error:
+            append_log(state, ui.error_fragments(error))
+            return False
+        return True
+
+    parts = arg.split(maxsplit=2)
+    action = parts[0].lower()
+    if action in ("set", "forget"):
+        executor = state.pane_workers.get(id(pane))
+        if (
+            executor is not None
+            and executor.pane is pane
+            and (executor.busy or not executor.queue.empty())
+        ):
+            append_log(
+                state,
+                ui.error_fragments(
+                    "нельзя изменить факты: панель выполняет или ожидает обмен"
+                ),
+            )
+            return
+
+    if action == "set":
+        if len(parts) < 2 or not parts[1].strip():
+            append_log(state, ui.error_fragments("нужен непустой ключ факта"))
+            return
+        if len(parts) < 3 or not parts[2].strip():
+            append_log(state, ui.error_fragments("нужно непустое значение факта"))
+            return
+        key, value = parts[1].strip(), parts[2].strip()
+        if not ensure_session_record():
+            return
+        error = pane.agent.set_conversation_fact(key, value)
+        if error:
+            append_log(state, ui.error_fragments(error))
+            return
+        _, revision = pane.agent.conversation_facts()
+        append_log(
+            state,
+            ui.system_fragments(f"факт «{key}» установлен, редакция {revision}"),
+        )
+        return
+
+    if action == "forget":
+        key = arg[len(parts[0]) :].strip()
+        if not key:
+            append_log(state, ui.error_fragments("нужен непустой ключ факта"))
+            return
+        # Agent намеренно делает отсутствие безопасным, но команда обязана назвать ошибку
+        # до вызова: иначе успешный ответ уверял бы, что несуществующий ключ был удалён.
+        if key not in values:
+            append_log(
+                state,
+                ui.error_fragments(f"в фактах разговора нет ключа «{key}»"),
+            )
+            return
+        if not ensure_session_record():
+            return
+        error = pane.agent.forget_conversation_fact(key)
+        if error:
+            append_log(state, ui.error_fragments(error))
+            return
+        _, revision = pane.agent.conversation_facts()
+        append_log(
+            state,
+            ui.system_fragments(f"факт «{key}» удалён, редакция {revision}"),
+        )
+        return
+
+    append_log(
+        state,
+        ui.error_fragments(
+            "форма команды: /facts [set <ключ> <значение>|forget <ключ>]"
+        ),
+    )
+
+
+def _activate_branch(state: State, name: str) -> None:
+    screen = state.screen
+    store = screen.branch_store
+    if store is None:
+        append_log(state, ui.error_fragments("у экрана нет хранилища ветвей"))
+        return
+    graph = store.load()
+    if name not in graph.branches:
+        append_log(state, ui.error_fragments(f"неизвестная ветвь «{name}»"))
+        return
+    if name in graph.unavailable:
+        append_log(
+            state,
+            ui.error_fragments(f"ветвь «{name}» недоступна из-за повреждения графа"),
+        )
+        return
+    for index, pane in enumerate(screen.panes):
+        if pane.key == name:
+            switch_pane(state, index)
+            return
+    append_log(
+        state,
+        ui.error_fragments(f"ветвь «{name}» недоступна на этом экране"),
+    )
+
+
+def _open_branch_picker(state: State, names: tuple[str, ...]) -> None:
+    screen = state.screen
+    available = [
+        name for name in names if screen.pane_by_key(name) is not None
+    ]
+    if not available:
+        return
+    active = screen.pane.key
+    items = [
+        picker_mod.Item(
+            label=name,
+            hint="активная" if name == active else "",
+            payload=name,
+        )
+        for name in available
+    ]
+
+    def choose(payload: Any) -> None:
+        state.picker = None
+        _activate_branch(state, str(payload))
+
+    marked = available.index(active) if active in available else None
+    state.picker = picker_mod.Picker(
+        title="/branch — ветвь разговора",
+        description="какую ветвь открыть",
+        items=items,
+        on_choose=choose,
+        index=marked or 0,
+        marked=marked,
+    )
+    refresh(state)
+
+
+async def cmd_branch(state: State, arg: str) -> None:
+    """Показать, разделить или активировать ветвь текущего Branching."""
+
+    screen = state.screen
+    profile = active_profile(state)
+    if (
+        not screen.interactive
+        or profile.context_strategy != context_strategy.CONTEXT_BRANCHING
+        or screen.branch_store is None
+    ):
+        append_log(
+            state,
+            ui.error_fragments("команда /branch работает только в Branching"),
+        )
+        return
+
+    graph = screen.branch_store.load()
+    if not arg:
+        checkpoint = graph.checkpoint_id or graph.root_head or "нет"
+        branches = ", ".join(graph.branches) if graph.branches else "ещё не созданы"
+        active = screen.pane.key if graph.checkpoint_id is not None else "родитель"
+        append_log(
+            state,
+            ui.system_fragments(
+                f"контрольная точка: {checkpoint}; ветви: {branches}; активная: {active}"
+            ),
+        )
+        if graph.branches:
+            _open_branch_picker(state, graph.branches)
+        return
+
+    parts = arg.split()
+    if parts[0].lower() != "split":
+        _activate_branch(state, arg.strip())
+        return
+    if len(parts) != 3:
+        append_log(
+            state,
+            ui.error_fragments("нужны два имени: /branch split <A> <B>"),
+        )
+        return
+    left, right = parts[1].strip(), parts[2].strip()
+    if not left or not right:
+        append_log(
+            state,
+            ui.error_fragments("имена двух ветвей должны быть непустыми"),
+        )
+        return
+    if left == right:
+        append_log(
+            state,
+            ui.error_fragments("имена двух ветвей должны различаться"),
+        )
+        return
+    if graph.checkpoint_id is not None:
+        append_log(state, ui.error_fragments("разговор уже разделён"))
+        return
+    root_pane = screen.first
+    root_agent = root_pane.agent
+    worker_for_root = state.pane_workers.get(id(root_pane))
+    if worker_for_root is not None and (
+        worker_for_root.busy or not worker_for_root.queue.empty()
+    ):
+        append_log(
+            state,
+            ui.error_fragments(
+                "разделение возможно только после завершения текущих запросов родителя"
+            ),
+        )
+        return
+    if root_agent is None or len(root_agent.history()) < 2:
+        append_log(
+            state,
+            ui.error_fragments("разделение возможно только после завершённой пары"),
+        )
+        return
+
+    branches, error = root_agent.split_branches(left, right)
+    if error or branches is None:
+        append_log(
+            state,
+            ui.error_fragments(error or "не удалось разделить разговор"),
+        )
+        return
+    if worker_for_root is not None and worker_for_root.pane is root_pane:
+        await worker_for_root.drain_and_close()
+        executor = state.pane_workers.get(id(root_pane))
+        if executor is worker_for_root:
+            del state.pane_workers[id(root_pane)]
+
+    _save_active_draft(state)
+    branch_panes: list[screens_mod.Pane] = []
+    for name in (left, right):
+        pane = screens_mod.Pane(
+            key=name,
+            title=name,
+            profile=profile,
+            agent=branches[name],
+        )
+        _branch_prefill(state, profile, pane, name)
+        branch_panes.append(pane)
+    # Корень покидает дерево экранов ровно здесь. Его расход не восстановится в новых
+    # агентах и потому переносится в общий сеанс один раз до потери ссылки.
+    state.retire([root_agent])
+    screen.panes = branch_panes
+    screen.active_pane = 0
+    screen.zoomed = False
+    _restore_active_draft(state)
+    checkpoint = screen.branch_store.load().checkpoint_id
+    append_log(
+        state,
+        ui.system_fragments(
+            f"разговор разделён в точке {checkpoint}: ветви {left}, {right}; активна {left}"
+        ),
+    )
+    refresh(state)
 
 
 def cmd_params(state: State) -> None:
@@ -957,36 +1910,55 @@ def cmd_forget(state: State, arg: str) -> None:
 
 
 def cmd_tokens(state: State) -> None:
-    """`/tokens` — снимок расхода: чем нагружен следующий запрос и во что обошёлся сеанс.
+    """`/tokens` — следующий запрос активной панели, её расход и общий расход сеанса.
 
-    Итог берём по всем агентам сеанса, а вес разговора — у собеседника главного экрана.
-    Это не непоследовательность: платит человек за всех, кого поднял, а решает «пора ли
-    звать /clear» по разговору, который ведёт сам. Возьми вес истории тоже по всем — и
-    сумма памяти четырёх исполнителей, живущих ровно один вопрос, выдавала бы главный
-    разговор за неподъёмный.
-
-    Цену считает `tokens` по накопленному расходу, а не сложением цен обменов: у DeepSeek
-    цена зависит от часа, и обмен, сделанный в дорогой час, дорог именно тогда. Сумма по
-    накопленному — приближение, зато одно и то же число не пересчитывается двумя способами.
+    Активный Agent и сеанс показаны раздельно. Первый отвечает на вопрос о выбранной
+    стратегии или ветви, второй включает также группы, способы, извлекатели и уже закрытых
+    агентов. Полную системную часть берём у самого Agent: в Sticky Facts туда входят факты
+    именно этой панели, а не главного разговора.
     """
     итог = state.session_usage_total()
-    агент = state.main_agent
+    pane = _active_input_pane(state)
+    агент = pane.agent or state.main_agent
+    profile = _pane_profile(state, pane) or state.profile
+    strategy = profile.context_strategy
+    full_pairs = len(агент.history()) // 2
+    pairs = (
+        min(full_pairs, profile.strategy_window)
+        if strategy
+        in (
+            context_strategy.CONTEXT_SLIDING,
+            context_strategy.CONTEXT_FACTS,
+        )
+        else full_pairs
+    )
+    session_runs = state.retired_runs + sum(
+        другой.runs for другой in state.agents()
+    )
     append_log(
         state,
         ui.tokens_report_fragments(
             state.model,
             history=агент.history_tokens(),
-            pairs=len(агент.history()) // 2,
-            # Вес системной инструкции — часть каждого запроса, и в снимке без него занятое
-            # окно выходило смехотворно малым: профиль дня кладёт в инструкцию документ на
-            # миллион токенов, а снимок показывал «занято 1 354».
-            system=tokens.count_text(агент.profile.system or ""),
+            pairs=pairs,
+            # Взвешивается ровно системная часть следующего запроса активного Agent:
+            # инструкция, глобальные сведения, Sticky Facts либо действующая выжимка.
+            system=tokens.count_text(агент.system_text()),
             overhead=агент.overhead(state.model),
             restored=агент.restored_pairs,
-            runs=sum(другой.runs for другой in state.agents()),
+            runs=session_runs,
             usage=итог,
-            budget=state.profile.budget_tokens,
-            cost=tokens.format_price(state.session_cost if state.session_cost_known else None),
+            budget=profile.budget_tokens,
+            cost=tokens.format_price(
+                state.session_cost if state.session_cost_known else None
+            ),
+            active_name=агент.name,
+            active_strategy=strategy,
+            active_runs=агент.runs,
+            active_usage=агент.session_usage,
+            active_usage_known=id(агент)
+            not in state.unknown_usage_agent_ids,
+            session_usage_known=state.session_usage_known,
         ),
     )
 
@@ -1184,11 +2156,11 @@ def cmd_team(state: State, arg: str) -> None:
     if not state.config.is_authorized:
         append_log(state, ui.hint_fragments("сначала авторизуйтесь: /auth"))
         return
-    append_log(state, ui.user_fragments(text))
-    was_busy = state.busy
-    state.queue.put_nowait(Request(content=text, lead=lead))
+    append_log(state, ui.user_fragments(text), state.main.first)
+    was_busy = state.busy or not state.queue.empty()
+    state.queue.put_nowait(Request(content=text, pane=state.main.first, lead=lead))
     if was_busy:
-        append_log(state, ui.queued_fragments(state.queue.qsize()))
+        append_log(state, ui.queued_fragments(state.queue.qsize()), state.main.first)
 
 
 # ─────────────────────────────── список агентов ───────────────────────────────
@@ -1241,7 +2213,7 @@ def agent_index(state: State, rows: list[AgentRow]) -> int:
     выбрана на нём. Не нашли — считаем первой: строка «вы здесь» в списке обязана быть."""
     current = state.screen.pane
     for index, row in enumerate(rows):
-        if row.screen_index == state.active and row.pane is current:
+        if row.pane is current:
             return index
     return 0
 
@@ -1278,6 +2250,12 @@ async def handle_command(text: str, state: State) -> bool:
     arg = parts[1].strip() if len(parts) > 1 else ""
     if cmd in ("/exit", "/quit"):
         return True
+    if state.switching_profile:
+        append_log(
+            state,
+            ui.error_fragments("сначала дождитесь завершения смены профиля"),
+        )
+        return False
     if cmd == "/help":
         append_log(state, ui.help_fragments())
     elif cmd == "/auth":
@@ -1285,7 +2263,7 @@ async def handle_command(text: str, state: State) -> bool:
     elif cmd == "/model":
         await cmd_model(state, arg)
     elif cmd == "/profile":
-        cmd_profile(state, arg)
+        await cmd_profile(state, arg)
     elif cmd == "/params":
         cmd_params(state)
     elif cmd == "/set":
@@ -1293,7 +2271,16 @@ async def handle_command(text: str, state: State) -> bool:
     elif cmd == "/system":
         # на панели исполнителя показываем его инструкцию: именно её там свернули до строки
         source = state.screen.pane.profile or state.profile
-        append_log(state, ui.system_prompt_fragments(source.name, source.system))
+        append_log(
+            state,
+            ui.system_prompt_fragments(source.name, source.system),
+        )
+    elif cmd == "/strategy":
+        cmd_strategy(state, arg)
+    elif cmd == "/facts":
+        cmd_facts(state, arg)
+    elif cmd == "/branch":
+        await cmd_branch(state, arg)
     elif cmd == "/team":
         cmd_team(state, arg)
     elif cmd == "/mouse":
@@ -1310,7 +2297,10 @@ async def handle_command(text: str, state: State) -> bool:
         # Мало забыть разговор в памяти: не открой мы новую сессию, следующий запуск поднял
         # бы очищенное обратно с диска — издевательство, а не очистка.
         open_new_session(state)
-        append_log(state, ui.system_fragments("история очищена — начат новый разговор"))
+        append_log(
+            state,
+            ui.system_fragments("главный разговор очищен — начат новый разговор"),
+        )
     elif cmd == "/context":
         cmd_context(state)
     elif cmd == "/compact":
@@ -1326,11 +2316,20 @@ async def handle_command(text: str, state: State) -> bool:
     elif cmd == "/budget":
         cmd_budget(state, arg)
     else:
-        append_log(state, ui.error_fragments(f"неизвестная команда: {cmd} (см. /help)"))
+        append_log(
+            state,
+            ui.error_fragments(f"неизвестная команда: {cmd} (см. /help)"),
+        )
     return False
 
 
-async def handle_submit(raw_text: str, state: State) -> None:
+async def handle_submit(
+    raw_text: str,
+    state: State,
+    *,
+    destination_screen: screens_mod.Screen | None = None,
+    destination_pane: screens_mod.Pane | None = None,
+) -> None:
     if state.awaiting_key:
         state.awaiting_key = False
         await do_auth(raw_text, state)
@@ -1354,15 +2353,48 @@ async def handle_submit(raw_text: str, state: State) -> None:
         append_log(state, ui.hint_fragments("сначала авторизуйтесь: /auth"))
         return
 
-    screen = state.screen if state.screen.interactive and state.screen is not state.main else None
-    append_log(state, ui.user_fragments(text), screen)
-    was_busy = state.busy
-    state.queue.put_nowait(Request(content=text, screen=screen))
-    if was_busy:
-        append_log(state, ui.queued_fragments(state.queue.qsize()), screen)
-    # Следующий вопрос очереди встаёт в строку ввода сразу, не дожидаясь ответа: человек
-    # видит, что будет спрошено, и волен это поправить или стереть, пока модель думает.
-    next_prefill(state)
+    addressed_screen = destination_screen or (
+        state.screen if state.screen.interactive else state.main
+    )
+    addressed_pane = destination_pane or addressed_screen.pane
+    if state.switching_profile:
+        append_log(
+            state,
+            ui.error_fragments("нельзя отправить вопрос: выполняется смена профиля"),
+            addressed_pane,
+        )
+        return
+    request = Request(content=text, pane=addressed_pane)
+    if addressed_screen is state.main:
+        append_log(state, ui.user_fragments(text), addressed_pane)
+        was_busy = state.busy or not state.queue.empty()
+        state.queue.put_nowait(request)
+        if was_busy:
+            append_log(
+                state,
+                ui.queued_fragments(state.queue.qsize()),
+                addressed_pane,
+            )
+    else:
+        executor = pane_worker(state, addressed_pane)
+        was_busy = executor.busy or not executor.queue.empty()
+        if not executor.enqueue(request):
+            append_log(
+                state,
+                ui.error_fragments("экран закрывается — вопрос не принят"),
+                addressed_pane,
+            )
+            return
+        append_log(state, ui.user_fragments(text), addressed_pane)
+        if was_busy:
+            append_log(
+                state,
+                ui.queued_fragments(executor.queue.qsize()),
+                addressed_pane,
+            )
+    # Продвигается очередь панели, с которой отправлен вопрос, даже если человек успел
+    # перейти на соседнюю до запуска этой асинхронной обработки.
+    next_prefill(state, addressed_pane)
 
 
 # ─────────────────────────────── меню команд ───────────────────────────────
@@ -1610,6 +2642,12 @@ def build_app(state: State) -> Application:
     )
     layout = Layout(root, focused_element=input_area)
     state.input_buffer = input_area.buffer
+    _restore_active_draft(state)
+    active_pane = _active_input_pane(state)
+    if active_pane is not None:
+        profile = _pane_profile(state, active_pane)
+        if profile is not None:
+            apply_prefill(state, profile, active_pane)
 
     kb = KeyBindings()
     buffer = input_area.buffer
@@ -1645,18 +2683,36 @@ def build_app(state: State) -> Application:
         if completion_state is not None and completion_state.current_completion is not None:
             buffer.apply_completion(completion_state.current_completion)
             return
+        destination_screen = state.screen if state.screen.interactive else state.main
+        destination_pane = destination_screen.pane
         text = buffer.text
         buffer.reset()
+        destination_pane.draft = ""
         if not state.screen.interactive:
-            state.active = 0  # экран агента только для чтения — ответ придёт в главный
-        for pane in state.screen.panes:
+            switch_screen(state, 0)  # экран агента только для чтения — ответ придёт в главный
+        for pane in destination_screen.panes:
             pane.autoscroll = True  # новое сообщение — вернуться к живому выводу
-        asyncio.get_running_loop().create_task(handle_submit(text, state))
+        submission = asyncio.get_running_loop().create_task(
+            handle_submit(
+                text,
+                state,
+                destination_screen=destination_screen,
+                destination_pane=destination_pane,
+            )
+        )
+        _track_submission(state, submission)
 
     @kb.add("c-c", filter=~picker_active)
     def _cancel(event) -> None:  # noqa: ANN001
-        if state.busy and state.current_task is not None:
-            state.current_task.cancel()
+        addressed_screen = state.screen if state.screen.interactive else state.main
+        addressed_pane = addressed_screen.pane
+        if addressed_screen is state.main:
+            if state.busy and state.current_task is not None:
+                state.current_task.cancel()
+            return
+        existing = state.pane_workers.get(id(addressed_pane))
+        if existing is not None and existing.pane is addressed_pane:
+            existing.cancel_active()
 
     @kb.add("c-d")
     def _quit(event) -> None:  # noqa: ANN001
@@ -1765,9 +2821,16 @@ async def repl(state: State) -> None:
     try:
         await app.run_async()
     finally:
+        # Сначала запрещаем новым обработчикам Enter пополнять очереди, затем одновременно
+        # снимаем общий и панельные исполнители. Каждый из них дожидается уборки дочернего
+        # `run_turn`, поэтому вращатели строк ожидания не переживают закрытие приложения.
+        submissions = tuple(state.submission_tasks)
+        for task in submissions:
+            task.cancel()
+        if submissions:
+            await asyncio.gather(*submissions, return_exceptions=True)
         worker_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await worker_task
+        await asyncio.gather(worker_task, close_pane_workers(state), return_exceptions=True)
         # Последний заход архивариуса — до закрытия клиента: без него всё, о чём говорили
         # после прошлого захода (до пяти обменов), в глобальную память не попало бы вовсе.
         await archivist.finish(state)
@@ -1824,6 +2887,7 @@ async def _main(args: argparse.Namespace) -> None:
     # ни один запрос ещё невозможен. В конструкторе состояния этому места нет — его зовут
     # проверки напрямую, и любое состояние начало бы читать и писать в каталог состояния.
     restore_conversation(state)
+    open_profile_surfaces(state, state.initial_strategy)
     await repl(state)
 
 

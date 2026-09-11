@@ -46,6 +46,7 @@ from myharness import api, journal, memory, params as params_mod, picker as pick
 from myharness import archivist, background, compact, config as config_mod  # noqa: E402
 from myharness import batch, cli, methods, output, screens as screens_mod, team  # noqa: E402
 from myharness import tokens as tokens_mod  # noqa: E402
+from myharness import context_strategy, sticky_facts  # noqa: E402
 from myharness.agent import Agent, Turn, usage_tokens
 from myharness.config import Config  # noqa: E402
 from prompt_toolkit.data_structures import Point  # noqa: E402
@@ -161,6 +162,175 @@ check(
     "порог сжатия сохраняется в файл профиля",
     сжимающий.to_dict().get("compact_at") == 0.005,
     str(сжимающий.to_dict()),
+)
+
+# Стратегия контекста — самостоятельная настройка поверх прежнего режима памяти. Старый
+# профиль обязан остаться в standard, а четыре пары — именно умолчание нового строгого окна:
+# эти две проверки ловят как случайную смену прежнего поведения, так и ошибку на единицу.
+check("старый профиль получает стратегию standard", profile.context_strategy == "standard", profile.context_strategy)
+check("умолчание строгого окна — четыре пары", profile.strategy_window == 4, str(profile.strategy_window))
+
+(tmp / "profiles" / "branching.json").write_text(
+    json.dumps(
+        {
+            "name": "branching",
+            "context_strategy": "branching",
+            "strategy_window": 6,
+            "compact_at": 0,
+            "branch_prefills": {
+                " А ": [" первый вопрос ", "", 7],
+                "А": ["повтор имени"],
+                "": ["без имени"],
+                "Б": "не список",
+                "В": ["третий вопрос"],
+            },
+        },
+        ensure_ascii=False,
+    ),
+    encoding="utf-8",
+)
+ветвящийся, жалобы_ветвей = profiles.load("branching")
+check(
+    "допустимая стратегия и размер окна прочитаны",
+    ветвящийся.context_strategy == "branching" and ветвящийся.strategy_window == 6,
+    f"{ветвящийся.context_strategy} / {ветвящийся.strategy_window}",
+)
+check(
+    "пригодные заготовки ветвей сохраняют порядок",
+    list(ветвящийся.branch_prefills) == ["А", "В"]
+    and ветвящийся.branch_prefills == {"А": ["первый вопрос"], "В": ["третий вопрос"]},
+    str(ветвящийся.branch_prefills),
+)
+check(
+    "непригодные части branch_prefills пропущены с предупреждениями",
+    len(жалобы_ветвей) == 5 and all("branch_prefills" in жалоба for жалоба in жалобы_ветвей),
+    str(жалобы_ветвей),
+)
+
+# `json.loads` обычно оставляет только последнее значение точного повторного ключа. Для
+# branch_prefills повтор сам по себе является ошибкой профиля, поэтому загрузчик сохраняет
+# исходные пары ключей и оставляет первое упоминание.
+(tmp / "profiles" / "branch_duplicate.json").write_text(
+    """{
+  "name": "branch_duplicate",
+  "context_strategy": "branching",
+  "compact_at": 0,
+  "branch_prefills": {
+    "А": ["первый вопрос"],
+    "А": ["второй вопрос"],
+    "Б": ["вопрос Б"]
+  }
+}
+""",
+    encoding="utf-8",
+)
+точный_повтор, жалобы_точного_повтора = profiles.load("branch_duplicate")
+check(
+    "точный повтор ключа branch_prefills виден и отброшен",
+    точный_повтор.branch_prefills == {"А": ["первый вопрос"], "Б": ["вопрос Б"]}
+    and any("повторно" in жалоба for жалоба in жалобы_точного_повтора),
+    f"{точный_повтор.branch_prefills} / {жалобы_точного_повтора}",
+)
+
+(tmp / "profiles" / "branch_bad_first.json").write_text(
+    """{
+  "name": "branch_bad_first",
+  "context_strategy": "branching",
+  "compact_at": 0,
+  "branch_prefills": {
+    "А": "не список",
+    "А": ["не должна заменить первое значение"],
+    "Б": ["вопрос Б"]
+  }
+}
+""",
+    encoding="utf-8",
+)
+непригодный_первый, жалобы_непригодного_первого = profiles.load("branch_bad_first")
+check(
+    "непригодное первое значение всё равно занимает имя ветви",
+    непригодный_первый.branch_prefills == {"Б": ["вопрос Б"]}
+    and any("не список" in жалоба for жалоба in жалобы_непригодного_первого)
+    and any("повторно" in жалоба for жалоба in жалобы_непригодного_первого),
+    f"{непригодный_первый.branch_prefills} / {жалобы_непригодного_первого}",
+)
+
+for мусор in ("случайная", True, 7):
+    (tmp / "profiles" / "strategy_bad.json").write_text(
+        json.dumps({"name": "strategy_bad", "context_strategy": мусор}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    плохая_стратегия, жалобы_стратегии = profiles.load("strategy_bad")
+    check(
+        f"context_strategy = {мусор!r} отвергнута с предупреждением",
+        плохая_стратегия.context_strategy == "standard"
+        and any("context_strategy" in жалоба for жалоба in жалобы_стратегии),
+        f"{плохая_стратегия.context_strategy} / {жалобы_стратегии}",
+    )
+
+for мусор in (0, -1, 2.5, True):
+    (tmp / "profiles" / "strategy_window_bad.json").write_text(
+        json.dumps(
+            {"name": "strategy_window_bad", "context_strategy": "sliding", "strategy_window": мусор, "compact_at": 0},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    плохое_окно, жалобы_окна = profiles.load("strategy_window_bad")
+    check(
+        f"strategy_window = {мусор!r} отвергнуто с предупреждением",
+        плохое_окно.strategy_window == 4
+        and any("strategy_window" in жалоба for жалоба in жалобы_окна),
+        f"{плохое_окно.strategy_window} / {жалобы_окна}",
+    )
+
+(tmp / "profiles" / "facts_compact.json").write_text(
+    json.dumps(
+        {"name": "facts_compact", "context_strategy": "facts", "compact_at": 0.5},
+        ensure_ascii=False,
+    ),
+    encoding="utf-8",
+)
+фактовый, жалобы_фактов = profiles.load("facts_compact")
+check(
+    "ненулевой compact_at нового режима сохранён, но назван неприменимым",
+    фактовый.compact_at == 0.5
+    and any("compact_at" in жалоба and "не применяется" in жалоба for жалоба in жалобы_фактов),
+    f"{фактовый.compact_at} / {жалобы_фактов}",
+)
+
+(tmp / "profiles" / "foreign_prefills.json").write_text(
+    json.dumps(
+        {
+            "name": "foreign_prefills",
+            "context_strategy": "sliding",
+            "compact_at": 0,
+            "branch_prefills": {"А": ["вопрос А"]},
+        },
+        ensure_ascii=False,
+    ),
+    encoding="utf-8",
+)
+чужие_заготовки, жалобы_чужих = profiles.load("foreign_prefills")
+check(
+    "branch_prefills другого режима сохранены, но названы неприменимыми",
+    чужие_заготовки.branch_prefills == {"А": ["вопрос А"]}
+    and any("branch_prefills" in жалоба and "branching" in жалоба for жалоба in жалобы_чужих),
+    f"{чужие_заготовки.branch_prefills} / {жалобы_чужих}",
+)
+check(
+    "настройки стратегии попадают в слепок для журнала",
+    ветвящийся.snapshot().get("context_strategy") == "branching"
+    and ветвящийся.snapshot().get("strategy_window") == 6
+    and ветвящийся.snapshot().get("branch_prefills") == {"А": ["первый вопрос"], "В": ["третий вопрос"]},
+    str(ветвящийся.snapshot()),
+)
+check(
+    "настройки стратегии сохраняются в файл профиля",
+    ветвящийся.to_dict().get("context_strategy") == "branching"
+    and ветвящийся.to_dict().get("strategy_window") == 6
+    and ветвящийся.to_dict().get("branch_prefills") == {"А": ["первый вопрос"], "В": ["третий вопрос"]},
+    str(ветвящийся.to_dict()),
 )
 
 # Раскладка цепочки. Умолчание — панели рядом на одной вкладке, «tabs» разводит шаги по
@@ -299,6 +469,199 @@ check(
     str(msgs),
 )
 
+# Чистая политика получает только завершённую историю: новый вопрос добавляет вызывающая
+# сторона после выбора, поэтому он не съедает одну из четырёх пар строгого окна.
+восемь_пар = [
+    сообщение
+    for номер in range(1, 9)
+    for сообщение in (
+        {"role": "user", "content": f"вопрос {номер}"},
+        {"role": "assistant", "content": f"ответ {номер}"},
+    )
+]
+восемь_пар_до = [dict(сообщение) for сообщение in восемь_пар]
+хвост = context_strategy.select_history(восемь_пар, "sliding", 4)
+check(
+    "строгое окно берёт ровно четыре последние пары из восьми",
+    len(хвост.messages) == 8
+    and хвост.messages[0]["content"] == "вопрос 5"
+    and хвост.messages[-1]["content"] == "ответ 8"
+    and хвост.selected_pairs == 4
+    and хвост.omitted_pairs == 4,
+    str(хвост),
+)
+фактовый_хвост = context_strategy.select_history(восемь_пар, "facts", 4)
+check(
+    "facts выбирает тот же строгий хвост из четырёх пар",
+    фактовый_хвост.messages == хвост.messages
+    and фактовый_хвост.selected_pairs == 4
+    and фактовый_хвост.omitted_pairs == 4,
+    str(фактовый_хвост),
+)
+новый_вопрос = {"role": "user", "content": "вопрос 9"}
+check(
+    "новый вопрос не входит в число пар окна",
+    all(сообщение["content"] != "вопрос 9" for сообщение in хвост.messages)
+    and len([*хвост.messages, новый_вопрос]) == 9,
+    str([*хвост.messages, новый_вопрос]),
+)
+короткая_история = восемь_пар[:4]
+короткий_хвост = context_strategy.select_history(короткая_история, "facts", 4)
+check(
+    "короткая история целиком помещается в строгое окно",
+    короткий_хвост.messages == короткая_история
+    and короткий_хвост.selected_pairs == 2
+    and короткий_хвост.omitted_pairs == 0,
+    str(короткий_хвост),
+)
+check(
+    "standard и branching получают весь переданный путь",
+    context_strategy.select_history(восемь_пар, "standard", 4).messages == восемь_пар
+    and context_strategy.select_history(восемь_пар, "branching", 4).messages == восемь_пар,
+)
+check(
+    "выбор не меняет вход и отдаёт копии сообщений",
+    восемь_пар == восемь_пар_до
+    and all(копия is not исходное for копия, исходное in zip(хвост.messages, восемь_пар[8:])),
+    str(восемь_пар),
+)
+try:
+    context_strategy.select_history([{"role": "user", "content": "без ответа"}], "sliding", 4)
+except ValueError:
+    неполная_пара_отвергнута = True
+else:
+    неполная_пара_отвергнута = False
+check("неполная пара истории отвергнута", неполная_пара_отвергнута)
+try:
+    context_strategy.select_history(
+        [
+            {"role": "assistant", "content": "не тот порядок"},
+            {"role": "user", "content": "не тот порядок"},
+        ],
+        "standard",
+        4,
+    )
+except ValueError:
+    перепутанные_роли_отвергнуты = True
+else:
+    перепутанные_роли_отвергнуты = False
+check("пара с перепутанными ролями отвергнута", перепутанные_роли_отвергнуты)
+
+блок_фактов = context_strategy.conversation_facts_block({"срок": "12 часов", "задача": "перенос"})
+check(
+    "блок фактов подписан, а ключи имеют устойчивый порядок",
+    блок_фактов.startswith("Факты текущего разговора")
+    and блок_фактов.index("задача") < блок_фактов.index("срок")
+    and "12 часов" in блок_фактов,
+    блок_фактов,
+)
+check(
+    "пустой словарь не создаёт блока фактов",
+    context_strategy.conversation_facts_block({}) == "",
+    repr(context_strategy.conversation_facts_block({})),
+)
+
+print("\n7а. Операции Sticky Facts")
+исходный_профиль_фактов = profiles.Profile(
+    name="facts-source",
+    context_strategy="facts",
+    params={"max_tokens": 1, "temperature": 1.7},
+)
+профиль_извлекателя = sticky_facts.extractor_profile(исходный_профиль_фактов)
+check(
+    "извлекатель — одноразовый standard-агент с JSON-ответом",
+    профиль_извлекателя.keep_history is False
+    and профиль_извлекателя.context_strategy == "standard"
+    and профиль_извлекателя.params["response_format"] == {"type": "json_object"}
+    and профиль_извлекателя.params["thinking"] == {"type": "disabled"},
+    str(профиль_извлекателя),
+)
+check(
+    "извлекатель не наследует потолок ответа основного профиля",
+    "max_tokens" not in профиль_извлекателя.params and исходный_профиль_фактов.params["max_tokens"] == 1,
+    str(профиль_извлекателя.params),
+)
+запрос_извлечения = sticky_facts.extract_request(
+    {"deadline": "24 часа", "language": "русский"},
+    "Теперь deadline равен 12 часам.",
+)
+check(
+    "извлечение получает прежний словарь и только новую реплику пользователя",
+    запрос_извлечения.index("deadline") < запрос_извлечения.index("language")
+    and "24 часа" in запрос_извлечения
+    and "Теперь deadline равен 12 часам." in запрос_извлечения
+    and "ответ ассистента" not in запрос_извлечения,
+    запрос_извлечения,
+)
+
+изменения_фактов = sticky_facts.parse_changes(
+    '{"set":{"deadline":" 12 часов ","format":" JSON ","срок":"не объединять с deadline"},'
+    '"forget":["old","missing","old"]}'
+)
+check(
+    "set и forget очищены без смыслового объединения",
+    изменения_фактов.set_values
+    == {"deadline": "12 часов", "format": "JSON", "срок": "не объединять с deadline"}
+    and изменения_фактов.forget_keys == ("old", "missing"),
+    str(изменения_фактов),
+)
+новая_редакция = sticky_facts.apply_changes(
+    {"deadline": "24 часа", "old": "убрать", "language": "русский"},
+    изменения_фактов,
+)
+check(
+    "замена 24 → 12 держит место ключа, forget безопасен, новые ключи идут в конец",
+    новая_редакция
+    == {
+        "deadline": "12 часов",
+        "language": "русский",
+        "format": "JSON",
+        "срок": "не объединять с deadline",
+    }
+    and list(новая_редакция) == ["deadline", "language", "format", "срок"],
+    str(новая_редакция),
+)
+
+непригодные_ответы_извлекателя = (
+    "не json",
+    "[]",
+    '{"set":{},"forget":[],"extra":true}',
+    '{"set":[],"forget":[]}',
+    '{"set":{},"forget":"key"}',
+    '{"set":{" ":"value"},"forget":[]}',
+    '{"set":{"key":" "},"forget":[]}',
+    '{"set":{},"forget":[" "]}',
+)
+for непригодный_ответ in непригодные_ответы_извлекателя:
+    try:
+        sticky_facts.parse_changes(непригодный_ответ)
+    except ValueError:
+        ответ_отвергнут = True
+    else:
+        ответ_отвергнут = False
+    check(
+        f"непригодная операция извлекателя отвергнута: {непригодный_ответ}",
+        ответ_отвергнут,
+    )
+
+много_операций = sticky_facts.parse_changes(
+    json.dumps(
+        {
+            "set": {
+                f"ключ-{номер}": ("длинное значение " * (memory.FACT_CHARS_MAX + 1)).strip()
+                for номер in range(memory.FACTS_MAX + 1)
+            },
+            "forget": [],
+        },
+        ensure_ascii=False,
+    )
+)
+check(
+    "операции не наследуют скрытый потолок числа или длины фактов",
+    len(много_операций.set_values) == memory.FACTS_MAX + 1
+    and len(много_операций.set_values["ключ-0"]) > memory.FACT_CHARS_MAX,
+)
+
 print("\n8. Группа агентов и заготовка ввода")
 (tmp / "profiles" / "lead.json").write_text(
     json.dumps(
@@ -347,7 +710,7 @@ check("ответ эксперта идёт в его панель", "лично
 check("главный экран при этом чист", "личное" not in "".join(t for _, t in team_state.main.first.log))
 cli.switch_screen(team_state, 1)
 check("переключение экрана меняет показываемую ленту", team_state.screen is board)
-cli.drop_agent_screens(team_state)
+asyncio.run(cli.drop_agent_screens(team_state))
 check("смена профиля закрывает экраны группы", len(team_state.screens) == 1 and team_state.active == 0)
 
 agent_messages = analyst_pane.agent.build_messages("вопрос")
@@ -1094,6 +1457,1106 @@ check(
     repr((итог_слепого.status, итог_слепого.store_error)),
 )
 
+
+
+# Стратегии живут в том же Agent, а не в интерфейсе. Эти сценарии держат наблюдаемые швы:
+# точный запрос, полную память, одновременный старт двух обращений, барьер следующего хода,
+# отдельный расход и один узел активной ветви.
+путь_строгого_разговора = разговоры / "строгий-хвост.jsonl"
+хранилище_строгого = memory.SessionStore(путь_строгого_разговора)
+строгие_пары = [(f"вопрос {номер}", f"ответ {номер}") for номер in range(1, 9)]
+for вопрос_пары, ответ_пары in строгие_пары:
+    хранилище_строгого.append_pair(вопрос_пары, ответ_пары)
+профиль_строгого = profiles.Profile(
+    name="строгий",
+    system="Отвечай точно.",
+    context_strategy="sliding",
+    strategy_window=4,
+    compact_at=0,
+)
+строгий = Agent("строгий", профиль_строгого, store=хранилище_строгого)
+строгий.restore(строгие_пары)
+строгий_итог = asyncio.run(
+    строгий.exchange(StubClient(), "deepseek-v4-flash", "вопрос 9")
+)
+строгие_пользовательские = [
+    message["content"]
+    for message in строгий_итог.request_messages
+    if message["role"] == "user"
+]
+check(
+    "Agent sliding берёт хвост 4 из 8 до добавления нового вопроса",
+    строгие_пользовательские
+    == ["вопрос 5", "вопрос 6", "вопрос 7", "вопрос 8", "вопрос 9"]
+    and строгий_итог.selected_pairs == 4
+    and строгий_итог.omitted_pairs == 4,
+    str((строгие_пользовательские, строгий_итог)),
+)
+check(
+    "строгое окно не меняет полную память",
+    [message["content"] for message in строгий.history()]
+    == [
+        text
+        for pair in [*строгие_пары, ("вопрос 9", "щука")]
+        for text in pair
+    ]
+    and строгий_итог.dropped_pairs == 0
+    and строгий_итог.compacted_pairs == 0
+    and строгий_итог.forgotten_pairs == 0,
+    str(строгий.history()),
+)
+строгая_запись = json.loads(journal_lines()[-1])
+check(
+    "журнал sliding несёт фактический выбор",
+    строгая_запись.get("context_strategy") == "sliding"
+    and строгая_запись.get("selected_pairs") == 4
+    and строгая_запись.get("omitted_pairs") == 4,
+    str(строгая_запись),
+)
+
+
+class УправляемыйКлиентСтратегий:
+    """Два независимо удерживаемых потока на каждый ход facts."""
+
+    def __init__(self, main, facts):
+        self.outcomes = {"main": list(main), "facts": list(facts)}
+        self.counts = {"main": 0, "facts": 0}
+        self.calls = []
+        self.started = {
+            (kind, index): asyncio.Event()
+            for kind, outcomes in self.outcomes.items()
+            for index in range(len(outcomes))
+        }
+        self.released = {
+            key: asyncio.Event()
+            for key in self.started
+        }
+        self.finished = {
+            key: asyncio.Event()
+            for key in self.started
+        }
+
+    async def stream_chat(self, model, messages, params=None):
+        kind = (
+            "facts"
+            if (params or {}).get("response_format") == {"type": "json_object"}
+            else "main"
+        )
+        index = self.counts[kind]
+        self.counts[kind] += 1
+        key = (kind, index)
+        self.calls.append(
+            {
+                "kind": kind,
+                "index": index,
+                "model": model,
+                "messages": [dict(message) for message in messages],
+                "params": dict(params or {}),
+            }
+        )
+        self.started[key].set()
+        try:
+            await self.released[key].wait()
+            outcome = self.outcomes[kind][index]
+            if isinstance(outcome, BaseException):
+                raise outcome
+            text, usage = outcome
+            yield api.StreamEvent("content", text)
+            yield api.StreamEvent(
+                "meta",
+                finish_reason="stop",
+                usage=usage,
+            )
+        finally:
+            self.finished[key].set()
+
+
+def вызов_стратегии(client, kind, index):
+    return next(
+        call
+        for call in client.calls
+        if call["kind"] == kind and call["index"] == index
+    )
+async def дождаться_условия_за_циклы(condition):
+    """Дать готовым задачам ход, не превращая ошибку одновременности в вечное ожидание."""
+    for _ in range(100):
+        if condition():
+            return True
+        await asyncio.sleep(0)
+    return condition()
+
+
+
+
+async def сценарий_барьера_фактов():
+    session = tmp / "разговоры" / "барьер-фактов.jsonl"
+    facts_store = memory.FactsStore(session)
+    facts_store.append(
+        {"deadline": "24 часа"},
+        [],
+        turn_id="исходная-редакция",
+        source="user",
+    )
+    profile = profiles.Profile(
+        name="барьер-фактов",
+        system="Соблюдай требования.",
+        context_strategy="facts",
+        strategy_window=4,
+        compact_at=0,
+    )
+    subject = Agent(
+        "барьер-фактов",
+        profile,
+        store=memory.SessionStore(session),
+        facts_store=facts_store,
+    )
+    client = УправляемыйКлиентСтратегий(
+        main=[
+            ("основной ответ 1", {"total_tokens": 100}),
+            ("основной ответ 2", {}),
+        ],
+        facts=[
+            (
+                '{"set":{"deadline":"12 часов включительно"},"forget":[]}',
+                {"total_tokens": 30},
+            ),
+            ('{"set":{},"forget":[]}', {}),
+        ],
+    )
+    turns = []
+
+    async def two_turns():
+        turns.append(
+            await subject.exchange(
+                client,
+                "deepseek-v4-flash",
+                "Срок теперь 12 часов включительно.",
+            )
+        )
+        turns.append(
+            await subject.exchange(
+                client,
+                "deepseek-v4-flash",
+                "Какой срок действует?",
+            )
+        )
+
+    task = asyncio.create_task(two_turns())
+    first_started = await дождаться_условия_за_циклы(
+        lambda: client.started[("main", 0)].is_set()
+        and client.started[("facts", 0)].is_set()
+    )
+    simultaneous = (
+        first_started
+        and not client.finished[("main", 0)].is_set()
+        and not client.finished[("facts", 0)].is_set()
+    )
+    client.released[("main", 0)].set()
+    await дождаться_условия_за_циклы(
+        lambda: client.finished[("main", 0)].is_set()
+    )
+    next_waited = (
+        not client.started[("main", 1)].is_set()
+        and not client.started[("facts", 1)].is_set()
+    )
+    client.released[("facts", 0)].set()
+    await дождаться_условия_за_циклы(
+        lambda: client.started[("main", 1)].is_set()
+        and client.started[("facts", 1)].is_set()
+    )
+    first_turn = turns[0]
+    client.released[("main", 1)].set()
+    client.released[("facts", 1)].set()
+    await task
+    return subject, client, turns, simultaneous, next_waited, first_turn
+
+
+(
+    фактовый_агент,
+    фактовый_клиент,
+    фактовые_итоги,
+    одновременный_старт,
+    следующий_ждал,
+    первый_фактовый_итог,
+) = asyncio.run(сценарий_барьера_фактов())
+первый_главный_вызов = вызов_стратегии(фактовый_клиент, "main", 0)
+первый_вызов_извлекателя = вызов_стратегии(фактовый_клиент, "facts", 0)
+второй_главный_вызов = вызов_стратегии(фактовый_клиент, "main", 1)
+check(
+    "основной запрос и извлекатель стартуют до освобождения любого",
+    одновременный_старт,
+)
+check(
+    "следующий обмен не стартует до завершения извлечения",
+    следующий_ждал,
+)
+check(
+    "на два хода приходится ровно два основных и два вспомогательных запроса",
+    фактовый_клиент.counts == {"main": 2, "facts": 2},
+    str(фактовый_клиент.counts),
+)
+check(
+    "текущий основной запрос видит прежнюю редакцию facts",
+    "24 часа" in первый_главный_вызов["messages"][0]["content"]
+    and "12 часов включительно"
+    not in первый_главный_вызов["messages"][0]["content"],
+    первый_главный_вызов["messages"][0]["content"],
+)
+check(
+    "извлекатель получает прежний словарь и новую реплику без ответа ассистента",
+    "24 часа" in первый_вызов_извлекателя["messages"][-1]["content"]
+    and "Срок теперь 12 часов включительно."
+    in первый_вызов_извлекателя["messages"][-1]["content"]
+    and "основной ответ 1"
+    not in первый_вызов_извлекателя["messages"][-1]["content"],
+    первый_вызов_извлекателя["messages"][-1]["content"],
+)
+check(
+    "следующий основной запрос видит новую редакцию 24 → 12",
+    "12 часов включительно" in второй_главный_вызов["messages"][0]["content"]
+    and "24 часа" not in второй_главный_вызов["messages"][0]["content"],
+    второй_главный_вызов["messages"][0]["content"],
+)
+check(
+    "Turn различает редакцию facts до и после",
+    первый_фактовый_итог.facts_revision == 1
+    and первый_фактовый_итог.facts_revision_after == 2
+    and фактовый_агент.conversation_facts()
+    == ({"deadline": "12 часов включительно"}, 3),
+    str(
+        (
+            первый_фактовый_итог.facts_revision,
+            первый_фактовый_итог.facts_revision_after,
+            фактовый_агент.conversation_facts(),
+        )
+    ),
+)
+check(
+    "основной расход 100 и facts 30 раздельны, итог ровно 130",
+    первый_фактовый_итог.usage == {"total_tokens": 100}
+    and первый_фактовый_итог.facts_usage == {"total_tokens": 30}
+    and первый_фактовый_итог.agent_session_tokens == 130
+    and фактовый_агент.total_tokens == 130,
+    str(
+        (
+            первый_фактовый_итог.usage,
+            первый_фактовый_итог.facts_usage,
+            первый_фактовый_итог.agent_session_tokens,
+            фактовый_агент.total_tokens,
+        )
+    ),
+)
+записи_фактового_барьера = [
+    json.loads(line)
+    for line in journal_lines()
+]
+главная_запись_фактов = next(
+    record
+    for record in reversed(записи_фактового_барьера)
+    if record.get("query") == "Срок теперь 12 часов включительно."
+)
+запись_извлекателя_фактов = next(
+    record
+    for record in записи_фактового_барьера
+    if record.get("agent") == sticky_facts.EXTRACTOR_NAME
+    and record.get("run_id") == главная_запись_фактов.get("run_id")
+)
+check(
+    "извлекатель пишет обычный прогон с тем же run_id",
+    bool(главная_запись_фактов.get("run_id"))
+    and запись_извлекателя_фактов.get("usage") == {"total_tokens": 30},
+    str((главная_запись_фактов, запись_извлекателя_фактов)),
+)
+check(
+    "главный журнал не смешивает usage и facts_usage",
+    главная_запись_фактов.get("usage") == {"total_tokens": 100}
+    and главная_запись_фактов.get("facts_usage") == {"total_tokens": 30}
+    and главная_запись_фактов.get("agent_session_tokens") == 130
+    and главная_запись_фактов.get("facts_revision") == 1
+    and главная_запись_фактов.get("facts_revision_after") == 2,
+    str(главная_запись_фактов),
+)
+
+
+async def сценарий_очистки_во_время_извлечения():
+    session = tmp / "разговоры" / "очистка-во-время-facts.jsonl"
+    facts_store = memory.FactsStore(session)
+    facts_store.append(
+        {"прежний": "факт старой задачи"},
+        [],
+        turn_id="до-очистки",
+        source="user",
+    )
+    subject = Agent(
+        "очистка-во-время",
+        profiles.Profile(
+            name="очистка-во-время",
+            context_strategy="facts",
+            compact_at=0,
+        ),
+        store=memory.SessionStore(session),
+        facts_store=facts_store,
+    )
+    constructor_facts_loaded = subject.conversation_facts() == (
+        {"прежний": "факт старой задачи"},
+        1,
+    )
+    client = УправляемыйКлиентСтратегий(
+        main=[("ответ старого разговора", {"total_tokens": 20})],
+        facts=[
+            (
+                '{"set":{"возвращённый":"факт старого вопроса"},"forget":[]}',
+                {"total_tokens": 10},
+            )
+        ],
+    )
+    facts_lines_before = len(
+        facts_store.path.read_text(encoding="utf-8").splitlines()
+    )
+    task = asyncio.create_task(
+        subject.exchange(
+            client,
+            "deepseek-v4-flash",
+            "Старый вопрос, который сейчас очистят.",
+        )
+    )
+    both_started = await дождаться_условия_за_циклы(
+        lambda: client.started[("main", 0)].is_set()
+        and client.started[("facts", 0)].is_set()
+    )
+    client.released[("main", 0)].set()
+    main_finished = await дождаться_условия_за_циклы(
+        lambda: client.finished[("main", 0)].is_set()
+    )
+    subject.forget()
+    immediately_empty = (
+        subject.conversation_facts() == ({}, 0)
+        and subject.history() == []
+    )
+    client.released[("facts", 0)].set()
+    turn = await task
+
+    new_session = tmp / "разговоры" / "после-очистки-facts.jsonl"
+    new_store = memory.SessionStore(new_session)
+    touch_error = new_store.touch()
+    subject.set_store(new_store)
+    next_client = УправляемыйКлиентСтратегий(
+        main=[("ответ нового разговора", {"total_tokens": 8})],
+        facts=[
+            (
+                '{"set":{"новый":"факт новой задачи"},"forget":[]}',
+                {"total_tokens": 4},
+            )
+        ],
+    )
+    for event in next_client.released.values():
+        event.set()
+    next_turn = await subject.exchange(
+        next_client,
+        "deepseek-v4-flash",
+        "Новый вопрос после очистки.",
+    )
+    next_extractor_call = вызов_стратегии(next_client, "facts", 0)
+    return (
+        subject,
+        facts_store,
+        session,
+        turn,
+        facts_lines_before,
+        both_started,
+        main_finished,
+        immediately_empty,
+        client.counts,
+        constructor_facts_loaded,
+        new_session,
+        memory.FactsStore(new_session),
+        touch_error,
+        next_turn,
+        next_extractor_call,
+        next_client.counts,
+    )
+
+
+(
+    очищенный_фактовый_агент,
+    хранилище_очищенных_фактов,
+    сессия_очищенных_фактов,
+    итог_очистки_фактов,
+    строк_фактов_до_очистки,
+    оба_запроса_до_очистки_начаты,
+    основной_до_очистки_завершён,
+    сразу_после_очистки_пусто,
+    вызовы_очистки_фактов,
+    конструктор_поднял_явные_факты,
+    новая_сессия_фактов,
+    новое_хранилище_фактов,
+    ошибка_создания_новой_сессии,
+    итог_после_очистки_фактов,
+    вызов_извлекателя_после_очистки,
+    вызовы_после_очистки_фактов,
+) = asyncio.run(сценарий_очистки_во_время_извлечения())
+check(
+    "forget очищает факты этого Agent и старый извлекатель их не возвращает",
+    конструктор_поднял_явные_факты
+    and оба_запроса_до_очистки_начаты
+    and основной_до_очистки_завершён
+    and сразу_после_очистки_пусто
+    and итог_очистки_фактов.facts_revision == 1
+    and итог_очистки_фактов.facts_revision_after == 0
+    and "очищен" in (итог_очистки_фактов.facts_error or "")
+    and not сессия_очищенных_фактов.exists()
+    and len(
+        хранилище_очищенных_фактов.path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    )
+    == строк_фактов_до_очистки
+    and вызовы_очистки_фактов == {"main": 1, "facts": 1},
+    str(
+        (
+            итог_очистки_фактов,
+            вызовы_очистки_фактов,
+        )
+    ),
+)
+check(
+    "следующий facts-обмен пишет новую сессию без воскрешения старых ключей",
+    ошибка_создания_новой_сессии is None
+    and итог_после_очистки_фактов.ok
+    and итог_после_очистки_фактов.facts_revision == 0
+    and итог_после_очистки_фактов.facts_revision_after == 1
+    and очищенный_фактовый_агент.conversation_facts()
+    == ({"новый": "факт новой задачи"}, 1)
+    and новое_хранилище_фактов.load()[0].values
+    == {"новый": "факт новой задачи"}
+    and "прежний"
+    not in вызов_извлекателя_после_очистки["messages"][-1]["content"]
+    and "факт старой задачи"
+    not in вызов_извлекателя_после_очистки["messages"][-1]["content"]
+    and all(
+        "факт старой задачи" not in message["content"]
+        for message in итог_после_очистки_фактов.request_messages
+    )
+    and очищенный_фактовый_агент.history()
+    == [
+        {"role": "user", "content": "Новый вопрос после очистки."},
+        {"role": "assistant", "content": "ответ нового разговора"},
+    ]
+    and len(
+        новая_сессия_фактов.read_text(encoding="utf-8").splitlines()
+    )
+    == 2
+    and вызовы_после_очистки_фактов == {"main": 1, "facts": 1},
+    str(
+        (
+            очищенный_фактовый_агент.conversation_facts(),
+            новое_хранилище_фактов.load()[0],
+            итог_после_очистки_фактов,
+        )
+    ),
+)
+
+
+async def сценарий_основного_отказа():
+    session = tmp / "разговоры" / "основной-отказ-facts.jsonl"
+    facts_store = memory.FactsStore(session)
+    facts_store.append(
+        {"режим": "старый"},
+        [],
+        turn_id="до-отказа",
+        source="user",
+    )
+    subject = Agent(
+        "основной-отказ",
+        profiles.Profile(
+            name="основной-отказ",
+            context_strategy="facts",
+            compact_at=0,
+        ),
+        store=memory.SessionStore(session),
+        facts_store=facts_store,
+    )
+    client = УправляемыйКлиентСтратегий(
+        main=[RuntimeError("основная сеть упала")],
+        facts=[
+            (
+                '{"set":{"режим":"новый"},"forget":[]}',
+                {"total_tokens": 7},
+            )
+        ],
+    )
+    for event in client.released.values():
+        event.set()
+    turn = await subject.exchange(
+        client,
+        "deepseek-v4-flash",
+        "Переключи режим на новый.",
+    )
+    return subject, facts_store, turn
+
+
+агент_основного_отказа, хранилище_после_отказа, итог_основного_отказа = asyncio.run(
+    сценарий_основного_отказа()
+)
+check(
+    "успешные facts записываются при сетевой ошибке основного запроса",
+    not итог_основного_отказа.ok
+    and "основная сеть упала" in (итог_основного_отказа.error or "")
+    and хранилище_после_отказа.load()[0].values == {"режим": "новый"}
+    and итог_основного_отказа.facts_revision == 1
+    and итог_основного_отказа.facts_revision_after == 2,
+    str(
+        (
+            итог_основного_отказа,
+            хранилище_после_отказа.load()[0],
+        )
+    ),
+)
+check(
+    "основной отказ не создаёт пару разговора",
+    агент_основного_отказа.history() == [],
+    str(агент_основного_отказа.history()),
+)
+
+
+async def сценарий_ошибки_извлекателя():
+    session = tmp / "разговоры" / "ошибка-извлекателя.jsonl"
+    facts_store = memory.FactsStore(session)
+    facts_store.append(
+        {"срок": "24 часа"},
+        [],
+        turn_id="до-ошибки",
+        source="user",
+    )
+    subject = Agent(
+        "ошибка-извлекателя",
+        profiles.Profile(
+            name="ошибка-извлекателя",
+            context_strategy="facts",
+            compact_at=0,
+        ),
+        store=memory.SessionStore(session),
+        facts_store=facts_store,
+    )
+    client = УправляемыйКлиентСтратегий(
+        main=[("главный ответ уцелел", {"total_tokens": 10})],
+        facts=[("это не json", {"total_tokens": 5})],
+    )
+    for event in client.released.values():
+        event.set()
+    turn = await subject.exchange(
+        client,
+        "deepseek-v4-flash",
+        "Исправь срок.",
+    )
+    return subject, facts_store, turn
+
+
+агент_ошибки_фактов, хранилище_ошибки_фактов, итог_ошибки_фактов = asyncio.run(
+    сценарий_ошибки_извлекателя()
+)
+check(
+    "непригодный ответ извлекателя не меняет редакцию и виден как facts_error",
+    итог_ошибки_фактов.ok
+    and итог_ошибки_фактов.text == "главный ответ уцелел"
+    and bool(итог_ошибки_фактов.facts_error)
+    and итог_ошибки_фактов.facts_revision == 1
+    and итог_ошибки_фактов.facts_revision_after == 1
+    and хранилище_ошибки_фактов.load()[0].values == {"срок": "24 часа"},
+    str((итог_ошибки_фактов, хранилище_ошибки_фактов.load()[0])),
+)
+check(
+    "ошибка извлекателя не теряет успешную основную пару и его фактический расход",
+    агент_ошибки_фактов.history()[-2:]
+    == [
+        {"role": "user", "content": "Исправь срок."},
+        {"role": "assistant", "content": "главный ответ уцелел"},
+    ]
+    and итог_ошибки_фактов.facts_usage == {"total_tokens": 5}
+    and итог_ошибки_фактов.agent_session_tokens == 15,
+    str((агент_ошибки_фактов.history(), итог_ошибки_фактов)),
+)
+
+
+async def сценарий_сетевой_ошибки_извлекателя():
+    session = tmp / "разговоры" / "сеть-извлекателя.jsonl"
+    facts_store = memory.FactsStore(session)
+    facts_store.append(
+        {"срок": "24 часа"},
+        [],
+        turn_id="до-сетевой-ошибки",
+        source="user",
+    )
+    subject = Agent(
+        "сеть-извлекателя",
+        profiles.Profile(
+            name="сеть-извлекателя",
+            context_strategy="facts",
+            compact_at=0,
+        ),
+        store=memory.SessionStore(session),
+        facts_store=facts_store,
+    )
+    client = УправляемыйКлиентСтратегий(
+        main=[("основной ответ сохранён", {"total_tokens": 10})],
+        facts=[RuntimeError("сеть извлекателя недоступна")],
+    )
+    for event in client.released.values():
+        event.set()
+    turn = await subject.exchange(
+        client,
+        "deepseek-v4-flash",
+        "Вопрос при сетевом отказе извлекателя.",
+    )
+    return subject, facts_store, session, turn, client.counts
+
+
+(
+    агент_сетевого_отказа_фактов,
+    хранилище_сетевого_отказа_фактов,
+    сессия_сетевого_отказа_фактов,
+    итог_сетевого_отказа_фактов,
+    вызовы_сетевого_отказа_фактов,
+) = asyncio.run(сценарий_сетевой_ошибки_извлекателя())
+check(
+    "сетевой RuntimeError извлекателя не роняет успешный основной обмен",
+    итог_сетевого_отказа_фактов.ok
+    and итог_сетевого_отказа_фактов.text == "основной ответ сохранён"
+    and "сеть извлекателя недоступна"
+    in (итог_сетевого_отказа_фактов.facts_error or "")
+    and итог_сетевого_отказа_фактов.facts_revision == 1
+    and итог_сетевого_отказа_фактов.facts_revision_after == 1
+    and итог_сетевого_отказа_фактов.facts_usage is None
+    and хранилище_сетевого_отказа_фактов.load()[0].values
+    == {"срок": "24 часа"}
+    and агент_сетевого_отказа_фактов.history()[-2:]
+    == [
+        {
+            "role": "user",
+            "content": "Вопрос при сетевом отказе извлекателя.",
+        },
+        {"role": "assistant", "content": "основной ответ сохранён"},
+    ]
+    and len(
+        сессия_сетевого_отказа_фактов.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    )
+    == 2
+    and вызовы_сетевого_отказа_фактов == {"main": 1, "facts": 1},
+    str(
+        (
+            итог_сетевого_отказа_фактов,
+            агент_сетевого_отказа_фактов.history(),
+            вызовы_сетевого_отказа_фактов,
+        )
+    ),
+)
+
+
+async def сценарий_неизвестного_расхода_фактов():
+    subject = Agent(
+        "неизвестный-расход",
+        profiles.Profile(
+            name="неизвестный-расход",
+            context_strategy="facts",
+            compact_at=0,
+        ),
+    )
+    client = УправляемыйКлиентСтратегий(
+        main=[("ответ", {"total_tokens": 11})],
+        facts=[('{"set":{"x":"y"},"forget":[]}', {})],
+    )
+    for event in client.released.values():
+        event.set()
+    return await subject.exchange(client, "deepseek-v4-flash", "Запомни x.")
+
+
+неизвестный_расход_фактов = asyncio.run(
+    сценарий_неизвестного_расхода_фактов()
+)
+check(
+    "неизвестный серверный расход извлекателя не подменяется локальным",
+    неизвестный_расход_фактов.facts_usage is None
+    and неизвестный_расход_фактов.agent_session_tokens == 11,
+    str(неизвестный_расход_фактов),
+)
+
+
+async def сценарий_отмены_facts():
+    session = tmp / "разговоры" / "отмена-facts.jsonl"
+    facts_store = memory.FactsStore(session)
+    facts_store.append(
+        {"до": "целое"},
+        [],
+        turn_id="до-отмены",
+        source="user",
+    )
+    subject = Agent(
+        "отмена-facts",
+        profiles.Profile(
+            name="отмена-facts",
+            context_strategy="facts",
+            compact_at=0,
+        ),
+        store=memory.SessionStore(session),
+        facts_store=facts_store,
+    )
+    client = УправляемыйКлиентСтратегий(
+        main=[("не должен завершиться", {"total_tokens": 10})],
+        facts=[('{"set":{"после":"не писать"},"forget":[]}', {"total_tokens": 5})],
+    )
+    task = asyncio.create_task(
+        subject.exchange(client, "deepseek-v4-flash", "Отменяемый вопрос.")
+    )
+    both_started = await дождаться_условия_за_циклы(
+        lambda: client.started[("main", 0)].is_set()
+        and client.started[("facts", 0)].is_set()
+    )
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        propagated = True
+    else:
+        propagated = False
+    both_finished = (
+        client.finished[("main", 0)].is_set()
+        and client.finished[("facts", 0)].is_set()
+    )
+    return subject, facts_store, propagated, both_started, both_finished
+
+
+(
+    агент_отмены_facts,
+    хранилище_отмены_facts,
+    отмена_facts_проброшена,
+    оба_обращения_facts_начаты,
+    оба_обращения_facts_завершены,
+) = asyncio.run(сценарий_отмены_facts())
+check(
+    "отмена facts отменяет оба обращения и пробрасывается",
+    отмена_facts_проброшена
+    and оба_обращения_facts_начаты
+    and оба_обращения_facts_завершены
+    and агент_отмены_facts.history() == []
+    and хранилище_отмены_facts.load()[0].values == {"до": "целое"}
+    and хранилище_отмены_facts.load()[0].revision == 1,
+    str((агент_отмены_facts.history(), хранилище_отмены_facts.load()[0])),
+)
+
+# Branching получает готовое хранилище и точное имя ветви. B пишется раньше A, чтобы
+# случайное чтение линейного хвоста файла немедленно подмешало соседний путь.
+путь_агента_ветви = tmp / "разговоры" / "агент-ветви.jsonl"
+хранилище_ветви = memory.BranchStore(путь_агента_ветви)
+общая_голова, _ = хранилище_ветви.append_turn(
+    None,
+    None,
+    "общий вопрос",
+    "общий ответ",
+    profile="агент-ветви",
+    model="deepseek-v4-flash",
+    system_fp=memory.fingerprint("Развивай только свою ветвь."),
+)
+хранилище_ветви.split(общая_голова.id, "A", "B")
+голова_b, _ = хранилище_ветви.append_turn(
+    "B",
+    общая_голова.id,
+    "вопрос B",
+    "ответ B",
+    profile="агент-ветви",
+    model="deepseek-v4-flash",
+    system_fp=memory.fingerprint("Развивай только свою ветвь."),
+)
+голова_a, _ = хранилище_ветви.append_turn(
+    "A",
+    общая_голова.id,
+    "вопрос A",
+    "ответ A",
+    profile="агент-ветви",
+    model="deepseek-v4-flash",
+    system_fp=memory.fingerprint("Развивай только свою ветвь."),
+)
+профиль_агента_ветви = profiles.Profile(
+    name="агент-ветви",
+    system="Развивай только свою ветвь.",
+    context_strategy="branching",
+    compact_at=0,
+)
+агент_ветви_a = Agent(
+    "ветвь A",
+    профиль_агента_ветви,
+    branch_store=хранилище_ветви,
+    branch="A",
+)
+строк_графа_до = len(путь_агента_ветви.read_text(encoding="utf-8").splitlines())
+итог_ветви_a = asyncio.run(
+    агент_ветви_a.exchange(
+        StubClient(),
+        "deepseek-v4-flash",
+        "продолжение A",
+    )
+)
+граф_после_ответа_a = хранилище_ветви.load()
+тексты_запроса_a = [
+    message["content"]
+    for message in итог_ветви_a.request_messages
+]
+check(
+    "Branching собирает восстановленный путь A без соседней B",
+    "общий вопрос" in тексты_запроса_a
+    and "вопрос A" in тексты_запроса_a
+    and "продолжение A" in тексты_запроса_a
+    and "вопрос B" not in тексты_запроса_a
+    and "ответ B" not in тексты_запроса_a,
+    str(тексты_запроса_a),
+)
+check(
+    "успешный Branching добавляет ровно один узел только в активную ветвь",
+    len(путь_агента_ветви.read_text(encoding="utf-8").splitlines())
+    == строк_графа_до + 1
+    and граф_после_ответа_a.path("A")
+    == [
+        ("общий вопрос", "общий ответ"),
+        ("вопрос A", "ответ A"),
+        ("продолжение A", "щука"),
+    ]
+    and граф_после_ответа_a.path("B")
+    == [
+        ("общий вопрос", "общий ответ"),
+        ("вопрос B", "ответ B"),
+    ],
+    str((граф_после_ответа_a.path("A"), граф_после_ответа_a.path("B"))),
+)
+check(
+    "Turn Branching называет прежнюю голову и контрольную точку",
+    итог_ветви_a.context_strategy == "branching"
+    and итог_ветви_a.branch == "A"
+    and итог_ветви_a.branch_head == голова_a.id
+    and итог_ветви_a.branch_checkpoint == общая_голова.id
+    and итог_ветви_a.selected_pairs == 2
+    and итог_ветви_a.omitted_pairs == 0,
+    str(итог_ветви_a),
+)
+check(
+    "соседняя голова B не сдвинулась",
+    граф_после_ответа_a.heads["B"] == голова_b.id,
+    str(граф_после_ответа_a.heads),
+)
+
+агент_ветви_b = Agent(
+    "ветвь B",
+    профиль_агента_ветви,
+    branch_store=хранилище_ветви,
+    branch="B",
+)
+check(
+    "агенты ветвей держат независимые списки пути",
+    "вопрос B" in [message["content"] for message in агент_ветви_b.history()]
+    and "вопрос A" not in [message["content"] for message in агент_ветви_b.history()]
+    and "продолжение A"
+    not in [message["content"] for message in агент_ветви_b.history()]
+    and "вопрос B" not in [message["content"] for message in агент_ветви_a.history()],
+    str((агент_ветви_a.history(), агент_ветви_b.history())),
+)
+строк_до_отказа_ветви = len(
+    путь_агента_ветви.read_text(encoding="utf-8").splitlines()
+)
+голова_b_до_отказа = хранилище_ветви.load().heads["B"]
+итог_отказа_ветви = asyncio.run(
+    агент_ветви_b.exchange(
+        StubClient(error=RuntimeError("ветвь B не ответила")),
+        "deepseek-v4-flash",
+        "неудачное продолжение B",
+    )
+)
+check(
+    "ошибка Branching не сдвигает голову и не пишет узел",
+    not итог_отказа_ветви.ok
+    and хранилище_ветви.load().heads["B"] == голова_b_до_отказа
+    and len(путь_агента_ветви.read_text(encoding="utf-8").splitlines())
+    == строк_до_отказа_ветви,
+    str((итог_отказа_ветви, хранилище_ветви.load().heads)),
+)
+агент_отмены_ветви = Agent(
+    "отмена ветви A",
+    профиль_агента_ветви,
+    branch_store=хранилище_ветви,
+    branch="A",
+)
+голова_a_до_отмены = хранилище_ветви.load().heads["A"]
+отмена_ветви_проброшена = asyncio.run(отменить_обмен(агент_отмены_ветви))
+check(
+    "отмена Branching не сдвигает голову",
+    отмена_ветви_проброшена
+    and хранилище_ветви.load().heads["A"] == голова_a_до_отмены,
+    str(хранилище_ветви.load().heads),
+)
+
+путь_разделения_агента = tmp / "разговоры" / "разделение-агента.jsonl"
+хранилище_разделения_агента = memory.BranchStore(путь_разделения_агента)
+хранилище_разделения_агента.append_turn(
+    None,
+    None,
+    "корневой вопрос",
+    "корневой ответ",
+    profile="разделение-агента",
+    model="deepseek-v4-flash",
+    system_fp=memory.fingerprint("Разделяй."),
+)
+корневой_агент_разделения = Agent(
+    "корень",
+    profiles.Profile(
+        name="разделение-агента",
+        system="Разделяй.",
+        context_strategy="branching",
+        compact_at=0,
+    ),
+    branch_store=хранилище_разделения_агента,
+)
+разделённые_агенты, ошибка_разделения_агента = (
+    корневой_агент_разделения.split_branches("лево", "право")
+)
+check(
+    "Agent разделяет корень на два готовых независимых агента",
+    ошибка_разделения_агента is None
+    and разделённые_агенты is not None
+    and set(разделённые_агенты) == {"лево", "право"}
+    and разделённые_агенты["лево"].history()
+    == [
+        {"role": "user", "content": "корневой вопрос"},
+        {"role": "assistant", "content": "корневой ответ"},
+    ]
+    and разделённые_агенты["право"].history()
+    == разделённые_агенты["лево"].history(),
+    str(
+        (
+            ошибка_разделения_агента,
+            разделённые_агенты,
+        )
+    ),
+)
+клиент_закрытого_родителя = StubClient()
+строк_до_продолжения_родителя = len(
+    путь_разделения_агента.read_text(encoding="utf-8").splitlines()
+)
+итог_закрытого_родителя = asyncio.run(
+    корневой_агент_разделения.exchange(
+        клиент_закрытого_родителя,
+        "deepseek-v4-flash",
+        "продолжить родителя",
+    )
+)
+check(
+    "после разделения родитель недоступен без обращения к модели",
+    not итог_закрытого_родителя.ok
+    and "родительский разговор" in (итог_закрытого_родителя.error or "")
+    and клиент_закрытого_родителя.calls == []
+    and len(путь_разделения_агента.read_text(encoding="utf-8").splitlines())
+    == строк_до_продолжения_родителя,
+    str((итог_закрытого_родителя, клиент_закрытого_родителя.calls)),
+)
+
+
+class ПакетныйКлиентСтратегии:
+    def __init__(self):
+        self.calls = []
+
+    async def stream_chat(self, model, messages, params=None):
+        facts_call = (params or {}).get("response_format") == {
+            "type": "json_object"
+        }
+        self.calls.append(
+            {
+                "facts": facts_call,
+                "messages": [dict(message) for message in messages],
+            }
+        )
+        if facts_call:
+            yield api.StreamEvent(
+                "content",
+                '{"set":{"режим":"пакетный"},"forget":[]}',
+            )
+            usage = {"total_tokens": 30}
+        else:
+            yield api.StreamEvent("content", "пакетный ответ")
+            usage = {"total_tokens": 100}
+        yield api.StreamEvent("meta", finish_reason="stop", usage=usage)
+
+
+пакетный_профиль_стратегии = profiles.Profile(
+    name="пакетные-facts",
+    context_strategy="facts",
+    compact_at=0,
+)
+пакетный_порядок_стратегии = batch.Order(
+    model="deepseek-v4-flash",
+    concurrency=1,
+    tasks=[
+        batch.Task(
+            agent="пакетные-facts",
+            profile="пакетные-facts",
+            vars={},
+            ask="Запомни пакетный режим.",
+            prepared=пакетный_профиль_стратегии,
+        )
+    ],
+)
+пакетный_клиент_стратегии = ПакетныйКлиентСтратегии()
+пакетные_строки_стратегии = []
+пакетный_итог_стратегии = asyncio.run(
+    batch.run_order(
+        пакетный_порядок_стратегии,
+        пакетный_клиент_стратегии,
+        on_line=пакетные_строки_стратегии.append,
+    )
+)[0]
+check(
+    "пакетный вызов наследует полный договор Agent facts",
+    пакетный_итог_стратегии.ok
+    and пакетный_итог_стратегии.context_strategy == "facts"
+    and пакетный_итог_стратегии.facts_revision == 0
+    and пакетный_итог_стратегии.facts_revision_after == 1
+    and пакетный_итог_стратегии.usage == {"total_tokens": 100}
+    and пакетный_итог_стратегии.facts_usage == {"total_tokens": 30}
+    and пакетный_итог_стратегии.agent_session_tokens == 130
+    and len(пакетный_клиент_стратегии.calls) == 2,
+    str((пакетный_итог_стратегии, пакетный_клиент_стратегии.calls)),
+)
+пакетная_сводка_стратегии = batch.summary_lines(
+    пакетный_порядок_стратегии,
+    [пакетный_итог_стратегии],
+)
+check(
+    "пакетная сводка считает основной и вспомогательный расходы ровно один раз",
+    пакетная_сводка_стратегии[-1]
+    == "Итог: ответили 1 из 1, израсходовано 130 токенов"
+    and "130 токенов" in пакетная_сводка_стратегии[1],
+    str(пакетная_сводка_стратегии),
+)
+пакетная_сводка_без_расхода_извлекателя = batch.summary_lines(
+    пакетный_порядок_стратегии,
+    [
+        Turn(
+            status="ok",
+            usage={"total_tokens": 100},
+            facts_usage=None,
+            agent_session_tokens=100,
+            context_strategy="facts",
+        )
+    ],
+)
+check(
+    "пакетный основной usage без usage извлекателя не становится точным расходом",
+    "расход неизвестен" in пакетная_сводка_без_расхода_извлекателя[1]
+    and пакетная_сводка_без_расхода_извлекателя[-1]
+    == "Итог: ответили 1 из 1, расход неизвестен"
+    and all(
+        "100 токенов" not in строка
+        for строка in пакетная_сводка_без_расхода_извлекателя
+    ),
+    str(пакетная_сводка_без_расхода_извлекателя),
+)
 
 # Итог оркестратора кладёт в память главного агента `output.deliver` — вторая точка вызова
 # `remember`, и правила у неё обязаны быть те же: запись на диск с моделью приложения и с
@@ -2319,6 +3782,493 @@ check("имя новой сессии оканчивается на .jsonl", all
 check("новые сессии файлов на диске не заводят", not any(путь.exists() for путь in тройка_сессий))
 memory.SessionStore(тройка_сессий[0]).append("user", "в1")
 check("записанная сессия находится как последняя", memory.latest_session(каталог_новой, "default") == тройка_сессий[0], str(memory.latest_session(каталог_новой, "default")))
+
+# Стратегия — дополнительный уровень только для новых режимов. Старый вызов и явный
+# `standard` обязаны указывать на прежний каталог: иначе обновление потеряет прошлые разговоры.
+каталог_стратегий = tmp / "стратегии-памяти"
+каталог_стратегий.mkdir()
+стандартный_каталог = memory.profile_dir(каталог_стратегий, "default")
+check(
+    "явный standard сохраняет прежний каталог профиля",
+    memory.profile_dir(каталог_стратегий, "default", "standard") == стандартный_каталог,
+    str(memory.profile_dir(каталог_стратегий, "default", "standard")),
+)
+каталоги_стратегий = {
+    strategy: memory.profile_dir(каталог_стратегий, "default", strategy)
+    for strategy in ("sliding", "facts", "branching")
+}
+check(
+    "новые стратегии лежат отдельными уровнями под профилем",
+    all(path.parent == стандартный_каталог for path in каталоги_стратегий.values())
+    and len(set(каталоги_стратегий.values())) == 3,
+    str(каталоги_стратегий),
+)
+опасный_каталог_стратегии = memory.profile_dir(каталог_стратегий, "default", "../A")
+check(
+    "имя стратегии с путём не выходит из каталога профиля",
+    опасный_каталог_стратегии.resolve().parent == стандартный_каталог.resolve(),
+    str(опасный_каталог_стратегии),
+)
+пути_новых_стратегий = [
+    memory.new_session(каталог_стратегий, "default", strategy)
+    for strategy in ("sliding", "facts", "branching")
+]
+check(
+    "пути сессий новых стратегий разделены",
+    all(path.parent == каталоги_стратегий[strategy] for path, strategy in zip(пути_новых_стратегий, ("sliding", "facts", "branching"), strict=True)),
+    str(пути_новых_стратегий),
+)
+check(
+    "новая сессия стратегии не создаёт файл до записи",
+    not any(path.exists() for path in пути_новых_стратегий),
+    str(пути_новых_стратегий),
+)
+
+# Пара сериализуется целиком до открытия файла. Несериализуемая пометка на ответе не должна
+# оставить одинокий вопрос, который при восстановлении выглядел бы оборванным разговором.
+путь_непригодной_пары = memory.new_session(каталог_стратегий, "default", "sliding")
+ошибка_непригодной_пары = memory.SessionStore(путь_непригодной_пары).append_pair(
+    "не должен появиться",
+    "и ответ тоже",
+    {"object": object()},
+)
+check(
+    "несериализуемая meta пары возвращает текст и не создаёт половину файла",
+    isinstance(ошибка_непригодной_пары, str) and not путь_непригодной_пары.exists(),
+    str(ошибка_непригодной_пары),
+)
+путь_пары_после_хвоста = memory.new_session(каталог_стратегий, "хвост-пары", "sliding")
+путь_пары_после_хвоста.parent.mkdir(parents=True)
+путь_пары_после_хвоста.write_bytes(b'{"broken"')
+ошибка_пары_после_хвоста = memory.SessionStore(путь_пары_после_хвоста).append_pair(
+    "целый вопрос после хвоста",
+    "целый ответ после хвоста",
+)
+восстановленная_пара_после_хвоста = memory.read_session(
+    путь_пары_после_хвоста,
+    window=0,
+    system_fp="",
+)
+check(
+    "append_pair отделяет пару от оборванного хвоста без перевода строки",
+    ошибка_пары_после_хвоста is None
+    and восстановленная_пара_после_хвоста.pairs
+    == [("целый вопрос после хвоста", "целый ответ после хвоста")]
+    and b'{"broken"\n{"ts":' in путь_пары_после_хвоста.read_bytes(),
+    str(восстановленная_пара_после_хвоста),
+)
+путь_целой_пары = пути_новых_стратегий[0]
+ошибка_целой_пары = memory.SessionStore(путь_целой_пары).append_pair(
+    "вопрос дословно",
+    "ответ дословно",
+    {
+        "ts": "подделка",
+        "role": "подделка",
+        "content": "подделка",
+        "profile": "default",
+        "model": "flash",
+        "system_fp": "abc123",
+    },
+)
+записи_целой_пары = [
+    json.loads(line)
+    for line in путь_целой_пары.read_text(encoding="utf-8").splitlines()
+]
+check("append_pair записывает ровно две строки", ошибка_целой_пары is None and len(записи_целой_пары) == 2, str(записи_целой_пары))
+check(
+    "append_pair сохраняет пару дословно и не даёт meta перекрыть служебные поля",
+    записи_целой_пары[0]["role"] == "user"
+    and записи_целой_пары[0]["content"] == "вопрос дословно"
+    and записи_целой_пары[1]["role"] == "assistant"
+    and записи_целой_пары[1]["content"] == "ответ дословно"
+    and записи_целой_пары[1]["ts"] != "подделка"
+    and записи_целой_пары[1]["profile"] == "default",
+    str(записи_целой_пары),
+)
+check(
+    "линейный файл стратегии получает права 600",
+    oct(путь_целой_пары.stat().st_mode & 0o777) == "0o600",
+    oct(путь_целой_пары.stat().st_mode & 0o777),
+)
+check(
+    "дополнительный каталог стратегии получает права 700",
+    oct(путь_целой_пары.parent.stat().st_mode & 0o777) == "0o700",
+    oct(путь_целой_пары.parent.stat().st_mode & 0o777),
+)
+check(
+    "standard по-прежнему не видит сессию sliding",
+    memory.latest_session(каталог_стратегий, "default") is None,
+    str(memory.latest_session(каталог_стратегий, "default")),
+)
+check(
+    "sliding находит только свою записанную сессию",
+    memory.latest_session(каталог_стратегий, "default", "sliding") == путь_целой_пары,
+    str(memory.latest_session(каталог_стратегий, "default", "sliding")),
+)
+
+# Sticky Facts хранит операции рядом с линейной сессией, но под другим расширением. Один
+# журнал фактов без разговора не имеет права стать «последней сессией».
+сессия_локальных_фактов = memory.new_session(каталог_стратегий, "default", "facts")
+журнал_локальных_фактов = memory.FactsStore(сессия_локальных_фактов)
+check(
+    "журнал Sticky Facts отсутствует до первой операции",
+    not журнал_локальных_фактов.path.exists(),
+    str(журнал_локальных_фактов.path),
+)
+check("первая редакция фактов записана", журнал_локальных_фактов.append({"срок": " 24 часа ", "роль": "редактор"}, [], turn_id="turn-1", source="extractor") is None)
+check("замена и новый ключ записаны", журнал_локальных_фактов.append({"срок": "12 часов", "формат": "JSON"}, [], turn_id="turn-2", source="user") is None)
+check("удаление ключа записано", журнал_локальных_фактов.append({}, ["роль"], turn_id="turn-3", source="user") is None)
+локальные_факты, жалобы_локальных_фактов = журнал_локальных_фактов.load()
+check(
+    "set заменяет значение, forget удаляет ключ",
+    локальные_факты.values == {"срок": "12 часов", "формат": "JSON"},
+    str(локальные_факты.values),
+)
+check(
+    "замена сохраняет устойчивый порядок ключей",
+    list(локальные_факты.values) == ["срок", "формат"] and локальные_факты.revision == 3,
+    str((локальные_факты.revision, локальные_факты.values)),
+)
+check("целый журнал фактов читается без предупреждений", жалобы_локальных_фактов == [], str(жалобы_локальных_фактов))
+check(
+    "журнал фактов имеет отдельное от разговора расширение",
+    журнал_локальных_фактов.path.suffix != ".jsonl",
+    журнал_локальных_фактов.path.name,
+)
+check(
+    "журнал фактов не принимается за линейную сессию",
+    memory.latest_session(каталог_стратегий, "default", "facts") is None,
+    str(memory.latest_session(каталог_стратегий, "default", "facts")),
+)
+check(
+    "файл операций фактов получает права 600",
+    oct(журнал_локальных_фактов.path.stat().st_mode & 0o777) == "0o600",
+    oct(журнал_локальных_фактов.path.stat().st_mode & 0o777),
+)
+check(
+    "каталог Sticky Facts получает права 700",
+    oct(журнал_локальных_фактов.path.parent.stat().st_mode & 0o777) == "0o700",
+    oct(журнал_локальных_фактов.path.parent.stat().st_mode & 0o777),
+)
+
+байты_до_отказа_фактов = журнал_локальных_фактов.path.read_bytes()
+check(
+    "неизвестный source фактов отвергается без записи",
+    isinstance(журнал_локальных_фактов.append({"x": "y"}, [], turn_id="turn-4", source="assistant"), str)
+    and журнал_локальных_фактов.path.read_bytes() == байты_до_отказа_фактов,
+)
+check(
+    "пустое значение факта отвергается без записи",
+    isinstance(журнал_локальных_фактов.append({"x": "  "}, [], turn_id="turn-4", source="user"), str)
+    and журнал_локальных_фактов.path.read_bytes() == байты_до_отказа_фактов,
+)
+with журнал_локальных_фактов.path.open("a", encoding="utf-8") as handle:
+    handle.write('{"broken"')
+факты_после_порчи, жалобы_после_порчи = журнал_локальных_фактов.load()
+check(
+    "повреждённый хвост фактов не ломает целые редакции",
+    факты_после_порчи.values == локальные_факты.values and факты_после_порчи.revision == 3,
+    str(факты_после_порчи),
+)
+check("повреждённый хвост фактов даёт предупреждение", bool(жалобы_после_порчи), str(жалобы_после_порчи))
+check("после повреждённой строки можно дописать следующую редакцию", журнал_локальных_фактов.append({"ещё": "значение"}, [], turn_id="turn-4", source="user") is None)
+факты_после_продолжения, _ = журнал_локальных_фактов.load()
+check(
+    "целая операция после повреждения тоже восстанавливается",
+    факты_после_продолжения.revision == 4 and факты_после_продолжения.values["ещё"] == "значение",
+    str(факты_после_продолжения),
+)
+check(
+    "FactsStore отделяет новую операцию от хвоста без перевода строки",
+    b'{"broken"\n{"ts":' in журнал_локальных_фактов.path.read_bytes(),
+    repr(журнал_локальных_фактов.path.read_bytes()[-120:]),
+)
+
+сессия_фактов_с_битыми_байтами = memory.new_session(каталог_стратегий, "битые-байты", "facts")
+факты_с_битыми_байтами = memory.FactsStore(сессия_фактов_с_битыми_байтами)
+факты_с_битыми_байтами.append({"до": "целое"}, [], turn_id="bytes-1", source="user")
+with факты_с_битыми_байтами.path.open("ab") as handle:
+    handle.write(
+        b'{"ts":"2026-09-11T00:00:00+00:00","revision":2,"turn_id":"bad",'
+        b'"source":"user","set":{"bad":"\xff"},"forget":[]}\n'
+    )
+факты_с_битыми_байтами.append({"после": "тоже целое"}, [], turn_id="bytes-2", source="user")
+восстановленные_байтовые_факты, жалобы_байтовых_фактов = факты_с_битыми_байтами.load()
+check(
+    "непригодный байт портит только свою строку фактов",
+    восстановленные_байтовые_факты.values == {"до": "целое", "после": "тоже целое"}
+    and восстановленные_байтовые_факты.revision == 2,
+    str(восстановленные_байтовые_факты),
+)
+check(
+    "о непригодном байте фактов предупреждено",
+    any("непригодные байты" in warning for warning in жалобы_байтовых_фактов),
+    str(жалобы_байтовых_фактов),
+)
+
+сессия_многих_фактов = memory.new_session(каталог_стратегий, "без-предела", "facts")
+много_фактов = memory.FactsStore(сессия_многих_фактов)
+for номер in range(memory.FACTS_MAX + 5):
+    check(
+        f"операция факта {номер} не упёрлась в скрытый предел",
+        много_фактов.append({f"ключ-{номер}": f"значение-{номер}"}, [], turn_id=f"turn-{номер}", source="extractor") is None,
+    )
+состояние_многих_фактов, _ = много_фактов.load()
+check(
+    "Sticky Facts не наследует потолок числа глобальных фактов",
+    len(состояние_многих_фактов.values) == memory.FACTS_MAX + 5,
+    str(len(состояние_многих_фактов.values)),
+)
+
+# Граф хранит корень, одно событие разделения и по одному узлу на завершённую пару. B пишется
+# раньше A нарочно: порядок строк файла не должен смешивать пути.
+путь_графа = memory.new_session(каталог_стратегий, "default", "branching")
+граф = memory.BranchStore(путь_графа)
+check(
+    "разделение до первой пары отвергается без файла",
+    isinstance(граф.split(None, "A", "B"), str) and not путь_графа.exists(),
+    str(путь_графа),
+)
+корень, ошибка_корня = граф.append_turn(
+    None,
+    None,
+    "общий вопрос",
+    "общий ответ",
+    profile="default",
+    model="flash",
+    system_fp="abc123",
+)
+check("корневая пара графа записана одним узлом", ошибка_корня is None and корень is not None, str((корень, ошибка_корня)))
+check("разделение от головы записано", граф.split(корень.id, "A", "B") is None)
+узел_b, ошибка_b = граф.append_turn(
+    "B",
+    корень.id,
+    "вопрос B",
+    "ответ B",
+    profile="default",
+    model="flash",
+    system_fp="abc123",
+)
+узел_a, ошибка_a = граф.append_turn(
+    "A",
+    корень.id,
+    "вопрос A",
+    "ответ A",
+    profile="default",
+    model="flash",
+    system_fp="abc123",
+)
+check("ветви B и A записаны в обратном порядке без ошибок", ошибка_b is None and ошибка_a is None, str((ошибка_b, ошибка_a)))
+check(
+    "каждая завершённая пара занимает один узел, а split — одну отдельную строку",
+    len(путь_графа.read_text(encoding="utf-8").splitlines()) == 4,
+    путь_графа.read_text(encoding="utf-8"),
+)
+восстановленный_граф = граф.load()
+check(
+    "обратный порядок записи сохраняет обе независимые головы",
+    восстановленный_граф.heads == {"A": узел_a.id, "B": узел_b.id},
+    str(восстановленный_граф.heads),
+)
+check(
+    "путь A содержит корень и A, но не B",
+    восстановленный_граф.path("A") == [("общий вопрос", "общий ответ"), ("вопрос A", "ответ A")],
+    str(восстановленный_граф.path("A")),
+)
+check(
+    "путь B содержит корень и B, но не A",
+    восстановленный_граф.path("B") == [("общий вопрос", "общий ответ"), ("вопрос B", "ответ B")],
+    str(восстановленный_граф.path("B")),
+)
+check(
+    "граф ветвей получает права 600",
+    oct(путь_графа.stat().st_mode & 0o777) == "0o600",
+    oct(путь_графа.stat().st_mode & 0o777),
+)
+check(
+    "каталог Branching получает права 700",
+    oct(путь_графа.parent.stat().st_mode & 0o777) == "0o700",
+    oct(путь_графа.parent.stat().st_mode & 0o777),
+)
+
+узел_a2, ошибка_a2 = граф.append_turn(
+    "A",
+    узел_a.id,
+    "вопрос A2",
+    "ответ A2",
+    profile="default",
+    model="flash",
+    system_fp="abc123",
+)
+check("второй узел A записан", ошибка_a2 is None and узел_a2 is not None)
+целый_граф_для_порчи = граф.load()
+целые_записи_графа = [
+    json.loads(line)
+    for line in путь_графа.read_text(encoding="utf-8").splitlines()
+]
+закодированные_записи_графа = [
+    json.dumps(record, ensure_ascii=False).encode("utf-8")
+    for record in целые_записи_графа
+]
+путь_графа_с_битым_байтом = tmp / "порча-графов" / "битый-байт.jsonl"
+путь_графа_с_битым_байтом.parent.mkdir(parents=True, exist_ok=True)
+путь_графа_с_битым_байтом.write_bytes(
+    b"\n".join(
+        [
+            *закодированные_записи_графа[:2],
+            b'{"type":"turn","branch":"A","user":"\xff"}',
+            *закодированные_записи_графа[2:],
+        ]
+    )
+    + b"\n"
+)
+граф_с_битым_байтом = memory.BranchStore(путь_графа_с_битым_байтом).load()
+check(
+    "непригодный байт портит только свою строку графа",
+    граф_с_битым_байтом.path("A") == целый_граф_для_порчи.path("A")
+    and граф_с_битым_байтом.path("B") == целый_граф_для_порчи.path("B"),
+    str(граф_с_битым_байтом.warnings),
+)
+check(
+    "о непригодном байте графа предупреждено",
+    any("непригодные байты" in warning for warning in граф_с_битым_байтом.warnings),
+    str(граф_с_битым_байтом.warnings),
+)
+
+
+def восстановить_испорченный_граф(имя, записи):
+    path = tmp / "порча-графов" / f"{имя}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(json.dumps(record, ensure_ascii=False) for record in записи) + "\n",
+        encoding="utf-8",
+    )
+    return memory.BranchStore(path).load()
+
+
+неизвестный_родитель = [dict(record) for record in целые_записи_графа]
+next(record for record in неизвестный_родитель if record.get("id") == узел_a.id)["parent_id"] = "нет-такого-id"
+граф_с_неизвестным = восстановить_испорченный_граф("неизвестный-родитель", неизвестный_родитель)
+check("неизвестный родитель делает недоступной только A", граф_с_неизвестным.path("A") == [] and граф_с_неизвестным.path("B") == целый_граф_для_порчи.path("B"), str(граф_с_неизвестным.warnings))
+
+цикл_a = [dict(record) for record in целые_записи_графа]
+next(record for record in цикл_a if record.get("id") == узел_a.id)["parent_id"] = узел_a2.id
+граф_с_циклом = восстановить_испорченный_граф("цикл", цикл_a)
+check(
+    "цикл делает недоступной только A",
+    граф_с_циклом.path("A") == [] and граф_с_циклом.path("B") == целый_граф_для_порчи.path("B"),
+    str(граф_с_циклом.warnings),
+)
+check("предупреждение прямо называет цикл", any("цикл" in warning for warning in граф_с_циклом.warnings), str(граф_с_циклом.warnings))
+
+чужой_родитель = [dict(record) for record in целые_записи_графа]
+next(record for record in чужой_родитель if record.get("id") == узел_a.id)["parent_id"] = узел_b.id
+граф_с_чужим = восстановить_испорченный_граф("чужой-родитель", чужой_родитель)
+check(
+    "переход A через узел B делает недоступной только A",
+    граф_с_чужим.path("A") == [] and граф_с_чужим.path("B") == целый_граф_для_порчи.path("B"),
+    str(граф_с_чужим.warnings),
+)
+
+повтор_id = [dict(record) for record in целые_записи_графа]
+повтор_id.append(dict(next(record for record in повтор_id if record.get("id") == узел_a.id)))
+граф_с_повтором = восстановить_испорченный_граф("повтор-id", повтор_id)
+check(
+    "повтор id делает недоступной только затронутую ветвь",
+    граф_с_повтором.path("A") == [] and граф_с_повтором.path("B") == целый_граф_для_порчи.path("B"),
+    str(граф_с_повтором.warnings),
+)
+
+неизвестная_ветвь = [dict(record) for record in целые_записи_графа]
+неизвестная_ветвь.append(
+    {
+        **next(record for record in неизвестная_ветвь if record.get("id") == узел_a.id),
+        "id": "чужой-узел",
+        "parent_id": корень.id,
+        "branch": "C",
+    }
+)
+граф_с_неизвестной_ветвью = восстановить_испорченный_граф("неизвестная-ветвь", неизвестная_ветвь)
+check(
+    "неизвестная ветвь не ломает целые A и B",
+    граф_с_неизвестной_ветвью.path("A") == целый_граф_для_порчи.path("A")
+    and граф_с_неизвестной_ветвью.path("B") == целый_граф_для_порчи.path("B"),
+    str(граф_с_неизвестной_ветвью.warnings),
+)
+
+путь_опасной_ветви = memory.new_session(каталог_стратегий, "опасная-ветвь", "branching")
+граф_опасной_ветви = memory.BranchStore(путь_опасной_ветви)
+корень_опасной_ветви, _ = граф_опасной_ветви.append_turn(
+    None,
+    None,
+    "общий",
+    "ответ",
+    profile="опасная-ветвь",
+    model="flash",
+    system_fp="abc123",
+)
+check("имя ../A принято только как имя ветви", граф_опасной_ветви.split(корень_опасной_ветви.id, "../A", "B") is None)
+узел_опасной_ветви, ошибка_опасной_ветви = граф_опасной_ветви.append_turn(
+    "../A",
+    корень_опасной_ветви.id,
+    "вопрос",
+    "ответ",
+    profile="опасная-ветвь",
+    model="flash",
+    system_fp="abc123",
+)
+check(
+    "ветвь ../A пишется в общий файл, а не за пределы каталога",
+    ошибка_опасной_ветви is None
+    and граф_опасной_ветви.load().path("../A") == [("общий", "ответ"), ("вопрос", "ответ")]
+    and not (путь_опасной_ветви.parent.parent / "A").exists(),
+    str((узел_опасной_ветви, путь_опасной_ветви)),
+)
+
+# Глубина ветви не получает отдельного потолка. Берём число больше действующего потолка
+# глобальных фактов: это не предел графа, а удобная заведомо большая контрольная величина.
+голова_глубокой_ветви = узел_a2
+for номер in range(memory.FACTS_MAX + 5):
+    голова_глубокой_ветви, ошибка_глубины = граф.append_turn(
+        "A",
+        голова_глубокой_ветви.id,
+        f"глубокий вопрос {номер}",
+        f"глубокий ответ {номер}",
+        profile="default",
+        model="flash",
+        system_fp="abc123",
+    )
+    check(f"глубина ветви {номер} записана без скрытого предела", ошибка_глубины is None)
+глубокий_граф = граф.load()
+check(
+    "глубокая A восстановлена целиком, путь B не изменился",
+    len(глубокий_граф.path("A")) == memory.FACTS_MAX + 8
+    and глубокий_граф.path("B") == восстановленный_граф.path("B"),
+    str((len(глубокий_граф.path("A")), глубокий_граф.path("B"))),
+)
+
+with путь_графа.open("ab") as handle:
+    handle.write(b'{"broken"')
+узел_b_после_хвоста, ошибка_b_после_хвоста = граф.append_turn(
+    "B",
+    узел_b.id,
+    "вопрос B после хвоста",
+    "ответ B после хвоста",
+    profile="default",
+    model="flash",
+    system_fp="abc123",
+)
+граф_после_оборванного_хвоста = граф.load()
+check(
+    "повреждённый хвост без перевода строки сохраняет целые и последующие пути",
+    ошибка_b_после_хвоста is None
+    and граф_после_оборванного_хвоста.path("A") == глубокий_граф.path("A")
+    and граф_после_оборванного_хвоста.path("B")
+    == [*глубокий_граф.path("B"), ("вопрос B после хвоста", "ответ B после хвоста")]
+    and b'{"broken"\n{"type": "turn"' in путь_графа.read_bytes(),
+    str((узел_b_после_хвоста, граф_после_оборванного_хвоста.warnings)),
+)
+check("повреждённый хвост графа даёт предупреждение", bool(граф_после_оборванного_хвоста.warnings), str(граф_после_оборванного_хвоста.warnings))
 
 # Отпечаток инструкции: его дело — заметить, что инструкцию правили между запусками.
 check("одинаковый текст даёт одинаковый отпечаток", memory.fingerprint("ты помощник") == memory.fingerprint("ты помощник"))
@@ -6065,6 +8015,146 @@ asyncio.run(потерявший.exchange(StubClient(), "deepseek-v4-pro", "но
 check("забытые дословно пары записаны своим числом", запись_потери.get("forgotten_pairs") == 5, str(запись_потери))
 check("заменённых при этом не было — ключа нет", "compacted_pairs" not in запись_потери, str(запись_потери))
 check("выжимка в запрос не уходила — признака нет", "summary_used" not in запись_потери, str(запись_потери))
+
+# ── Видимый итог стратегий и расход ─────────────────────────────────────────
+def текст_фрагментов(фрагменты):
+    return "".join(текст for _, текст, *_ in фрагменты)
+
+
+строгое_окно = текст_фрагментов(
+    ui.context_turn_fragments(
+        "sliding",
+        selected_pairs=4,
+        omitted_pairs=4,
+    )
+)
+check(
+    "не отправленные строгим окном пары названы сохранёнными",
+    "сохранено, но не отправлено: 4 пары" in строгое_окно
+    and "забыт" not in строгое_окно
+    and "потер" not in строгое_окно,
+    строгое_окно,
+)
+
+точные_facts = текст_фрагментов(
+    ui.context_turn_fragments(
+        "facts",
+        selected_pairs=2,
+        omitted_pairs=3,
+        usage={
+            "prompt_tokens": 60,
+            "completion_tokens": 40,
+            "total_tokens": 100,
+        },
+        facts_revision=7,
+        facts_revision_after=8,
+        facts_usage={
+            "prompt_tokens": 20,
+            "completion_tokens": 10,
+            "total_tokens": 30,
+        },
+    )
+)
+check(
+    "Sticky Facts различает 100 основных, 30 извлекателя и сумму 130",
+    "редакция Sticky Facts: 7 → 8" in точные_facts
+    and "основной обмен 100" in точные_facts
+    and "извлекатель 30" in точные_facts
+    and "расход стратегии 130" in точные_facts
+    and точные_facts.count("расход стратегии 130") == 1,
+    точные_facts,
+)
+
+неизвестные_facts = текст_фрагментов(
+    ui.context_turn_fragments(
+        "facts",
+        selected_pairs=1,
+        omitted_pairs=0,
+        usage={"prompt_tokens": 70, "completion_tokens": 30, "total_tokens": 100},
+        facts_revision=3,
+        facts_revision_after=3,
+        facts_usage=None,
+        facts_error="ответ извлекателя не разобран",
+    )
+)
+check(
+    "неизвестный расход извлекателя не подменён числом, а ошибка показана",
+    "извлекатель неизвестен" in неизвестные_facts
+    and "расход стратегии неизвестен" in неизвестные_facts
+    and "Sticky Facts не обновлены: ответ извлекателя не разобран"
+    in неизвестные_facts,
+    неизвестные_facts,
+)
+
+ветвящийся_итог = текст_фрагментов(
+    ui.context_turn_fragments(
+        "branching",
+        selected_pairs=3,
+        omitted_pairs=0,
+        branch="A",
+        branch_head="head-A",
+        branch_checkpoint="checkpoint-1",
+    )
+)
+check(
+    "активная ветвь и контрольная точка различимы",
+    "активная ветвь: A" in ветвящийся_итог
+    and "голова: head-A" in ветвящийся_итог
+    and "контрольная точка: checkpoint-1" in ветвящийся_итог,
+    ветвящийся_итог,
+)
+
+отчёт_расхода = текст_фрагментов(
+    ui.tokens_report_fragments(
+        "deepseek-v4-flash",
+        history=10,
+        pairs=1,
+        overhead=83,
+        system=20,
+        restored=0,
+        runs=2,
+        usage={"prompt_tokens": 80, "completion_tokens": 50, "total_tokens": 130},
+        budget=0,
+        cost="0.01 ¢",
+        active_name="facts-pane",
+        active_strategy="facts",
+        active_runs=1,
+        active_usage={
+            "prompt_tokens": 60,
+            "completion_tokens": 40,
+            "total_tokens": 100,
+        },
+    )
+)
+check(
+    "/tokens разделяет активный Agent и весь сеанс",
+    "активный Agent «facts-pane» · Sticky Facts" in отчёт_расхода
+    and "всего 100" in отчёт_расхода
+    and "сеанс: 2 обмена" in отчёт_расхода
+    and "всего 130" in отчёт_расхода,
+    отчёт_расхода,
+)
+
+standard_вывод = текст_фрагментов(
+    ui.context_turn_fragments(
+        "standard",
+        selected_pairs=2,
+        omitted_pairs=0,
+    )
+    + ui.meta_fragments(
+        "stop",
+        {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        "default",
+        "0.01 ¢",
+    )
+)
+check(
+    "новая подпись Standard не ломает прежний итог обмена",
+    "режим: Standard; выбрано 2 пары" in standard_вывод
+    and "модель закончила сама" in standard_вывод
+    and "профиль: default" in standard_вывод,
+    standard_вывод,
+)
 
 print()
 if failures:
