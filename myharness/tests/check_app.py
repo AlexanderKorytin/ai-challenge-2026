@@ -34,7 +34,7 @@ from prompt_toolkit.data_structures import Point  # noqa: E402
 from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType  # noqa: E402
 
 from myharness import api, archivist, cli, memory, output, picker as picker_mod, profiles, ui  # noqa: E402
-from myharness import compact, screens, tokens  # noqa: E402
+from myharness import compact, conversation, screens, strategies, panes, state as state_mod, tokens, workers  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 failures = []
@@ -246,7 +246,7 @@ def screen_texts(app):
 
 async def main():
     fake = FakeClient()
-    state = cli.State(
+    state = state_mod.State(
         # Сбор фактов выключен на время разделов 1–11: архивариус — лишний запрос к
         # подставному клиенту, и он сбил бы счёт вызовов там, где вызовы считают поимённо.
         # Включают его обратно в разделе 12в, где он и проверяется.
@@ -734,21 +734,21 @@ async def main():
         # Строка под экраном агента всё равно принадлежит главной панели: экран только для
         # чтения. Набранное при просмотре агента не должно попасть в его панель или исчезнуть.
         buffer.text = "черновик главной, дополненный у агента"
-        cli.switch_pane(state, 1)
+        panes.switch_pane(state, 1)
         check(
             "переключение панелей агента не меняет главный черновик",
             buffer.text == "черновик главной, дополненный у агента",
             repr(buffer.text),
         )
-        cli.switch_screen(state, 0)
+        panes.switch_screen(state, 0)
         check(
             "текст, набранный у агента, пережил возврат на главный экран",
             buffer.text == "черновик главной, дополненный у агента",
             repr(buffer.text),
         )
         buffer.text = ""
-        cli.switch_screen(state, 1)
-        cli.switch_pane(state, 0)
+        panes.switch_screen(state, 1)
+        panes.switch_pane(state, 0)
 
         # Итог оркестратора возвращается в главный экран: человеку, ведущему разговор, не
         # приходится идти на чужую вкладку и смотреть, чем всё кончилось.
@@ -760,14 +760,14 @@ async def main():
         check("в памяти лежит текст итога", '"status": "ok"' in память[1]["content"], str(память))
         await send("/system" + ENTER, pause=0.25)
         check("/system на панели эксперта показывает его инструкцию", "ты аналитик" in log_text(state, board.panes[0]))
-        cli.switch_screen(state, 0)
+        panes.switch_screen(state, 0)
         check("возврат на главный экран", state.active == 0)
 
         # А на главном экране Σ — весь сеанс, вместе с уже отработавшими экспертами: человек
         # платит за окно целиком, и итог без экспертов занижал бы счёт ровно в тот день,
         # когда он вырос.
         #
-        # Обмен заводим тем же вызовом, каким его заводит очередь (`cli.worker`), а не вводом
+        # Обмен заводим тем же вызовом, каким его заводит очередь (`workers.worker`), а не вводом
         # с клавиатуры: действующий профиль — `lead`, и ввод поднял бы ещё одну группу. Она
         # завела бы второй прогон и сбила бы проверку журнала «вся группа помечена одним
         # прогоном», проверяя при этом не то, ради чего сюда пришли.
@@ -830,19 +830,19 @@ async def main():
         check("экран остался открытым — не перескочили на главный", state.active == 1)
         check("ушла инструкция этого экрана", fake.calls[before]["messages"][0]["content"] == "составь промпт")
 
-        cli.switch_screen(state, 2)
+        panes.switch_screen(state, 2)
         check("заготовка второго шага подставилась при переходе", buffer.text == "вставьте промпт", repr(buffer.text))
         buffer.text = "своё, исправленное человеком"
-        cli.switch_screen(state, 1)
+        panes.switch_screen(state, 1)
         check("черновик не перенесён на соседний экран", buffer.text == "", repr(buffer.text))
-        cli.switch_screen(state, 2)
+        panes.switch_screen(state, 2)
         check(
             "исправленный черновик пережил уход и возврат",
             buffer.text == "своё, исправленное человеком",
             repr(buffer.text),
         )
         buffer.text = ""
-        cli.switch_screen(state, 1)
+        panes.switch_screen(state, 1)
 
         # Поведение изменено осознанно: мышь у harness всегда. Прежний переключатель «или клики,
         # или выделение» опирался на ложный выбор — губило выделение отслеживание перетаскивания
@@ -920,17 +920,17 @@ async def main():
             память[1]["content"][:200],
         )
 
-        cli.switch_screen(state, 3)
+        panes.switch_screen(state, 3)
         check("панель по умолчанию первая", state.screen.active_pane == 0)
-        cli.switch_pane(state, 1)
+        panes.switch_pane(state, 1)
         check("Alt+стрелка переводит на соседнюю панель", state.screen.pane.key == "critic")
-        cli.switch_pane(state, 2)
+        panes.switch_pane(state, 2)
         check("панели перебираются по кругу", state.screen.pane.key == "analyst")
-        cli.toggle_zoom(state)
+        panes.toggle_zoom(state)
         check("F3 разворачивает панель на весь экран", state.screen.zoomed is True)
-        cli.toggle_zoom(state)
+        panes.toggle_zoom(state)
         check("и возвращает сетку", state.screen.zoomed is False)
-        cli.switch_screen(state, 0)
+        panes.switch_screen(state, 0)
 
         print("\n10. Список агентов под строкой ввода")
         # Группа поднимается заново, поверх набора способов: так в списке заведомо есть и
@@ -963,8 +963,8 @@ async def main():
         )
 
         # Стрелки водят по строкам списка: тот же путь, что и щелчок мышью.
-        cli.switch_screen(state, 0)
-        cli.switch_pane(state, 0)
+        panes.switch_screen(state, 0)
+        panes.switch_pane(state, 0)
         press(app, Keys.Down, "\x1b[B")
         await asyncio.sleep(0.15)
         check(
@@ -992,7 +992,7 @@ async def main():
             state.screen.key == "lead" and state.screen.pane.key == "critic",
             f"{state.screen.key} / {state.screen.pane.key}",
         )
-        cli.switch_screen(state, 0)
+        panes.switch_screen(state, 0)
 
         print("\n11. Цепочка вкладками: каждый шаг на своей вкладке")
         # Раскладка панелями (раздел 9) остаётся умолчанием — здесь профиль цепочки просит
@@ -1056,13 +1056,13 @@ async def main():
             [s.key for s in state.screens] == keys,
             str([s.key for s in state.screens]),
         )
-        cli.switch_screen(state, 0)
+        panes.switch_screen(state, 0)
 
         print("\n12. Память между запусками")
         # Сбор фактов на время остального прогона выключен намеренно: архивариус — лишний
         # запрос к подставному клиенту, и он сбил бы счёт вызовов в разделах выше. Здесь его
         # включают обратно и проверяют отдельно.
-        cli.switch_screen(state, 0)
+        panes.switch_screen(state, 0)
         await send("/profile talky" + ENTER, pause=0.3)
         каталог_запуска = Path.cwd()
         файл_разговора = state.store.path if state.store else None
@@ -1077,14 +1077,14 @@ async def main():
         # Перезапуск без второго процесса: собираем состояние заново в том же каталоге и с
         # тем же профилем — ровно то, что делает `_main` при следующем запуске.
         сохранённых_пар = len(memory.read_session(файл_разговора, window=0, system_fp="").pairs)
-        второй_запуск = cli.State(
+        второй_запуск = state_mod.State(
             config=Config(api_key="sk-test", model="deepseek-v4-flash", profile="talky", remember=False),
             client=fake,
             model="deepseek-v4-flash",
             profile=profiles.load("talky")[0],
         )
         check("новое состояние пустое до восстановления", второй_запуск.main_agent.history() == [])
-        cli.restore_conversation(второй_запуск)
+        conversation.restore_conversation(второй_запуск)
         поднятое = второй_запуск.main_agent.history()
         check(
             "второй запуск в той же папке поднял разговор",
@@ -1102,7 +1102,7 @@ async def main():
         # Восстановление идёт единственным методом пополнения памяти и не пишет на диск:
         # иначе чтение файла тут же удваивало бы его самим собой.
         размер_после_восстановления = файл_разговора.stat().st_size
-        cli.restore_conversation(второй_запуск)
+        conversation.restore_conversation(второй_запуск)
         check(
             "восстановление на диск ничего не пишет",
             файл_разговора.stat().st_size == размер_после_восстановления,
@@ -1114,13 +1114,13 @@ async def main():
         чистый_каталог.mkdir()
         прежний_каталог = os.getcwd()
         os.chdir(чистый_каталог)
-        чистый_запуск = cli.State(
+        чистый_запуск = state_mod.State(
             config=Config(api_key="sk-test", profile="talky", remember=False),
             client=fake,
             model="deepseek-v4-flash",
             profile=profiles.load("talky")[0],
         )
-        cli.restore_conversation(чистый_запуск)
+        conversation.restore_conversation(чистый_запуск)
         check("в новой папке восстанавливать нечего", чистый_запуск.main_agent.history() == [])
         check("и в ленте об этом ни строки", log_text(чистый_запуск) == "", log_text(чистый_запуск))
         check("хранилище всё равно открыто — обмену есть куда писать", чистый_запуск.store is not None)
@@ -1130,21 +1130,21 @@ async def main():
         # выглядел бы цельным, не будучи им.
         правленый = profiles.load("talky")[0]
         правленый.system = "болтай иначе"
-        запуск_с_правкой = cli.State(
+        запуск_с_правкой = state_mod.State(
             config=Config(api_key="sk-test", profile="talky", remember=False),
             client=fake,
             model="deepseek-v4-flash",
             profile=правленый,
         )
-        cli.restore_conversation(запуск_с_правкой)
+        conversation.restore_conversation(запуск_с_правкой)
         check("о правке инструкции сказано", "инструкция профиля изменилась" in log_text(запуск_с_правкой), log_text(запуск_с_правкой))
 
         # Три места, куда встроена память, поведением из этой проверки не достаются:
         # `_main` и `repl` поднимают настоящее приложение, а проверка собирает состояние
         # сама. Смотрим дерево разбора — тем же приёмом, каким в check_units проверяется
         # единственность точки записи в память.
-        def вызовы(имя_функции):
-            дерево = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+        def вызовы(имя_функции, модуль=cli):
+            дерево = ast.parse(Path(модуль.__file__).read_text(encoding="utf-8"))
             for узел in ast.walk(дерево):
                 if isinstance(узел, (ast.FunctionDef, ast.AsyncFunctionDef)) and узел.name == имя_функции:
                     return {ast.unparse(вызов.func) for вызов in ast.walk(узел) if isinstance(вызов, ast.Call)}
@@ -1153,9 +1153,13 @@ async def main():
         check("запуск поднимает прежний разговор", "restore_conversation" in вызовы("_main"), str(sorted(вызовы("_main"))))
         # В конструкторе состояния восстановлению не место: его зовут проверки напрямую, и
         # любое собранное состояние начало бы читать и писать в каталог состояния человека.
-        check("конструктор состояния на диск не ходит", "restore_conversation" not in вызовы("__post_init__"))
-        check("смена профиля подхватывает разговор нового профиля", "restore_conversation" in вызовы("switch_profile"))
-        check("очередь запросов заводит заход архивариуса", "archivist.start" in вызовы("worker"), str(sorted(вызовы("worker"))))
+        check("конструктор состояния на диск не ходит", "restore_conversation" not in вызовы("__post_init__", state_mod))
+        check("смена профиля подхватывает разговор нового профиля", "restore_conversation" in вызовы("switch_profile", strategies))
+        check(
+            "очередь запросов заводит заход архивариуса",
+            "archivist.start" in вызовы("worker", workers),
+            str(sorted(вызовы("worker", workers))),
+        )
         check("выход зовёт архивариуса последний раз", "archivist.finish" in вызовы("repl"), str(sorted(вызовы("repl"))))
 
         # Испорченную строку в файле разговора не проглатываем молча: восстановление
@@ -1170,13 +1174,13 @@ async def main():
         хранилище_битой.append("assistant", "целый ответ")
         with битая_сессия.open("a", encoding="utf-8") as файл:
             файл.write("{это не json\n")
-        запуск_с_битой = cli.State(
+        запуск_с_битой = state_mod.State(
             config=Config(api_key="sk-test", profile="битый", remember=False),
             client=fake,
             model="deepseek-v4-flash",
             profile=profiles.load("битый")[0],
         )
-        cli.restore_conversation(запуск_с_битой)
+        conversation.restore_conversation(запуск_с_битой)
         check("испорченная строка названа вслух", "испорчена" in log_text(запуск_с_битой), log_text(запуск_с_битой))
         check("и остальной разговор всё равно поднят", len(запуск_с_битой.main_agent.history()) == 2, str(запуск_с_битой.main_agent.history()))
 
@@ -1191,13 +1195,13 @@ async def main():
         check("прежний файл разговора цел", прежний_файл.exists() and len(memory.read_session(прежний_файл, window=0, system_fp="").pairs) == пар_до_очистки)
         check("пишем уже в новый файл", state.store.path != прежний_файл, str(state.store.path))
         await send("после очистки" + ENTER, pause=0.4)
-        запуск_после_очистки = cli.State(
+        запуск_после_очистки = state_mod.State(
             config=Config(api_key="sk-test", profile="talky", remember=False),
             client=fake,
             model="deepseek-v4-flash",
             profile=profiles.load("talky")[0],
         )
-        cli.restore_conversation(запуск_после_очистки)
+        conversation.restore_conversation(запуск_после_очистки)
         поднятое_после_очистки = запуск_после_очистки.main_agent.history()
         check(
             "перезапуск после /clear поднимает только новый разговор",
@@ -1219,13 +1223,13 @@ async def main():
         await send("сказано до очистки" + ENTER, pause=0.4)
         await send("/clear" + ENTER, pause=0.3)
         check("новый файл разговора заведён сразу, до первой реплики", state.store.path.exists(), str(state.store.path))
-        молчаливый_запуск = cli.State(
+        молчаливый_запуск = state_mod.State(
             config=Config(api_key="sk-test", profile="забывчивый", remember=False),
             client=fake,
             model="deepseek-v4-flash",
             profile=profiles.load("забывчивый")[0],
         )
-        cli.restore_conversation(молчаливый_запуск)
+        conversation.restore_conversation(молчаливый_запуск)
         check(
             "очистка без единого обмена переживает перезапуск",
             молчаливый_запуск.main_agent.history() == [],
@@ -1298,7 +1302,7 @@ async def main():
         # Собеседник, собранный конструктором состояния, обязан знать факты сразу — до
         # первой смены профиля. Проверка выше идёт после `/profile`, и одна она пропустила бы
         # потерю фактов у главного агента при запуске.
-        свежее_состояние = cli.State(
+        свежее_состояние = state_mod.State(
             config=Config(api_key="sk-test", remember=False),
             client=fake,
             model="deepseek-v4-flash",
@@ -1498,7 +1502,7 @@ async def main():
         # Снимок «до единого обмена» на живом состоянии не снять: к этому месту проверок
         # обменов сделаны десятки. Заводим отдельное состояние — ровно то, что видит человек
         # сразу после запуска в папке, где с прошлого раза уже лежит разговор.
-        чистое = cli.State(
+        чистое = state_mod.State(
             config=Config(api_key="sk-test", model="deepseek-v4-flash", remember=False),
             client=fake,
             model="deepseek-v4-flash",
@@ -1672,34 +1676,34 @@ async def main():
         )
         state.screens.append(экран_очередей)
         индекс_очередей = len(state.screens) - 1
-        cli.switch_screen(state, индекс_очередей)
+        panes.switch_screen(state, индекс_очередей)
         панель_a, панель_b, панель_c = панели_очередей
         check("первая заготовка A встала в её черновик", buffer.text == "A1", repr(buffer.text))
         check("у A ждут следующие две", панель_a.prefill_queue == ["A2", "A3"], str(панель_a.prefill_queue))
 
-        cli.switch_pane(state, 1)
+        panes.switch_pane(state, 1)
         check("первая заготовка B независима от A", buffer.text == "B1", repr(buffer.text))
         buffer.text = "B1, исправленный человеком"
-        cli.switch_pane(state, 2)
+        panes.switch_pane(state, 2)
         check("одиночная заготовка подставлена", buffer.text == "C1", repr(buffer.text))
         check(
             "одиночная заготовка прошла очередь длиной один",
             панель_c.prefill_initialized and панель_c.prefill_queue == [],
             str(панель_c.prefill_queue),
         )
-        cli.switch_pane(state, 1)
+        panes.switch_pane(state, 1)
         check(
             "исправленный черновик панели пережил уход и возврат",
             buffer.text == "B1, исправленный человеком",
             repr(buffer.text),
         )
 
-        cli.switch_pane(state, 0)
+        panes.switch_pane(state, 0)
         # Настоящий обработчик Enter запоминает A синхронно, но обработка текста начнётся
         # задачей позже. До передачи управления переходим на B: выбор открытой панели уже
         # не вправе поменять адрес очереди отправленного вопроса.
         press(app, Keys.ControlM, "\r")
-        cli.switch_pane(state, 1)
+        panes.switch_pane(state, 1)
         buffer.text = ""
         await asyncio.sleep(0.15)
         check("Enter на A не сдвинул очередь B", панель_b.prefill_queue == ["B2", "B3"], str(панель_b.prefill_queue))
@@ -1709,10 +1713,10 @@ async def main():
             [len(панель.prefill_queue) for панель in панели_очередей] == [1, 2, 0],
             str([панель.prefill_queue for панель in панели_очередей]),
         )
-        cli.switch_pane(state, 0)
+        panes.switch_pane(state, 0)
         check("Enter с первой A подготовил вторую A", buffer.text == "A2", repr(buffer.text))
         buffer.text = ""
-        cli.switch_screen(state, 0)
+        panes.switch_screen(state, 0)
         state.screens.remove(экран_очередей)
 
         print("\n12о. Независимые последовательные исполнители панелей")
@@ -1737,19 +1741,19 @@ async def main():
         индекс_исполнителей = len(state.screens) - 1
 
         def отправить_в_панель(index, text):
-            cli.switch_screen(state, индекс_исполнителей)
-            cli.switch_pane(state, index)
+            panes.switch_screen(state, индекс_исполнителей)
+            panes.switch_pane(state, index)
             buffer.text = text
             press(app, Keys.ControlM, "\r")
 
         отметки = {id(панель): len(панель.log) for панель in панели_исполнителей}
         отправить_в_панель(0, "первый-a")
         # Переключение сделано в тот же оборот цикла, до запуска асинхронной обработки Enter.
-        cli.switch_pane(state, 1)
+        panes.switch_pane(state, 1)
         отправить_в_панель(1, "первый-b")
-        cli.switch_pane(state, 2)
+        panes.switch_pane(state, 2)
         отправить_в_панель(2, "первый-c")
-        cli.switch_pane(state, 0)
+        panes.switch_pane(state, 0)
         await asyncio.gather(
             *(управляемый.wait_started(text) for text in ("первый-a", "первый-b", "первый-c"))
         )
@@ -1816,7 +1820,7 @@ async def main():
             управляемый.wait_started("отмена-b"),
             управляемый.wait_started("сосед-c"),
         )
-        cli.switch_pane(state, 1)
+        panes.switch_pane(state, 1)
         press(app, Keys.ControlC, "\x03")
         await управляемый.wait_cancelled("отмена-b")
         управляемый.release("сосед-c")
@@ -1838,7 +1842,7 @@ async def main():
             str([панель.status for панель in панели_исполнителей]),
         )
         state.client = fake
-        cli.switch_screen(state, 0)
+        panes.switch_screen(state, 0)
         state.screens.remove(экран_исполнителей)
 
         print("\n12п. Экраны стратегий, факты и ветви")
@@ -1859,15 +1863,15 @@ async def main():
             encoding="utf-8",
         )
         вызовов_до_профиля = len(fake.calls)
-        await cli.switch_profile(state, "strategy-ui")
+        await strategies.switch_profile(state, "strategy-ui")
         check(
             "открытие исходного профиля не делает сетевой запрос",
             len(fake.calls) == вызовов_до_профиля,
         )
 
         async def отправить_стратегии(screen, pane_index, text):
-            cli.switch_screen(state, state.screens.index(screen))
-            cli.switch_pane(state, pane_index)
+            panes.switch_screen(state, state.screens.index(screen))
+            panes.switch_pane(state, pane_index)
             pane = screen.panes[pane_index]
             было_прогонов = pane.agent.runs
             buffer.text = text
@@ -1923,7 +1927,7 @@ async def main():
             interactive=True,
         )
         state.screens.append(дочерний_экран_стратегии)
-        cli.switch_screen(
+        panes.switch_screen(
             state, state.screens.index(дочерний_экран_стратегии)
         )
         дочерний_agent = дочерний_экран_стратегии.first.agent
@@ -1964,7 +1968,7 @@ async def main():
                 )
             ),
         )
-        cli.switch_screen(state, 0)
+        panes.switch_screen(state, 0)
         cli.cmd_strategy(state, "use sliding")
         cli.cmd_strategy(state, "")
         check(
@@ -2204,7 +2208,7 @@ async def main():
             вывод_неизвестного_facts,
         )
 
-        cli.switch_screen(state, state.screens.index(facts_screen))
+        panes.switch_screen(state, state.screens.index(facts_screen))
         state.main_agent.profile.system = "система main " * 7
         facts_agent.profile.system = "система активного facts " * 13
         state.main_agent.remember(
@@ -2545,20 +2549,20 @@ async def main():
         )
 
         restored_source, _ = profiles.load("strategy-ui")
-        restored_state = cli.State(
+        restored_state = state_mod.State(
             config=Config(api_key="sk-test", model="deepseek-v4-flash", remember=False),
             client=fake,
             model="deepseek-v4-flash",
             profile=restored_source,
         )
         restored_sliding = restored_state.screens[
-            cli.ensure_strategy_screen(restored_state, "sliding")
+            strategies.ensure_strategy_screen(restored_state, "sliding")
         ]
         restored_facts = restored_state.screens[
-            cli.ensure_strategy_screen(restored_state, "facts")
+            strategies.ensure_strategy_screen(restored_state, "facts")
         ]
         restored_branch = restored_state.screens[
-            cli.ensure_strategy_screen(restored_state, "branching")
+            strategies.ensure_strategy_screen(restored_state, "branching")
         ]
         check(
             "перезапуск поднял полную линейную историю каждой стратегии отдельно",
@@ -2612,14 +2616,14 @@ async def main():
             system="основной разговор",
             compact_at=0,
         )
-        facts_only_state = cli.State(
+        facts_only_state = state_mod.State(
             config=Config(api_key="sk-test", remember=False),
             client=facts_only_client,
             model="deepseek-v4-flash",
             profile=facts_only_source,
         )
         facts_only_screen = facts_only_state.screens[
-            cli.ensure_strategy_screen(facts_only_state, "facts")
+            strategies.ensure_strategy_screen(facts_only_state, "facts")
         ]
         await cli.handle_submit(
             "сохрани факт при отказе",
@@ -2628,15 +2632,15 @@ async def main():
             destination_pane=facts_only_screen.first,
         )
         facts_only_pane_id = id(facts_only_screen.first)
-        await cli.switch_profile(facts_only_state, "default")
-        facts_only_restored = cli.State(
+        await strategies.switch_profile(facts_only_state, "default")
+        facts_only_restored = state_mod.State(
             config=Config(api_key="sk-test", remember=False),
             client=fake,
             model="deepseek-v4-flash",
             profile=facts_only_source,
         )
         facts_only_restored_screen = facts_only_restored.screens[
-            cli.ensure_strategy_screen(facts_only_restored, "facts")
+            strategies.ensure_strategy_screen(facts_only_restored, "facts")
         ]
         check(
             "смена профиля дождалась отказа main и сохранила успешные facts",
@@ -2647,7 +2651,7 @@ async def main():
             and len(facts_only_state.screens) == 1,
             str(facts_only_restored_screen.first.agent.conversation_facts()),
         )
-        await cli.close_pane_workers(facts_only_state)
+        await workers.close_pane_workers(facts_only_state)
 
         print("\n12т. Смена профиля дожидается старых очередей")
         (profiles_dir / "lifecycle-target.json").write_text(
@@ -2662,7 +2666,7 @@ async def main():
             encoding="utf-8",
         )
         lifecycle_client = УправляемыйКлиент()
-        lifecycle_state = cli.State(
+        lifecycle_state = state_mod.State(
             config=Config(
                 api_key="sk-test",
                 model="deepseek-v4-flash",
@@ -2677,12 +2681,12 @@ async def main():
             ),
         )
         lifecycle_screen = lifecycle_state.screens[
-            cli.ensure_strategy_screen(lifecycle_state, "sliding")
+            strategies.ensure_strategy_screen(lifecycle_state, "sliding")
         ]
         lifecycle_pane = lifecycle_screen.first
         lifecycle_agent = lifecycle_pane.agent
         old_main_agent = lifecycle_state.main_agent
-        main_runner = asyncio.create_task(cli.worker(lifecycle_state))
+        main_runner = asyncio.create_task(workers.worker(lifecycle_state))
         await cli.handle_submit(
             "старый main",
             lifecycle_state,
@@ -2707,7 +2711,7 @@ async def main():
         )
         old_pane_id = id(lifecycle_pane)
         switch_task = asyncio.create_task(
-            cli.switch_profile(lifecycle_state, "lifecycle-target")
+            strategies.switch_profile(lifecycle_state, "lifecycle-target")
         )
         while not lifecycle_state.switching_profile:
             await asyncio.sleep(0)
@@ -2777,7 +2781,7 @@ async def main():
         )
         main_runner.cancel()
         await asyncio.gather(main_runner, return_exceptions=True)
-        await cli.close_pane_workers(lifecycle_state)
+        await workers.close_pane_workers(lifecycle_state)
 
         restored_a = restored_branch.pane_by_key("A")
         restored_b = restored_branch.pane_by_key("B")
@@ -2834,7 +2838,7 @@ async def main():
             encoding="utf-8",
         )
         вызовов_до_трёх = len(fake.calls)
-        await cli.switch_profile(state, "three-strategies")
+        await strategies.switch_profile(state, "three-strategies")
         strategy_work_screens = state.screens[1:]
         check(
             "три рабочих экрана и три Agent созданы до первого вопроса",
@@ -2854,7 +2858,7 @@ async def main():
         state.client = concurrent_client
         concurrent_questions = ("одновременно Sliding", "одновременно Facts", "одновременно Branching")
         for screen, question in zip(strategy_work_screens, concurrent_questions, strict=True):
-            cli.switch_screen(state, state.screens.index(screen))
+            panes.switch_screen(state, state.screens.index(screen))
             buffer.text = question
             press(app, Keys.ControlM, "\r")
         await asyncio.gather(
@@ -2924,7 +2928,7 @@ async def main():
             ),
             encoding="utf-8",
         )
-        await cli.switch_profile(state, "x")
+        await strategies.switch_profile(state, "x")
         collision_work_screen = state.screen
         check(
             "произвольный key рабочего экрана допустимо похож на служебный",
@@ -2939,7 +2943,7 @@ async def main():
                 )
             ),
         )
-        cli.switch_screen(state, 0)
+        panes.switch_screen(state, 0)
         cli.cmd_strategy(state, "use sliding")
         parent_sliding = state.screen
         check(
@@ -2954,7 +2958,7 @@ async def main():
                 )
             ),
         )
-        cli.switch_screen(state, state.screens.index(collision_work_screen))
+        panes.switch_screen(state, state.screens.index(collision_work_screen))
         cli.cmd_strategy(state, "use facts")
         child_facts = state.screen
         check(
@@ -2997,7 +3001,7 @@ async def main():
         # Сеанс — это запуск процесса, а не жизнь одного собеседника. Смена профиля заводит нового
         # агента и закрывает экраны группы; без копилки выбывших итог падал бы почти до нуля посреди
         # работы, хотя деньги списаны. На записи ролика профиль переключают трижды — увидели бы сразу.
-        состояние_смены = cli.State(
+        состояние_смены = state_mod.State(
             config=Config(api_key="sk-test", model="deepseek-v4-flash", remember=False),
             client=fake,
             model="deepseek-v4-flash",
@@ -3017,7 +3021,7 @@ async def main():
             str(состояние_смены.session_usage_total()["total_tokens"]),
         )
 
-        await cli.switch_profile(состояние_смены, "default")
+        await strategies.switch_profile(состояние_смены, "default")
         итог_после = состояние_смены.session_usage_total()["total_tokens"]
         check("расход прежнего собеседника не пропал при смене профиля", итог_после == 1300, str(итог_после))
         check(
@@ -3028,7 +3032,7 @@ async def main():
         check("экраны прежней группы закрыты", len(состояние_смены.screens) == 1, str(len(состояние_смены.screens)))
 
         # Двойной счёт — главная опасность копилки: провожать живого агента нельзя.
-        await cli.switch_profile(состояние_смены, "default")
+        await strategies.switch_profile(состояние_смены, "default")
         check(
             "вторая смена профиля не удвоила расход",
             состояние_смены.session_usage_total()["total_tokens"] == 1300,
@@ -3215,7 +3219,7 @@ async def main():
             interactive=True,
         )
         state.screens.append(экран_выхода)
-        cli.switch_screen(state, len(state.screens) - 1)
+        panes.switch_screen(state, len(state.screens) - 1)
         buffer.text = "незавершённый при выходе"
         press(app, Keys.ControlM, "\r")
         await клиент_выхода.wait_started("незавершённый при выходе")

@@ -90,7 +90,7 @@ class Pane:
         разговора. Здесь забыть нельзя: есть профиль — есть и агент.
 
         Единственная панель без профиля — главный экран: там профиль пользовательский, он
-        меняется командой `/profile`, и собеседника кладёт `cli.State`."""
+        меняется командой `/profile`, и собеседника кладёт `state.State`."""
         if self.profile is not None and self.agent is None:
             self.agent = Agent(self.key, self.profile)
 

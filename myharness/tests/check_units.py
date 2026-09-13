@@ -45,7 +45,7 @@ os.environ["MYHARNESS_STATE_DIR"] = str(tmp / "state")
 from myharness import api, journal, memory, params as params_mod, picker as picker_mod, profiles, ui  # noqa: E402
 from myharness import archivist, background, compact, config as config_mod  # noqa: E402
 from myharness import batch, cli, methods, output, screens as screens_mod, team  # noqa: E402
-from myharness import tokens as tokens_mod  # noqa: E402
+from myharness import conversation, panes, state as state_mod, tokens as tokens_mod  # noqa: E402
 from myharness import context_strategy, sticky_facts  # noqa: E402
 from myharness.agent import Agent, Turn, usage_tokens
 from myharness.config import Config  # noqa: E402
@@ -397,7 +397,7 @@ check("движение по кругу и выбор", p.index == 1 and chosen 
 check("панель отрисовывается", len(picker_mod.fragments(p)) > 5)
 
 print("\n5. Меню команд")
-state = cli.State(config=Config(api_key=None), client=None, model="deepseek-v4-flash", profile=profiles.builtin_default())
+state = state_mod.State(config=Config(api_key=None), client=None, model="deepseek-v4-flash", profile=profiles.builtin_default())
 comp = cli.HarnessCompleter(state)
 
 
@@ -697,7 +697,7 @@ meta, _ = profiles.load("meta")
 check("заготовка ввода прочитана из файла", meta.prefill == "Составь промпт для задачи про шофёров", repr(meta.prefill))
 check("заготовка не путается с системной инструкцией", meta.system is None)
 
-team_state = cli.State(config=Config(api_key="sk-test"), client=None, model="deepseek-v4-flash", profile=lead)
+team_state = state_mod.State(config=Config(api_key="sk-test"), client=None, model="deepseek-v4-flash", profile=lead)
 analyst_profile, _ = profiles.load("analyst")
 board, summary_screen = team.ensure_screens(team_state, lead, [analyst_profile])
 again, _ = team.ensure_screens(team_state, lead, [analyst_profile])
@@ -708,9 +708,9 @@ analyst_pane = board.panes[0]
 cli.append_log(team_state, [("", "личное")], analyst_pane)
 check("ответ эксперта идёт в его панель", "личное" in "".join(t for _, t in analyst_pane.log))
 check("главный экран при этом чист", "личное" not in "".join(t for _, t in team_state.main.first.log))
-cli.switch_screen(team_state, 1)
+panes.switch_screen(team_state, 1)
 check("переключение экрана меняет показываемую ленту", team_state.screen is board)
-asyncio.run(cli.drop_agent_screens(team_state))
+asyncio.run(panes.drop_agent_screens(team_state))
 check("смена профиля закрывает экраны группы", len(team_state.screens) == 1 and team_state.active == 0)
 
 agent_messages = analyst_pane.agent.build_messages("вопрос")
@@ -2667,7 +2667,7 @@ print("\n10a. Ведущий группы сводит разово")
 )
 шеф, _ = profiles.load("chief")
 check("у профиля ведущего история включена, как у любого профиля", шеф.keep_history is True)
-шеф_состояние = cli.State(config=Config(api_key="sk-test"), client=StubClient(), model="deepseek-v4-flash", profile=шеф)
+шеф_состояние = state_mod.State(config=Config(api_key="sk-test"), client=StubClient(), model="deepseek-v4-flash", profile=шеф)
 asyncio.run(team.run(шеф_состояние, "вопрос первого заседания", шеф))
 asyncio.run(team.run(шеф_состояние, "вопрос второго заседания", шеф))
 сводки = [
@@ -2731,7 +2731,15 @@ check(
 # Разбираем через `ast`, а не поиском по строкам: в модуле эти имена упоминаются в
 # пояснениях («показ целиком — в output»), и поиск по строкам споткнулся бы о комментарий,
 # объявив нарушением то, что нарушением не является.
-ЗАПРЕЩЁННЫЕ = {"cli", "screens", "team", "methods", "output", "ui", "prompt_toolkit"}
+# Список вырос вместе с разделением `cli`: интерфейс больше не один модуль, и запрет на его
+# ввоз обязан называть все его части поимённо. Иначе проверка осталась бы верной по букве и
+# пустой по делу — ввоз `panes` вместо `cli` тащит ровно тот же терминал.
+ЗАПРЕЩЁННЫЕ = {
+    "cli", "screens", "team", "methods", "output", "ui", "prompt_toolkit",
+    "state", "panes", "workers", "conversation", "strategies",
+    "commands", "commands_model", "commands_memory", "commands_params", "commands_context",
+    "agents_panel", "layout", "keys",
+}
 
 
 def запретное_в_импортах(имя_файла):
@@ -3249,6 +3257,41 @@ check(
 )
 нарушения_наряда = запретное_в_импортах("batch.py")
 check("batch.py не импортирует интерфейс", not нарушения_наряда, ", ".join(нарушения_наряда))
+
+# И то же утверждение про состояние сеанса. Оно стоит здесь не для полноты обряда: состоянию
+# ничего не стоит ввезти архивариуса или сжимателя ради одного их имени, а вместе с ними
+# приедут `ui`, `output` и весь терминал — так уже было, и заметил это только замер.
+ПРОБА_СОСТОЯНИЯ = (
+    "import sys, myharness.state; print(','.join(sorted(m for m in sys.modules if m.startswith('prompt_toolkit'))))"
+)
+проба_состояния = subprocess.run(
+    [sys.executable, "-c", ПРОБА_СОСТОЯНИЯ],
+    capture_output=True,
+    text=True,
+    check=False,
+)
+подтянутое_состоянием = проба_состояния.stdout.strip()
+check(
+    "импорт myharness.state не тянет интерфейс",
+    проба_состояния.returncode == 0 and not подтянутое_состоянием,
+    подтянутое_состоянием or проба_состояния.stderr.strip(),
+)
+# Парная к предыдущей: она обязана ловить настоящий ввоз терминала, а не молчать всегда.
+# Тот же опрос по `myharness.cli` терминал находит — значит проба работает, а не смотрит мимо.
+ПРОБА_ИНТЕРФЕЙСА = (
+    "import sys, myharness.cli; print(','.join(sorted(m for m in sys.modules if m.startswith('prompt_toolkit'))))"
+)
+проба_интерфейса = subprocess.run(
+    [sys.executable, "-c", ПРОБА_ИНТЕРФЕЙСА],
+    capture_output=True,
+    text=True,
+    check=False,
+)
+check(
+    "тот же опрос по cli терминал находит — проба не пустая",
+    проба_интерфейса.returncode == 0 and проба_интерфейса.stdout.strip(),
+    проба_интерфейса.stderr.strip(),
+)
 
 print("\n14. Сто агентов в одном процессе")
 
@@ -4788,19 +4831,22 @@ for путь in memory.facts_dir().glob("*.md"):
 # Слово «json» и пример структуры обязаны стоять в самой инструкции: без них DeepSeek
 # отклоняет запрос с response_format=json_object отказом на стороне сервера — не пустым
 # ответом, а кодом ошибки, в котором пришлось бы разбираться отдельно.
-# Архивариуса зовёт `cli`, значит обратный импорт замкнул бы круг. Разрывается он тем же
-# приёмом, что в `output`: состояние приходит аргументом, а имя типа берётся под
-# `TYPE_CHECKING` — на выполнении такого импорта не происходит, и в счёт он не идёт.
-def импорты_на_выполнении(имя_файла):
-    """Что модуль импортирует НА ВЫПОЛНЕНИИ. Тело `if TYPE_CHECKING` пропускается: круга
-    оно не создаёт, а запрещать его значило бы запретить и подсказки типов."""
+# Ввоз состояния у архивариуса обычный, без `TYPE_CHECKING`, и это не послабление, а следствие
+# направления слоёв: состояние служб не ввозит — имя службы оно берёт из лёгкого `background`.
+# Стоит состоянию ввезти службу ради чего угодно — и круг вернётся, а вместе с ним прячущий его
+# ленивый ввоз. Поэтому проверяется именно направление, а не то, как записан ввоз.
+def импорты_модуля(имя_файла, *, только_на_выполнении):
+    """Что модуль импортирует. При `только_на_выполнении` тело `if TYPE_CHECKING` пропускается:
+    круга оно не создаёт, а запрещать его значило бы запретить и подсказки типов. Без этого
+    признака отдаются все импорты — по паре ответов и видно, что имя взято только для типов."""
     исходник = Path(__file__).resolve().parents[1] / "src" / "myharness" / имя_файла
     дерево = ast.parse(исходник.read_text(encoding="utf-8"))
     только_для_типов = set()
-    for узел in ast.walk(дерево):
-        if isinstance(узел, ast.If) and "TYPE_CHECKING" in ast.unparse(узел.test):
-            for ветка in узел.body:
-                только_для_типов.update(id(вложенный) for вложенный in ast.walk(ветка))
+    if только_на_выполнении:
+        for узел in ast.walk(дерево):
+            if isinstance(узел, ast.If) and "TYPE_CHECKING" in ast.unparse(узел.test):
+                for ветка in узел.body:
+                    только_для_типов.update(id(вложенный) for вложенный in ast.walk(ветка))
     импортированное = set()
     for узел in ast.walk(дерево):
         if id(узел) in только_для_типов:
@@ -4815,13 +4861,23 @@ def импорты_на_выполнении(имя_файла):
     return импортированное
 
 
-импорты_архивариуса = импорты_на_выполнении("archivist.py")
+импорты_архивариуса = импорты_модуля("archivist.py", только_на_выполнении=True)
 check(
     "archivist.py не импортирует cli и терминал",
     not (импорты_архивариуса & {"cli", "prompt_toolkit"}),
     str(sorted(импорты_архивариуса)),
 )
-check("имя состояния взято только для подсказок типов", "cli" in запретное_в_импортах("archivist.py"))
+check(
+    "архивариус ввозит состояние обычным образом — круга нет",
+    "state" in импорты_архивариуса,
+    str(sorted(импорты_архивариуса)),
+)
+импорты_состояния = импорты_модуля("state.py", только_на_выполнении=True)
+check(
+    "состояние не ввозит служб — направление слоёв держится этим",
+    not (импорты_состояния & {"archivist", "compact", "output", "cli"}),
+    str(sorted(импорты_состояния)),
+)
 
 check("в инструкции архивариуса есть слово json", "json" in archivist.ARCHIVIST_INSTRUCTION.lower())
 check(
@@ -4916,7 +4972,7 @@ check("перевод строки внутри факта схлопнут", ar
 
 def состояние_архивариуса(события=None):
     """Состояние с подставным клиентом — как у главного экрана, но без терминала."""
-    return cli.State(
+    return state_mod.State(
         config=Config(api_key="sk-test"),
         client=StubClient(events=события),
         model="deepseek-v4-flash",
@@ -5007,7 +5063,7 @@ check("и фактов не заводит", memory.load_facts()[0] == [])
 
 
 async def заход_со_сбоем():
-    состояние = cli.State(
+    состояние = state_mod.State(
         config=Config(api_key="sk-test"),
         client=StubClient(error=RuntimeError("сеть отвалилась")),
         model="deepseek-v4-flash",
@@ -7477,7 +7533,7 @@ def состояние_сжатия(имя, *, пар=0, события=None, о
     каталог = tmp / "сжатие-фон" / имя
     каталог.mkdir(parents=True, exist_ok=True)
     профиль = profiles.Profile(name=имя, keep_history=keep_history, history_window=window, compact_at=compact_at)
-    состояние = cli.State(
+    состояние = state_mod.State(
         config=Config(api_key="sk-test"),
         client=StubClient(events=события, error=ошибка),
         model="deepseek-v4-pro",
@@ -7697,10 +7753,10 @@ def поднять(имя, *, window=0, compact_at=0.0):
     """Поднять разговор так, как это делает запуск инструмента в каталоге."""
     каталог = tmp / "подъём" / имя
     профиль = profiles.Profile(name=имя, keep_history=True, history_window=window, compact_at=compact_at)
-    состояние = cli.State(config=Config(api_key="sk-test"), client=StubClient(), model="deepseek-v4-pro", profile=профиль)
+    состояние = state_mod.State(config=Config(api_key="sk-test"), client=StubClient(), model="deepseek-v4-pro", profile=профиль)
     os.chdir(каталог)
     try:
-        cli.restore_conversation(состояние)
+        conversation.restore_conversation(состояние)
     finally:
         os.chdir(прежний_каталог_сжатия)
     return состояние
@@ -7916,7 +7972,7 @@ async def сценарий_ручного_сжатия():
     """Разговор поднят со старой сессии, часть осталась за границей — и человек зовёт `/compact`."""
     каталог, _ = сессия_на_диске("ручное", 12)
     профиль = profiles.Profile(name="ручное", keep_history=True, history_window=2, compact_at=0.8)
-    состояние = cli.State(
+    состояние = state_mod.State(
         config=Config(api_key="sk-test"),
         client=StubClient(events=события_сжимателя(["в начале договорились про Python"])),
         model="deepseek-v4-pro",
@@ -7924,7 +7980,7 @@ async def сценарий_ручного_сжатия():
     )
     os.chdir(каталог)
     try:
-        cli.restore_conversation(состояние)
+        conversation.restore_conversation(состояние)
         cli.cmd_compact(состояние)
         await состояние.сжиматель.задача
     finally:
