@@ -14,6 +14,8 @@ from . import params as params_mod
 from . import picker as picker_mod
 from .output import append_log, refresh
 from .state import State
+
+
 def cmd_params(state: State) -> None:
     """Показываем значения и сразу даём их менять: список в логе выбирать нечем."""
     append_log(state, ui.params_fragments(state.profile.name, state.profile.params, state.profile.system))

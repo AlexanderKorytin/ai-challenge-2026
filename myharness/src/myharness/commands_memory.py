@@ -21,13 +21,15 @@ from . import screens as screens_mod
 from .config import save as save_config
 from .conversation import забыть_счёт_занятости
 from .output import append_log, refresh
-from .panes import _active_input_pane, _restore_active_draft, _save_active_draft, active_profile, switch_pane
+from .panes import active_input_pane, restore_active_draft, save_active_draft, active_profile, switch_pane
 from .state import State
-from .strategies import _branch_prefill
+from .strategies import branch_prefill
+
+
 def cmd_facts(state: State, arg: str) -> None:
     """Показать или вручную изменить факты активного разговора Sticky Facts."""
 
-    pane = _active_input_pane(state)
+    pane = active_input_pane(state)
     profile = active_profile(state)
     if (
         profile.context_strategy != context_strategy.CONTEXT_FACTS
@@ -286,7 +288,7 @@ async def cmd_branch(state: State, arg: str) -> None:
         if executor is worker_for_root:
             del state.pane_workers[id(root_pane)]
 
-    _save_active_draft(state)
+    save_active_draft(state)
     branch_panes: list[screens_mod.Pane] = []
     for name in (left, right):
         pane = screens_mod.Pane(
@@ -295,7 +297,7 @@ async def cmd_branch(state: State, arg: str) -> None:
             profile=profile,
             agent=branches[name],
         )
-        _branch_prefill(state, profile, pane, name)
+        branch_prefill(state, profile, pane, name)
         branch_panes.append(pane)
     # Корень покидает дерево экранов ровно здесь. Его расход не восстановится в новых
     # агентах и потому переносится в общий сеанс один раз до потери ссылки.
@@ -303,7 +305,7 @@ async def cmd_branch(state: State, arg: str) -> None:
     screen.panes = branch_panes
     screen.active_pane = 0
     screen.zoomed = False
-    _restore_active_draft(state)
+    restore_active_draft(state)
     checkpoint = screen.branch_store.load().checkpoint_id
     append_log(
         state,

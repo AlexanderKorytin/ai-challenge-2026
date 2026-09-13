@@ -23,7 +23,7 @@ from .layout import Раскладка
 from .output import append_log, refresh
 from .panes import next_prefill, switch_pane, switch_screen, toggle_zoom
 from .state import State
-from .workers import _track_submission
+from .workers import track_submission
 
 
 def привязки(state: State, раскладка: Раскладка) -> KeyBindings:
@@ -97,7 +97,7 @@ def привязки(state: State, раскладка: Раскладка) -> Ke
                 destination_pane=destination_pane,
             )
         )
-        _track_submission(state, submission)
+        track_submission(state, submission)
 
     @kb.add("c-c", filter=~picker_active)
     def _cancel(event) -> None:  # noqa: ANN001

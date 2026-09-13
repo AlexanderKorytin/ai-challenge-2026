@@ -16,6 +16,8 @@ from .agent import Agent
 from .output import append_log, refresh
 from .panes import switch_pane, switch_screen
 from .state import Request, State
+
+
 def cmd_team(state: State, arg: str) -> None:
     """Разовый запуск группы. Без аргумента — показывает состав; с вопросом — задаёт его
     группе. Первым словом можно назвать профиль-ведущего: так группу поднимают, не уходя
@@ -49,6 +51,8 @@ def cmd_team(state: State, arg: str) -> None:
 
 
 @dataclass
+
+
 class AgentRow:
     """Один агент в списке под строкой ввода: сам собеседник и адрес его панели.
 

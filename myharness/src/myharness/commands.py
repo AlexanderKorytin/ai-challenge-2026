@@ -18,6 +18,8 @@ from .conversation import open_new_session
 from .output import append_log
 from .state import Request, State
 from .workers import pane_worker
+
+
 async def handle_command(text: str, state: State) -> bool:
     parts = text.split(maxsplit=1)
     cmd = parts[0].lower()

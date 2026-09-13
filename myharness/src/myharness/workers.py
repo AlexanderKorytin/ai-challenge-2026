@@ -22,7 +22,11 @@ from . import methods as methods_mod
 from . import screens as screens_mod
 from .output import append_log, deliver, run_turn
 from .state import Request, State
+
+
 @dataclass
+
+
 class PaneWorker:
     """Последовательная очередь одной точной интерактивной панели.
 
@@ -158,7 +162,7 @@ async def close_pane_workers(state: State) -> None:
     await asyncio.gather(*(item.close() for item in tuple(state.pane_workers.values())))
 
 
-def _track_submission(state: State, task: asyncio.Task[None]) -> None:
+def track_submission(state: State, task: asyncio.Task[None]) -> None:
     """Привязать короткую задачу Enter к жизненному циклу приложения."""
     state.submission_tasks.add(task)
 

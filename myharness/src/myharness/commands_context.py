@@ -15,8 +15,10 @@ from __future__ import annotations
 
 from . import background, compact, context_strategy, tokens, ui
 from .output import append_log
-from .panes import _active_input_pane, _pane_profile
+from .panes import active_input_pane, pane_profile
 from .state import State
+
+
 def cmd_tokens(state: State) -> None:
     """`/tokens` — следующий запрос активной панели, её расход и общий расход сеанса.
 
@@ -26,9 +28,9 @@ def cmd_tokens(state: State) -> None:
     именно этой панели, а не главного разговора.
     """
     итог = state.session_usage_total()
-    pane = _active_input_pane(state)
+    pane = active_input_pane(state)
     агент = pane.agent or state.main_agent
-    profile = _pane_profile(state, pane) or state.profile
+    profile = pane_profile(state, pane) or state.profile
     strategy = profile.context_strategy
     full_pairs = len(агент.history()) // 2
     pairs = (

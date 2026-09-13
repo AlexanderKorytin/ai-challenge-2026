@@ -48,7 +48,7 @@ from . import picker as picker_mod
 from . import screens as screens_mod
 from .agents_panel import agent_index, collect_agents, goto_agent, show_agent_panel
 from .output import Fragments
-from .panes import _active_input_pane, _pane_profile, _restore_active_draft, apply_prefill
+from .panes import active_input_pane, pane_profile, restore_active_draft, apply_prefill
 from .state import State, user_facts
 from .strategies import STRATEGY_TITLES
 
@@ -169,6 +169,8 @@ def click_only_mouse(output) -> None:  # noqa: ANN001
 
 
 @dataclass
+
+
 class Раскладка:
     """Собранное окно и те его части, без которых нельзя привязать клавиши.
 
@@ -188,7 +190,8 @@ def собрать_раскладку(state: State) -> Раскладка:
     windows: dict[int, LogWindow] = {}
 
     def pane_window(pane: screens_mod.Pane) -> LogWindow:
-        """Окно панели живёт столько же, сколько сама панель: в нём хранится прокрутка."""
+        """Пока панель жива, окно у неё одно: в нём хранится прокрутка. Про обратную сторону —
+        окно переживает панель — сказано в докстроке модуля."""
         existing = windows.get(id(pane))
         if existing is not None:
             return existing
@@ -330,10 +333,10 @@ def собрать_раскладку(state: State) -> Раскладка:
     )
     layout = Layout(root, focused_element=input_area)
     state.input_buffer = input_area.buffer
-    _restore_active_draft(state)
-    active_pane = _active_input_pane(state)
+    restore_active_draft(state)
+    active_pane = active_input_pane(state)
     if active_pane is not None:
-        profile = _pane_profile(state, active_pane)
+        profile = pane_profile(state, active_pane)
         if profile is not None:
             apply_prefill(state, profile, active_pane)
 

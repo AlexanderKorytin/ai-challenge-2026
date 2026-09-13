@@ -31,6 +31,8 @@ STRATEGY_TITLES = {
     context_strategy.CONTEXT_FACTS: "Sticky Facts",
     context_strategy.CONTEXT_BRANCHING: "Branching",
 }
+
+
 def _linear_strategy_agent(
     profile: Profile,
     pane_key: str,
@@ -72,7 +74,7 @@ def _linear_strategy_agent(
     return agent, store, restored, warnings
 
 
-def _branch_prefill(
+def branch_prefill(
     state: State,
     profile: Profile,
     pane: screens_mod.Pane,
@@ -167,7 +169,7 @@ def create_strategy_screen(
                 profile=profile,
                 agent=agent,
             )
-            _branch_prefill(state, profile, pane, branch)
+            branch_prefill(state, profile, pane, branch)
             panes.append(pane)
     screen = screens_mod.Screen(
         key=key,

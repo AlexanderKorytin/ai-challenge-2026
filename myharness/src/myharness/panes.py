@@ -20,18 +20,20 @@ from . import screens as screens_mod
 from .output import append_log, refresh
 from .profiles import Profile
 from .state import State
-from .workers import PaneWorker
 
-if TYPE_CHECKING:  # только подсказка типа: агентов модуль не заводит, а лишь провожает
+if TYPE_CHECKING:  # только подсказки типов: ни агентов, ни очередей модуль не заводит
     from .agent import Agent
+    from .workers import PaneWorker
+
+
 def active_profile(state: State) -> Profile:
     """Профиль панели, с которой человек сейчас работает."""
 
-    pane = _active_input_pane(state)
+    pane = active_input_pane(state)
     return pane.profile or state.profile
 
 
-def _active_input_pane(state: State) -> screens_mod.Pane:
+def active_input_pane(state: State) -> screens_mod.Pane:
     """Панель, чей черновик сейчас показан в общей строке ввода.
 
     Экран агента служит только для чтения, поэтому строка под ним по-прежнему принадлежит
@@ -40,21 +42,21 @@ def _active_input_pane(state: State) -> screens_mod.Pane:
     return state.screen.pane if state.screen.interactive else state.main.first
 
 
-def _save_active_draft(state: State) -> None:
-    pane = _active_input_pane(state)
+def save_active_draft(state: State) -> None:
+    pane = active_input_pane(state)
     if state.input_buffer is not None:
         pane.draft = state.input_buffer.text
 
 
-def _restore_active_draft(state: State) -> None:
+def restore_active_draft(state: State) -> None:
     if state.input_buffer is None:
         return
-    pane = _active_input_pane(state)
+    pane = active_input_pane(state)
     state.input_buffer.text = pane.draft
     state.input_buffer.cursor_position = len(pane.draft)
 
 
-def _pane_profile(state: State, pane: screens_mod.Pane) -> Profile | None:
+def pane_profile(state: State, pane: screens_mod.Pane) -> Profile | None:
     if pane is state.main.first:
         return state.profile
     return pane.profile or state.screen.profile
@@ -63,14 +65,14 @@ def _pane_profile(state: State, pane: screens_mod.Pane) -> Profile | None:
 def switch_screen(state: State, index: int) -> None:
     if not 0 <= index < len(state.screens) or index == state.active:
         return
-    _save_active_draft(state)
+    save_active_draft(state)
     state.active = index
     screen = state.screen
     for pane in screen.panes:
         pane.autoscroll = True  # переключились — показываем свежий конец ленты
-    pane = _active_input_pane(state)
-    _restore_active_draft(state)
-    profile = _pane_profile(state, pane)
+    pane = active_input_pane(state)
+    restore_active_draft(state)
+    profile = pane_profile(state, pane)
     if profile is not None:
         apply_prefill(state, profile, pane)
     refresh(state)
@@ -84,12 +86,12 @@ def switch_pane(state: State, index: int) -> None:
     new_index = index % len(screen.panes)
     if new_index == screen.active_pane:
         return
-    _save_active_draft(state)
+    save_active_draft(state)
     screen.active_pane = new_index
     screen.pane.autoscroll = True
-    _restore_active_draft(state)
-    pane = _active_input_pane(state)
-    profile = _pane_profile(state, pane)
+    restore_active_draft(state)
+    pane = active_input_pane(state)
+    profile = pane_profile(state, pane)
     if profile is not None:
         apply_prefill(state, profile, pane)
     refresh(state)
@@ -165,12 +167,12 @@ def apply_prefill(state: State, profile: Profile, pane: screens_mod.Pane) -> Non
 
 def next_prefill(state: State, pane: screens_mod.Pane) -> None:
     """Поставить следующий вопрос очереди в черновик только указанной панели."""
-    if _active_input_pane(state) is pane:
-        _save_active_draft(state)
+    if active_input_pane(state) is pane:
+        save_active_draft(state)
     if not pane.prefill_queue or pane.draft.strip():
         return
     pane.draft = pane.prefill_queue.pop(0)
-    if _active_input_pane(state) is pane:
-        _restore_active_draft(state)
+    if active_input_pane(state) is pane:
+        restore_active_draft(state)
         if state.app is not None:
             state.app.invalidate()

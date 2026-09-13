@@ -20,7 +20,9 @@ from .output import append_log, refresh
 from .panes import active_profile
 from .state import State
 from .strategies import STRATEGY_TITLES, switch_profile, use_strategy
-from .workers import _track_submission
+from .workers import track_submission
+
+
 def cmd_auth(state: State) -> None:
     state.awaiting_key = True
     append_log(state, ui.system_fragments("введите API-ключ DeepSeek (ввод скрыт звёздочками), затем Enter:"))
@@ -112,7 +114,7 @@ def open_profile_picker(state: State) -> None:
     def choose(payload: Any) -> None:
         state.picker = None
         task = asyncio.create_task(switch_profile(state, str(payload)))
-        _track_submission(state, task)
+        track_submission(state, task)
 
     description = "какой профиль генерации применить"
     if len(items) <= 1:

@@ -30,8 +30,11 @@
 | `myharness/src/myharness/archivist.py`, `compact.py`, `output.py` | ввоз `State` обычным образом вместо обхода круга |
 | `bin/расход.py` | к токенам и деньгам добавляется время работы |
 
-Направление ввозов — строго сверху вниз по таблице: `state` не знает никого из списка,
-`cli` знает всех. Обратного ввоза нет ни одного.
+Инвариант направления ровно один и проверяемый: **обратного ввоза нет ни одного** — граф
+ввозов верхнего уровня ациклический, и `cli` не ввозит никто, кроме `__init__`. Порядок строк в
+таблице выше — карта ответственности, а НЕ порядок ввоза: `commands` стоит шестой строкой и
+ввозит четыре семьи команд, стоящие ниже. Настоящий порядок (14 топологических слоёв) снят
+разбором и записан в `myharness/README.md`, раздел «Модули и слои».
 
 ## Договоры модулей
 
@@ -50,7 +53,7 @@
 **Владеет**: жизнью задач очередей — общего исполнителя `worker` и `PaneWorker` отдельной
 панели; ссылки на них лежат в `State` (`current_task`, `pane_workers`, `submission_tasks`).
 **Отдаёт**: `PaneWorker`, `pane_worker(state, pane) -> PaneWorker`, `close_pane_workers(state)`,
-`_track_submission(state, task)`, `async worker(state)`.
+`track_submission(state, task)`, `async worker(state)`.
 **Обещает**: `pane_worker` для одной и той же панели возвращает один и тот же исполнитель;
 `close_pane_workers` дожидается отмены, после неё незавершённых задач панелей не остаётся.
 **Не делает**: не знает раскладки и клавиш; в очередь сам ничего не кладёт.
@@ -59,8 +62,8 @@
 **Владеет**: тем, какой экран и какая панель сейчас активны, и черновиком ввода каждой панели.
 **Отдаёт**: `switch_screen(state, index)`, `switch_pane(state, index)`, `toggle_zoom(state)`,
 `drop_agent_screens(state)`, `apply_prefill(state, profile, pane)`, `next_prefill(state, pane)`,
-`active_profile(state) -> Profile`, `_active_input_pane(state)`, `_pane_profile(state, pane)`,
-`_save_active_draft(state)`, `_restore_active_draft(state)`.
+`active_profile(state) -> Profile`, `active_input_pane(state)`, `pane_profile(state, pane)`,
+`save_active_draft(state)`, `restore_active_draft(state)`.
 `active_strategy` в договор не входит: её не звал никто ни до разделения, ни после — удалена.
 **Обещает**: при любом переходе черновик покидаемой панели сохранён, а черновик пришедшей —
 восстановлен; `state.active` остаётся в границах списка экранов.
@@ -295,6 +298,13 @@ annotations`, так что во время работы имя не нужно)
 В `cli.build_app` остаётся сборка: `раскладка = layout.собрать_раскладку(state)`,
 `kb = keys.привязки(state, раскладка)`, `click_only_mouse(app_output())`, создание
 `Application` и две строки про `ttimeoutlen`/`timeoutlen`.
+
+> **Правка по итогам стадии `Validation`, 2026-09-13, с согласия пользователя.** Шесть имён
+> вывезены из `cli.py` наружу и потеряли подчёркивание впереди: `active_input_pane`,
+> `pane_profile`, `save_active_draft`, `restore_active_draft`, `track_submission`,
+> `branch_prefill`. Внутри одного файла подчёркивание значило «моё внутреннее»; став
+> межмодульным договором, оно стало значить обратное. Ниже по тексту шагов имена приведены
+> так, как они звались в исходном `cli.py`, — это описание источника, а не нынешнего дерева.
 
 ## Шаг 14. Ни одно определение не потеряно, докстроки называют границы
 

@@ -15,6 +15,8 @@ from pathlib import Path
 from . import memory, ui
 from .output import append_log
 from .state import State
+
+
 def open_new_session(state: State) -> None:
     """Начать писать в новый файл разговора — прежний остаётся на диске нетронутым.
 
