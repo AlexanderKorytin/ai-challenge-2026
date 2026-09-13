@@ -46,6 +46,7 @@ from myharness import api, journal, memory, params as params_mod, picker as pick
 from myharness import archivist, background, compact, config as config_mod  # noqa: E402
 from myharness import batch, cli, methods, output, screens as screens_mod, team  # noqa: E402
 from myharness import conversation, panes, state as state_mod, tokens as tokens_mod  # noqa: E402
+from myharness import commands, commands_context, commands_params  # noqa: E402
 from myharness import context_strategy, sticky_facts  # noqa: E402
 from myharness.agent import Agent, Turn, usage_tokens
 from myharness.config import Config  # noqa: E402
@@ -417,22 +418,22 @@ check("аргументы /profile — профили", "s3" in [c.text for c in
 check("обычный текст меню не открывает", [c.text for c in comp.get_completions(Doc("щука"), None)] == [])
 
 print("\n6. Установка параметров через панель")
-cli.open_value_picker(state, "temperature")
+commands_params.open_value_picker(state, "temperature")
 check("панель открыта на текущем значении", state.picker is not None and state.picker.marked == 0)
 state.picker.move(1)
 state.picker.choose()
 check("значение применено", state.profile.params.get("temperature") == 0.0, str(state.profile.params))
 check("профиль помечен как несохранённый", state.profile_dirty is True)
-cli.open_value_picker(state, "temperature")
+commands_params.open_value_picker(state, "temperature")
 state.picker.index = len(state.picker.items) - 1
 state.picker.choose()
 check("пункт «своё значение» переводит в режим ввода", state.awaiting_custom == "temperature")
-cli.apply_custom_value(state, "1,4")
+commands_params.apply_custom_value(state, "1,4")
 check("своё значение разобрано", state.profile.params.get("temperature") == 1.4)
 state.awaiting_custom = "temperature"
-cli.apply_custom_value(state, "не число")
+commands_params.apply_custom_value(state, "не число")
 check("ошибка разбора не роняет и не меняет значение", state.profile.params.get("temperature") == 1.4)
-cli.open_value_picker(state, "temperature")
+commands_params.open_value_picker(state, "temperature")
 state.picker.index = 0  # «не задавать»
 state.picker.choose()
 check("параметр снимается", "temperature" not in state.profile.params)
@@ -705,7 +706,7 @@ check("экраны группы заводятся один раз", board is a
 check("у каждого эксперта своя панель", [p.key for p in board.panes] == ["analyst"])
 check("сводка ведущего — отдельная вкладка", summary_screen.title.endswith("сводка"))
 analyst_pane = board.panes[0]
-cli.append_log(team_state, [("", "личное")], analyst_pane)
+output.append_log(team_state, [("", "личное")], analyst_pane)
 check("ответ эксперта идёт в его панель", "личное" in "".join(t for _, t in analyst_pane.log))
 check("главный экран при этом чист", "личное" not in "".join(t for _, t in team_state.main.first.log))
 panes.switch_screen(team_state, 1)
@@ -7900,7 +7901,7 @@ async def сценарий_очистки():
     await asyncio.sleep(0)
     os.chdir(каталог)
     try:
-        await cli.handle_command("/clear", состояние)
+        await commands.handle_command("/clear", состояние)
     finally:
         os.chdir(прежний_каталог_сжатия)
     with contextlib.suppress(asyncio.CancelledError):
@@ -7920,10 +7921,10 @@ check("граница разговора обнулена вместе с сес
 # `/context` — не удобство, а условие, при котором пересказ вообще допущен в запрос:
 # обещание «что модель видела, человек может прочитать» держится на ней одной.
 пустой_показ = состояние_сжатия("показ-пусто", пар=2)
-cli.cmd_context(пустой_показ)
+commands_context.cmd_context(пустой_показ)
 check("без выжимки сказано, что её нет", "выжимки нет" in лента(пустой_показ), лента(пустой_показ))
 выключенный_показ = состояние_сжатия("показ-выключено", пар=2, compact_at=0)
-cli.cmd_context(выключенный_показ)
+commands_context.cmd_context(выключенный_показ)
 check(
     "при выключенном сжатии названа причина",
     "compact_at" in лента(выключенный_показ),
@@ -7942,7 +7943,7 @@ check(
     ts="2026-09-10T12:00:00+00:00",
 )
 показ.main_agent.запомнить_выжимку(показанная)
-cli.cmd_context(показ)
+commands_context.cmd_context(показ)
 check(
     "выжимка показана дословно, пункт за пунктом",
     "порт 8765 занят страницей сравнения" in лента(показ) and "решили брать Python" in лента(показ),
@@ -7959,11 +7960,11 @@ check(
 # `/compact` при выключенном сжатии обязана объяснить, а не молчать: команда, которая молча
 # ничего не делает, отлаживается как поломка инструмента.
 отказной_показ = состояние_сжатия("сжать-выключено", пар=6, compact_at=0)
-cli.cmd_compact(отказной_показ)
+commands_context.cmd_compact(отказной_показ)
 check("при нулевом compact_at сжатие по команде отказано", "compact_at" in лента(отказной_показ), лента(отказной_показ))
 check("и запроса к модели не сделано", отказной_показ.client.calls == [], str(отказной_показ.client.calls))
 одинокий_показ = состояние_сжатия("сжать-одна", пар=1)
-cli.cmd_compact(одинокий_показ)
+commands_context.cmd_compact(одинокий_показ)
 check("одну пару по команде не сжимают", "сжимать нечего" in лента(одинокий_показ), лента(одинокий_показ))
 check("и запроса к модели не сделано", одинокий_показ.client.calls == [], str(одинокий_показ.client.calls))
 
@@ -7981,7 +7982,7 @@ async def сценарий_ручного_сжатия():
     os.chdir(каталог)
     try:
         conversation.restore_conversation(состояние)
-        cli.cmd_compact(состояние)
+        commands_context.cmd_compact(состояние)
         await состояние.сжиматель.задача
     finally:
         os.chdir(прежний_каталог_сжатия)
@@ -8022,7 +8023,7 @@ check("текста выжимки в ленте нет", "в начале до�
 # Команды обязаны быть в разборе команд: набранная `/context` не должна отвечать «неизвестная
 # команда». Сторож ровно на это — без него команда пропала бы вместе с веткой разбора.
 async def разбор_команды(текст, состояние):
-    return await cli.handle_command(текст, состояние)
+    return await commands.handle_command(текст, состояние)
 
 
 для_разбора = состояние_сжатия("разбор", пар=2, compact_at=0)

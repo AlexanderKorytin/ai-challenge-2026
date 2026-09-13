@@ -35,6 +35,8 @@ from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType 
 
 from myharness import api, archivist, cli, memory, output, picker as picker_mod, profiles, ui  # noqa: E402
 from myharness import compact, conversation, screens, strategies, panes, state as state_mod, tokens, workers  # noqa: E402
+from myharness import agents_panel, commands, commands_context, commands_memory, commands_model  # noqa: E402
+from myharness.agent import Agent  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 failures = []
@@ -298,7 +300,7 @@ async def main():
                 name for name, *_ in ui.visible_commands(False)
             }),
         )
-        check("пока агент один, списка агентов нет", not cli.show_agent_panel(state))
+        check("пока агент один, списка агентов нет", not agents_panel.show_agent_panel(state))
 
         await send(DOWN)
         check("стрелка выбирает пункт", buffer.complete_state.current_completion is not None)
@@ -724,7 +726,7 @@ async def main():
         summary_call = agent_calls[-1]
         check("ведущему ушли ответы всех агентов", summary_call["messages"][0]["content"] == "сведи ответы" and "Ответ эксперта «critic»" in summary_call["messages"][1]["content"])
 
-        check("список агентов появился", cli.show_agent_panel(state))
+        check("список агентов появился", agents_panel.show_agent_panel(state))
         check("в списке видны агенты группы", "analyst" in panel_text(app) and "critic" in panel_text(app), panel_text(app))
         handler = next(f[2] for f in panel_fragments(app) if len(f) == 3 and "analyst" in f[1])
         buffer.text = "черновик главной"
@@ -938,7 +940,7 @@ async def main():
         # профиля заводит его заново, поэтому прежние обмены на него не переносятся.
         await send("/profile lead" + ENTER, pause=0.3)
         await send("кто из вас прав?" + ENTER, pause=0.9)
-        rows = cli.collect_agents(state)
+        rows = agents_panel.collect_agents(state)
         # Агентов ровно четыре: собеседник главного экрана, два эксперта и ведущий на сводке.
         check(
             "порядок строк повторяет порядок экранов и панелей",
@@ -946,7 +948,7 @@ async def main():
             str([row.agent.name for row in rows]),
         )
         строки = [строка for строка in panel_text(app).split("\n") if строка.strip()]
-        check("список стоит под строкой ввода без всяких команд", cli.show_agent_panel(state))
+        check("список стоит под строкой ввода без всяких команд", agents_panel.show_agent_panel(state))
         check("над списком строка подсказок", "↑/↓" in строки[0] and "Ctrl+R" in строки[0], строки[0])
         check("главный разговор — первой строкой", строки[1].strip().startswith("○ main") or строки[1].strip().startswith("● main"), строки[1])
         check(
@@ -1509,7 +1511,7 @@ async def main():
             profile=profiles.load("talky")[0],
         )
         чистое.main_agent.restore([("прошлый вопрос", "прошлый ответ")])
-        cli.cmd_tokens(чистое)
+        commands_context.cmd_tokens(чистое)
         снимок = log_text(чистое)
         check("до единого обмена итог сеанса нулевой", "сеанс: 0 обменов" in снимок, снимок)
         строка_истории = next((с for с in снимок.splitlines() if "история:" in с), "")
@@ -1533,7 +1535,7 @@ async def main():
         чистое.model = "модель-без-тарифа"
         чистое.session_cost_known = False
         отметка = len(чистое.main.first.log)
-        cli.cmd_tokens(чистое)
+        commands_context.cmd_tokens(чистое)
         без_тарифа = fragments_text(чистое.main.first.log[отметка:])
         check("у модели без тарифа деньги не выдуманы", "тариф неизвестен" in без_тарифа, без_тарифа)
         check("и нулём цена не притворяется", "0.00" not in без_тарифа, без_тарифа)
@@ -1887,7 +1889,7 @@ async def main():
                 if call["messages"][-1]["content"] == text
             )
 
-        cli.cmd_strategy(state, "use sliding")
+        commands_model.cmd_strategy(state, "use sliding")
         sliding_screen = state.screen
         sliding_pane = sliding_screen.first
         sliding_agent = sliding_pane.agent
@@ -1903,9 +1905,9 @@ async def main():
         sliding_history = sliding_agent.history()
         main_screen = state.main
         main_agent = state.main_agent
-        cli.cmd_strategy(state, "use standard")
+        commands_model.cmd_strategy(state, "use standard")
         standard_window = state.profile.strategy_window
-        cli.cmd_strategy(state, "window 9")
+        commands_model.cmd_strategy(state, "window 9")
         check(
             "standard остаётся прежним main, а строгое окно к нему неприменимо",
             state.screen is main_screen
@@ -1937,7 +1939,7 @@ async def main():
             model=state.model,
         )
         buffer.text = "черновик дочернего профиля"
-        cli.cmd_strategy(state, "use standard")
+        commands_model.cmd_strategy(state, "use standard")
         дочерний_standard = state.screen
         check(
             "/strategy use standard дочерней панели сохраняет отдельный Agent её профиля",
@@ -1969,8 +1971,8 @@ async def main():
             ),
         )
         panes.switch_screen(state, 0)
-        cli.cmd_strategy(state, "use sliding")
-        cli.cmd_strategy(state, "")
+        commands_model.cmd_strategy(state, "use sliding")
+        commands_model.cmd_strategy(state, "")
         check(
             "/strategy показывает режим и окно и открывает выбор",
             state.picker is not None
@@ -1979,14 +1981,14 @@ async def main():
         )
         state.picker = None
         отметка_чужих_фактов = len(sliding_pane.log)
-        cli.cmd_facts(state, "")
+        commands_memory.cmd_facts(state, "")
         check(
             "/facts на Sliding Window отказала с причиной",
             "только в Sticky Facts"
             in fragments_text(sliding_pane.log[отметка_чужих_фактов:]),
         )
 
-        cli.cmd_strategy(state, "use facts")
+        commands_model.cmd_strategy(state, "use facts")
         facts_screen = state.screen
         facts_pane = facts_screen.first
         facts_agent = facts_pane.agent
@@ -1995,17 +1997,17 @@ async def main():
             facts_agent is not sliding_agent and sliding_agent.history() == sliding_history,
         )
         отметка_пустых = len(facts_pane.log)
-        cli.cmd_facts(state, "")
+        commands_memory.cmd_facts(state, "")
         check(
             "пустой словарь Sticky Facts назван с редакцией",
             "редакция 0" in fragments_text(facts_pane.log[отметка_пустых:])
             and "пусты" in fragments_text(facts_pane.log[отметка_пустых:]),
         )
-        cli.cmd_facts(state, "set beta второе")
-        cli.cmd_facts(state, "set alpha первое")
-        cli.cmd_facts(state, "set alpha исправленное")
+        commands_memory.cmd_facts(state, "set beta второе")
+        commands_memory.cmd_facts(state, "set alpha первое")
+        commands_memory.cmd_facts(state, "set alpha исправленное")
         отметка_фактов = len(facts_pane.log)
-        cli.cmd_facts(state, "")
+        commands_memory.cmd_facts(state, "")
         показ_фактов = fragments_text(facts_pane.log[отметка_фактов:])
         check(
             "ручные факты показаны в устойчивом порядке с редакцией",
@@ -2018,14 +2020,14 @@ async def main():
         )
         журнал_до_отказа = файл_фактов.read_bytes()
         редакция_до_отказа = facts_agent.conversation_facts()[1]
-        cli.cmd_facts(state, "forget missing")
+        commands_memory.cmd_facts(state, "forget missing")
         check(
             "отсутствующий ключ отклонён без записи операции",
             facts_agent.conversation_facts()[1] == редакция_до_отказа
             and файл_фактов.read_bytes() == журнал_до_отказа
             and "нет ключа «missing»" in log_text(state, facts_pane),
         )
-        cli.cmd_facts(state, "forget beta")
+        commands_memory.cmd_facts(state, "forget beta")
         check(
             "ручное удаление стало новой редакцией",
             facts_agent.conversation_facts() == ({"alpha": "исправленное"}, 4),
@@ -2065,7 +2067,7 @@ async def main():
 
         поздний = ПозднийИзвлекатель()
         state.client = поздний
-        await cli.handle_submit(
+        await commands.handle_submit(
             "позднее извлечение",
             state,
             destination_screen=facts_screen,
@@ -2075,7 +2077,7 @@ async def main():
         facts_worker = state.pane_workers[id(facts_pane)]
         редакция_до_гонки = facts_agent.conversation_facts()[1]
         отметка_гонки = len(facts_pane.log)
-        cli.cmd_facts(state, "set manual нельзя")
+        commands_memory.cmd_facts(state, "set manual нельзя")
         check(
             "ручная правка фактов явно отклонена, пока извлекатель занят",
             facts_worker.busy
@@ -2216,7 +2218,7 @@ async def main():
             "ответ только main " * 11,
             model=state.model,
         )
-        cli.cmd_facts(
+        commands_memory.cmd_facts(
             state,
             "set вес_активной_панели " + "отдельный факт facts " * 17,
         )
@@ -2235,7 +2237,7 @@ async def main():
             + facts_agent.overhead(state.model)
         )
         отметка_активного_расхода = len(facts_pane.log)
-        cli.cmd_tokens(state)
+        commands_context.cmd_tokens(state)
         вывод_активного_расхода = fragments_text(
             facts_pane.log[отметка_активного_расхода:]
         )
@@ -2322,7 +2324,7 @@ async def main():
         )
         state.client = fake
 
-        cli.cmd_strategy(state, "use sliding")
+        commands_model.cmd_strategy(state, "use sliding")
         check(
             "/strategy use вернул тот же экран, Agent, историю и черновик",
             state.screen is sliding_screen
@@ -2333,14 +2335,14 @@ async def main():
         )
         старое_окно = sliding_screen.profile.strategy_window
         for bad_window in ("0", "-1", "1.5", "четыре", "4 лишнее"):
-            cli.cmd_strategy(state, f"window {bad_window}")
+            commands_model.cmd_strategy(state, f"window {bad_window}")
         check(
             "неположительные, дробные, нетекстовые и лишние значения окна отвергнуты",
             sliding_screen.profile.strategy_window == старое_окно,
             str(sliding_screen.profile.strategy_window),
         )
         state.profile_dirty = False
-        cli.cmd_strategy(state, "window 2")
+        commands_model.cmd_strategy(state, "window 2")
         check(
             "положительное окно меняет только активный профиль и помечает его",
             sliding_screen.profile.strategy_window == 2
@@ -2362,7 +2364,7 @@ async def main():
             and "забыт" not in вывод_строгого_окна,
             вывод_строгого_окна,
         )
-        await cli.cmd_profile(state, "save")
+        await commands_model.cmd_profile(state, "save")
         saved_strategy = json.loads(
             (profiles.user_profiles_dir() / "strategy-ui.json").read_text(encoding="utf-8")
         )
@@ -2373,18 +2375,18 @@ async def main():
             str(saved_strategy),
         )
 
-        cli.cmd_strategy(state, "use branching")
+        commands_model.cmd_strategy(state, "use branching")
         branch_screen = state.screen
         branch_store = branch_screen.branch_store
         окно_branching = branch_screen.profile.strategy_window
-        cli.cmd_strategy(state, "window 9")
+        commands_model.cmd_strategy(state, "window 9")
         check(
             "строгое окно к Branching неприменимо",
             branch_screen.profile.strategy_window == окно_branching,
         )
         branch_root = branch_screen.first.agent
         отметка_раннего_split = len(branch_screen.first.log)
-        await cli.cmd_branch(state, "split A B")
+        await commands_memory.cmd_branch(state, "split A B")
         check(
             "разделение до первой пары отклонено без изменения графа",
             branch_store.load().checkpoint_id is None
@@ -2398,7 +2400,7 @@ async def main():
         расход_корня = branch_root.session_usage["total_tokens"]
         расход_выбывших = state.retired_usage["total_tokens"]
         прогонов_выбывших = state.retired_runs
-        await cli.cmd_branch(state, "split A B")
+        await commands_memory.cmd_branch(state, "split A B")
         branch_a, branch_b = branch_screen.panes
         check(
             "родитель заменён двумя ветвями с разными Agent",
@@ -2423,7 +2425,7 @@ async def main():
             f"{state.retired_usage}; runs={state.retired_runs}",
         )
         отметка_расхода_после_split = len(branch_a.log)
-        cli.cmd_tokens(state)
+        commands_context.cmd_tokens(state)
         расход_после_split = fragments_text(
             branch_a.log[отметка_расхода_после_split:]
         )
@@ -2445,12 +2447,12 @@ async def main():
             str([(pane.draft, pane.prefill_queue) for pane in branch_screen.panes]),
         )
         buffer.text = "черновик A"
-        await cli.cmd_branch(state, "B")
+        await commands_memory.cmd_branch(state, "B")
         check("переход к B открыл её собственную заготовку", buffer.text == "B1", repr(buffer.text))
         buffer.text = "черновик B"
-        await cli.cmd_branch(state, "A")
+        await commands_memory.cmd_branch(state, "A")
         check("возврат к A восстановил её черновик", buffer.text == "черновик A", repr(buffer.text))
-        await cli.cmd_branch(state, "B")
+        await commands_memory.cmd_branch(state, "B")
         check("возврат к B восстановил её черновик", buffer.text == "черновик B", repr(buffer.text))
 
         await отправить_стратегии(branch_screen, 0, "только A")
@@ -2502,15 +2504,15 @@ async def main():
         граф_до_отказов = branch_store.path.read_bytes()
         агенты_до_отказов = [pane.agent for pane in branch_screen.panes]
         активная_до_отказов = branch_screen.active_pane
-        await cli.cmd_branch(state, "split C D")
-        await cli.cmd_branch(state, "unknown")
+        await commands_memory.cmd_branch(state, "split C D")
+        await commands_memory.cmd_branch(state, "unknown")
         check(
             "повторный split и неизвестная ветвь не меняют граф и панели",
             branch_store.path.read_bytes() == граф_до_отказов
             and [pane.agent for pane in branch_screen.panes] == агенты_до_отказов
             and branch_screen.active_pane == активная_до_отказов,
         )
-        await cli.cmd_branch(state, "")
+        await commands_memory.cmd_branch(state, "")
         check(
             "/branch показывает точку, обе ветви и активную и открывает выбор",
             state.picker is not None
@@ -2530,7 +2532,7 @@ async def main():
         facts_before_clear = facts_agent.conversation_facts()
         graph_before_clear = branch_store.path.read_bytes()
         state.main_agent.remember("главное до clear", "ответ главного", model=state.model)
-        await cli.handle_command("/clear", state)
+        await commands.handle_command("/clear", state)
         check(
             "/clear очистил только main и назвал это на активной ветви",
             state.main_agent.history() == []
@@ -2625,7 +2627,7 @@ async def main():
         facts_only_screen = facts_only_state.screens[
             strategies.ensure_strategy_screen(facts_only_state, "facts")
         ]
-        await cli.handle_submit(
+        await commands.handle_submit(
             "сохрани факт при отказе",
             facts_only_state,
             destination_screen=facts_only_screen,
@@ -2687,19 +2689,19 @@ async def main():
         lifecycle_agent = lifecycle_pane.agent
         old_main_agent = lifecycle_state.main_agent
         main_runner = asyncio.create_task(workers.worker(lifecycle_state))
-        await cli.handle_submit(
+        await commands.handle_submit(
             "старый main",
             lifecycle_state,
             destination_screen=lifecycle_state.main,
             destination_pane=lifecycle_state.main.first,
         )
-        await cli.handle_submit(
+        await commands.handle_submit(
             "старая панель 1",
             lifecycle_state,
             destination_screen=lifecycle_screen,
             destination_pane=lifecycle_pane,
         )
-        await cli.handle_submit(
+        await commands.handle_submit(
             "старая панель 2",
             lifecycle_state,
             destination_screen=lifecycle_screen,
@@ -2716,7 +2718,7 @@ async def main():
         while not lifecycle_state.switching_profile:
             await asyncio.sleep(0)
         log_before_rejected = len(lifecycle_pane.log)
-        await cli.handle_submit(
+        await commands.handle_submit(
             "не принимать при смене",
             lifecycle_state,
             destination_screen=lifecycle_screen,
@@ -2944,7 +2946,7 @@ async def main():
             ),
         )
         panes.switch_screen(state, 0)
-        cli.cmd_strategy(state, "use sliding")
+        commands_model.cmd_strategy(state, "use sliding")
         parent_sliding = state.screen
         check(
             "служебная личность не дала рабочему key подменить стратегию родителя",
@@ -2959,7 +2961,7 @@ async def main():
             ),
         )
         panes.switch_screen(state, state.screens.index(collision_work_screen))
-        cli.cmd_strategy(state, "use facts")
+        commands_model.cmd_strategy(state, "use facts")
         child_facts = state.screen
         check(
             "/strategy use взял профиль активной дочерней панели",
@@ -3100,7 +3102,7 @@ async def main():
         # пар в памяти дают ровно девять пятнадцатых — то самое «9 из 15» из требования.
         профиль_полоски = profiles.builtin_default()
         профиль_полоски.history_window = 10
-        собеседник = cli.Agent("полоска", профиль_полоски)
+        собеседник = Agent("полоска", профиль_полоски)
         for номер in range(9):
             собеседник.remember(f"вопрос {номер}", f"ответ {номер}")
         счёт = ui.СчётЗанятости()
@@ -3118,7 +3120,7 @@ async def main():
         # Порог сжатия ближайшим: окно по парам выключено, мерить остаётся вес.
         профиль_веса = profiles.builtin_default()
         профиль_веса.history_window = 0
-        весовой = cli.Agent("вес", профиль_веса)
+        весовой = Agent("вес", профиль_веса)
         подпись_порога = fragments_text(ui.context_bar_fragments(счёт.ближайший(весовой, "", model=state.model), 80))
         # Форма у всех ограничителей одна: «сколько есть из скольких сработает». Прежняя
         # сборка называла здесь сам порог и окно («5 242 из 1 048 576»), и рядом с «9 из 15»
@@ -3139,7 +3141,7 @@ async def main():
         профиль_предела = profiles.builtin_default()
         профиль_предела.history_window = 0
         профиль_предела.budget_tokens = 10
-        тяжёлый = cli.Agent("предел", профиль_предела)
+        тяжёлый = Agent("предел", профиль_предела)
         перебор = fragments_text(
             ui.context_bar_fragments(ui.СчётЗанятости().ближайший(тяжёлый, "", model=state.model), 80)
         )
@@ -3157,7 +3159,7 @@ async def main():
         # мерила бы дорогу к обычному забыванию, о котором и так говорит строка в ленте.
         профиль_без_сжатия = profiles.builtin_default()
         профиль_без_сжатия.compact_at = 0
-        без_полоски = cli.Agent("без сжатия", профиль_без_сжатия)
+        без_полоски = Agent("без сжатия", профиль_без_сжатия)
         check(
             "при выключенном сжатии ближайшего не называют",
             ui.СчётЗанятости().ближайший(без_полоски, "вопрос", model=state.model) is None,
