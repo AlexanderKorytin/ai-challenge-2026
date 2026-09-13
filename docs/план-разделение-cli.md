@@ -70,8 +70,10 @@
 **Владеет**: окнами панелей (в них живёт прокрутка) и сборкой раскладки.
 **Отдаёт**: `HarnessCompleter`, `LogWindow`, `pane_columns(count, width) -> int`,
 `app_output()`, `click_only_mouse(output)`, `Раскладка` и `собрать_раскладку(state) -> Раскладка`.
-`Раскладка` несёт всё, что нужно клавишам и приложению: `layout`, `input_area`, `buffer`,
-`picker_active`, `pane_window`, `занятость`.
+`Раскладка` несёт то, что принадлежит окну и потому не приходит через состояние: `layout`,
+`buffer`, `picker_active`, `many_agents`, `pane_window`. Полей пять, а не семь: `input_area` и
+`занятость` в договор не вошли — читателя у них не оказалось (`занятость` и так лежит в
+состоянии), а поле без читателя — обещание, которое нечем подтвердить.
 **Обещает**: окно панели заводится один раз на панель — прокрутка переживает перерисовку;
 `собрать_раскладку` оставляет в `state.input_buffer` буфер активной панели и восстанавливает
 её черновик.
@@ -272,8 +274,9 @@ annotations`, так что во время работы имя не нужно)
 сетка, разделители, панель агентов, строка состояния, полоска занятости, плавающие окна,
 `Layout`. Заводится
 `@dataclass Раскладка` с полями `layout: Layout`, `input_area: TextArea`, `buffer: Buffer`,
-`picker_active: Condition`, `pane_window: Callable[[screens_mod.Pane], LogWindow]`,
-`занятость: Any` и функция `собрать_раскладку(state: State) -> Раскладка`. Побочные действия
+`picker_active: Condition`, `many_agents: Condition`,
+`pane_window: Callable[[screens_mod.Pane], LogWindow]` и функция
+`собрать_раскладку(state: State) -> Раскладка`. Побочные действия
 конца нынешней первой половины (`state.input_buffer = input_area.buffer`,
 `_restore_active_draft`, `apply_prefill` активной панели, `state.занятость = занятость`)
 остаются внутри `собрать_раскладку` — они и сейчас идут ровно там.

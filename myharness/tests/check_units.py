@@ -46,7 +46,7 @@ from myharness import api, journal, memory, params as params_mod, picker as pick
 from myharness import archivist, background, compact, config as config_mod  # noqa: E402
 from myharness import batch, cli, methods, output, screens as screens_mod, team  # noqa: E402
 from myharness import conversation, panes, state as state_mod, tokens as tokens_mod  # noqa: E402
-from myharness import commands, commands_context, commands_params  # noqa: E402
+from myharness import commands, commands_context, commands_params, layout  # noqa: E402
 from myharness import context_strategy, sticky_facts  # noqa: E402
 from myharness.agent import Agent, Turn, usage_tokens
 from myharness.config import Config  # noqa: E402
@@ -399,7 +399,7 @@ check("панель отрисовывается", len(picker_mod.fragments(p)) 
 
 print("\n5. Меню команд")
 state = state_mod.State(config=Config(api_key=None), client=None, model="deepseek-v4-flash", profile=profiles.builtin_default())
-comp = cli.HarnessCompleter(state)
+comp = layout.HarnessCompleter(state)
 
 
 class Doc:
@@ -811,9 +811,9 @@ check(
     any("result" in w and "screens" in w for w in без_шагов),
     str(без_шагов),
 )
-check("широкое окно — три панели в ряд", cli.pane_columns(5, 200) == 3)
-check("обычное окно — две", cli.pane_columns(5, 120) == 2)
-check("узкое окно — панели одна под другой", cli.pane_columns(5, 80) == 1)
+check("широкое окно — три панели в ряд", layout.pane_columns(5, 200) == 3)
+check("обычное окно — две", layout.pane_columns(5, 120) == 2)
+check("узкое окно — панели одна под другой", layout.pane_columns(5, 80) == 1)
 
 print("\n8. Разбор параметров для API")
 direct, extra = api.split_params(profiles.load("s3")[0].params)
@@ -2761,6 +2761,15 @@ def запретное_в_импортах(имя_файла):
                 импортированное.update(псевдоним.name.split(".")[0] for псевдоним in узел.names)
     return sorted(импортированное & ЗАПРЕЩЁННЫЕ)
 
+
+# Опечатка в имени модуля молча снимает запрет: имя, которому не соответствует ни один файл,
+# не совпадёт ни с одним ввозом и проверка останется вечно зелёной. Поэтому набор сверяется с
+# деревом исходников — единственное имя не-модуля в нём названо прямо.
+несуществующие = sorted(
+    имя for имя in ЗАПРЕЩЁННЫЕ - {"prompt_toolkit"}
+    if not (Path(__file__).resolve().parents[1] / "src" / "myharness" / f"{имя}.py").exists()
+)
+check("каждое запрещённое имя — настоящий модуль пакета", not несуществующие, ", ".join(несуществующие))
 
 нарушения = запретное_в_импортах("agent.py")
 check("agent.py не импортирует интерфейс", not нарушения, ", ".join(нарушения))

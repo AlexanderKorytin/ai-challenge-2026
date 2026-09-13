@@ -33,7 +33,7 @@
 | `commands_params.py` | `/params`, `/set`, своё значение, `/mouse` | 110 |
 | `commands_context.py` | `/tokens`, `/budget`, `/context`, `/compact` | 210 |
 | `agents_panel.py` | список агентов под вводом и `/team` | 90 |
-| `layout.py` | `HarnessCompleter`, `LogWindow`, окна, сетка панелей, сборка раскладки | 330 |
+| `layout.py` | `HarnessCompleter`, `LogWindow`, окна, сетка панелей, сборка раскладки | 345 |
 | `keys.py` | клавиши: панель выбора, ввод, отмена, прокрутка, переходы | 200 |
 | `cli.py` | `greet`, `repl`, `silence_transport_noise`, `_main`, `main` | 90 |
 
