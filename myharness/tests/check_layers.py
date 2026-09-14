@@ -125,16 +125,16 @@ async def main():
         print("\nШаг 7: /project ведёт карточку")
         await send("/project" + ENTER)
         check("карточки нет — сказано и названа команда", "/project new" in лента(state), лента(state)[-200:])
-        await send("/project Стек Python, зависимости через uv" + ENTER)
+        await send("/project Стек: Python, зависимости через uv" + ENTER)
         check("первая строка завела карточку", "карточка проекта заведена" in лента(state), лента(state)[-200:])
-        await send("/project Где что лежит код в myharness/src" + ENTER)
-        check("имя раздела из нескольких слов распознано", "где что лежит:" in лента(state), лента(state)[-200:])
-        await send("/project Ограничения ключ API не покидает настроек" + ENTER)
+        await send("/project Где что лежит: код в myharness/src" + ENTER)
+        check("имя раздела из нескольких слов распознано", "где что лежит:" in лента(state).lower(), лента(state)[-200:])
+        await send("/project Ограничения: ключ API не покидает настроек" + ENTER)
         await send("/project" + ENTER)
         карточка_в_ленте = лента(state)[-700:]
         check("карточка показана целиком", "Стек" in карточка_в_ленте and "Где что лежит" in карточка_в_ленте, карточка_в_ленте)
-        await send("/project Погода солнечно" + ENTER)
-        check("неизвестный раздел назван", "не понимаю" in лента(state), лента(state)[-200:])
+        await send("/project Погода солнечно" + ENTER)  # без двоеточия и без такого раздела
+        check("строка без имени раздела названа", "отделите его двоеточием" in лента(state), лента(state)[-200:])
 
         print("\nПодсказки по пробелу")
         буфер = app.layout.get_buffer_by_name("text-area") or app.current_buffer
@@ -162,7 +162,7 @@ async def main():
         варианты = [c.text for c in буфер.complete_state.completions] if буфер.complete_state else []
         check(
             "после /project предложены и слова, и разделы карточки",
-            {"new", "забыть"} <= set(варианты) and "Где что лежит" in варианты,
+            {"new", "забыть"} <= set(варианты) and "Где что лежит:" in варианты,
             str(варианты),
         )
         await send(ESC)
@@ -210,9 +210,11 @@ async def main():
         )
         check("и путь копии назван человеку", str(копия) in лента(state), лента(state)[-300:])
         check("а сама карточка напечатана перед удалением", "Где что лежит" in лента(state)[-900:], лента(state)[-900:])
-        await send("/project Стек Python и uv" + ENTER)
-        await send("/project Где что лежит код в myharness/src" + ENTER)
-        await send("/project Ограничения ключ API не покидает настроек" + ENTER)
+        # Заводим карточку заново — теми же командами, но с двоеточием: карточки нет, и
+        # угадывать имя раздела не по чему.
+        await send("/project Стек: Python и uv" + ENTER)
+        await send("/project Где что лежит: код в myharness/src" + ENTER)
+        await send("/project Ограничения: ключ API не покидает настроек" + ENTER)
 
         print("\nШаг 9: /memory показывает слои, /system печатает точный текст")
         await send("/memory" + ENTER)
