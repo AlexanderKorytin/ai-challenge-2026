@@ -1,6 +1,6 @@
 # День 11 — явная модель памяти агента
 
-**Стадия: Report.** Пройдены `Research` → `Plan` → `Executing` → `Validation`.
+**Стадия: Done.** Пройдены `Research` → `Plan` → `Executing` → `Validation`.
 Результат подтверждён живым прогоном на настоящем DeepSeek и снят на видео.
 
 ## Задание
