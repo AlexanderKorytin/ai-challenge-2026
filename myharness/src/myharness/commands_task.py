@@ -31,7 +31,7 @@ from .state import State
     "находки": "Находки",
 }
 
-СЛОВА_КОМАНДЫ = {"new", "list", "open", "done", "этап", "stage", "забыть", *РАЗДЕЛ_ПО_СЛОВУ}
+СЛОВА_КОМАНДЫ = {"new", "list", "open", "done", "этап", "забыть", *РАЗДЕЛ_ПО_СЛОВУ}
 
 ПОДСКАЗКА = (
     "/task new <название> — завести; /task list — список; /task open <название> — выбрать; "
@@ -173,7 +173,7 @@ def cmd_task(state: State, arg: str) -> None:
             _нет_задачи(state)
         return
 
-    if слово in ("этап", "stage"):
+    if слово == "этап":
         сменён, сообщение = workspace.set_stage(задача, остаток)
         if not сменён:
             append_log(state, ui.error_fragments(сообщение))

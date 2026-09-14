@@ -61,6 +61,15 @@ async def handle_command(text: str, state: State) -> bool:
             except Exception as exc:  # noqa: BLE001 — поставщик рабочей памяти ходит на диск
                 хвост = ""
                 append_log(state, ui.error_fragments(f"рабочее состояние не прочитано: {exc}"))
+            # Карточку спрашиваем у поставщика ОТДЕЛЬНО, хотя она уже внутри `system_text`:
+            # там её берёт `блок_карточки`, а он жалобу глотает — ему нельзя ронять
+            # взвешивание. `/system` же обещает точный текст запроса, и молча показать его
+            # без карточки значило бы соврать именно в той команде, которая заведена против
+            # вранья о составе запроса.
+            try:
+                state_mod.project_block()
+            except Exception as exc:  # noqa: BLE001 — поставщик карточки ходит на диск
+                append_log(state, ui.error_fragments(f"карточка проекта не прочитана: {exc}"))
             append_log(
                 state,
                 ui.request_text_fragments(state.main_agent.system_text(), хвост),
