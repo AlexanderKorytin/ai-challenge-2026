@@ -16,7 +16,17 @@ from pathlib import Path
 from . import project_card, ui
 from .conversation import забыть_счёт_занятости
 from .output import append_log
+from .commands_task import номер_строки as _номер
 from .state import State
+
+# Слова команды — здесь, в самой команде, и отсюда же их берёт подсказка. Держи их копией в
+# подсказках — и переименование слова здесь оставило бы подсказку врать, а проверку зелёной.
+СЛОВО_NEW = "new"
+СЛОВО_ОТМЕНА = "отмена"
+СЛОВО_ЗАБЫТЬ = "забыть"
+СЛОВА_КОМАНДЫ: tuple[str, ...] = (СЛОВО_NEW, СЛОВО_ОТМЕНА, СЛОВО_ЗАБЫТЬ)
+# Чем человек называет всю карточку, когда просит убрать её целиком.
+ВСЯ_КАРТОЧКА: tuple[str, ...] = ("карточку", "карточка", "всё", "все")
 
 ПОДСКАЗКА = (
     "/project — показать карточку; /project new — завести интервью; /project отмена — "
@@ -61,10 +71,10 @@ def cmd_project(state: State, arg: str) -> None:
         if not interview.отменить(state):
             append_log(state, ui.hint_fragments("интервью сейчас не идёт — отменять нечего"))
         return
-    if части[0].lower() == "забыть":
+    if части[0].lower() == СЛОВО_ЗАБЫТЬ:
         _забыть(state, каталог, части[1].strip() if len(части) > 1 else "")
         return
-    if части[0].lower() == "new" and len(части) == 1:
+    if части[0].lower() == СЛОВО_NEW and len(части) == 1:
         # Поздний ввоз: интервью тянет за собой агента и клиент, а показ карточки — нет.
         from . import interview
 
@@ -139,20 +149,27 @@ def _забыть(state: State, каталог: Path, остаток: str) -> No
             ),
         )
         return
-    if остаток.casefold() in ("карточку", "карточка", "всё", "все"):
+    if остаток.casefold() in ВСЯ_КАРТОЧКА:
         # Печатаем карточку ДО удаления — вторая сеть под копией и первая защита от опечатки:
         # человек видит, что именно исчезает, ровно как при закрытии задачи.
         прежняя, _ = project_card.load(каталог)
         if прежняя is not None:
             append_log(state, ui.card_fragments(прежняя))
-        убрана, сообщение, путь_копии = project_card.remove_card(каталог)
+        убрана, сообщение, (путь_копии, копия_постарше) = project_card.remove_card(каталог)
         if not убрана:
             append_log(state, ui.error_fragments(сообщение))
             return
         забыть_счёт_занятости(state)
         append_log(state, ui.system_fragments(сообщение))
         if путь_копии is not None:
-            append_log(state, ui.hint_fragments(f"копия лежит рядом: {путь_копии}"))
+            append_log(
+                state,
+                ui.hint_fragments(
+                    f"рядом лежит копия ПОСТАРШЕ — эту карточку копией не заменяли: {путь_копии}"
+                    if копия_постарше
+                    else f"копия лежит рядом: {путь_копии}"
+                ),
+            )
         return
 
     куски = остаток.rsplit(maxsplit=1)
@@ -167,7 +184,14 @@ def _забыть(state: State, каталог: Path, остаток: str) -> No
     for предупреждение in жалобы:
         append_log(state, ui.error_fragments(предупреждение))
     if карточка is None:
-        append_log(state, ui.error_fragments("карточки у этой папки нет — удалять нечего"))
+        append_log(
+            state,
+            ui.error_fragments(
+                "поправьте файл руками или уберите его — затирать его я не буду"
+                if жалобы
+                else "карточки у этой папки нет — удалять нечего"
+            ),
+        )
         return
     убрана, сообщение = project_card.remove_line(карточка, куски[0], номер, источник="человек")
     if not убрана:
@@ -177,14 +201,3 @@ def _забыть(state: State, каталог: Path, остаток: str) -> No
     append_log(state, ui.system_fragments(f"убрано из карточки: {сообщение}"))
 
 
-def _номер(текст: str) -> int | None:
-    """Номер строки из набранного человеком слова; `None` — это не номер.
-
-    Через `try/except`, а не `isdigit`: `'²'.isdigit()` истинно, а `int('²')` бросает — и
-    исключение уходит в задачу отправки, где его глотают. Человек при этом видит пустую
-    строку ввода и НИЧЕГО больше: ни ответа, ни ошибки. Тот же разбор уже стоит у `/forget`.
-    """
-    try:
-        return int(текст)
-    except ValueError:
-        return None
