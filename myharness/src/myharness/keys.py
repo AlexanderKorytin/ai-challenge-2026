@@ -83,6 +83,10 @@ def привязки(state: State, раскладка: Раскладка) -> Ke
             and not stripped.startswith("/")
             and state.config.is_authorized
             and not state.switching_profile
+            # Ответ на вопрос интервью вопросом модели не является, и очередь заготовок его
+            # ходом считать не должна: иначе обряд из трёх вопросов съедал бы три заготовки,
+            # приготовленных для разговора.
+            and state.интервью is None
         ):
             next_prefill(state, destination_pane)
         if not state.screen.interactive:
@@ -106,6 +110,15 @@ def привязки(state: State, раскладка: Раскладка) -> Ke
         if addressed_screen is state.main:
             if state.busy and state.current_task is not None:
                 state.current_task.cancel()
+                return
+            if state.интервью is not None:
+                # Обмена разговора нет, а интервью идёт: прерывать Ctrl+C тут нечего — деньги
+                # за идущий обмен уже отданы. Но и молчать нельзя: человек жмёт ещё и ещё, а
+                # инструмент не отвечает. Называем команду, которая правда прерывает.
+                append_log(
+                    state,
+                    ui.hint_fragments("идёт интервью о проекте — прервать: /project отмена"),
+                )
             return
         existing = state.pane_workers.get(id(addressed_pane))
         if existing is not None and existing.pane is addressed_pane:

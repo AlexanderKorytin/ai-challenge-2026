@@ -1,0 +1,7 @@
+{
+  "name": "наставник-python",
+  "title": "наставник",
+  "description": "наставник по программированию: учит Python человеку из мира Kotlin и Java",
+  "system_file": "наставник-python.md",
+  "keep_history": true
+}

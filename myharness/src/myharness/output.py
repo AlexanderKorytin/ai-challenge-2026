@@ -474,8 +474,11 @@ def _warn_if_over_window(state: State, pane: screens_mod.Pane, agent_obj: Agent,
     )
 
 
-def _turn_price(turn: Turn) -> float | None:
-    """Цена всего пользовательского обмена, включая извлекатель Sticky Facts."""
+def turn_price(turn: Turn) -> float | None:
+    """Цена обмена целиком, включая извлекатель Sticky Facts.
+
+    Имя открытое: читателей теперь двое — показ пользовательского обмена и интервью о
+    проекте, которое тоже тратит деньги человека и обязано считать их той же формулой."""
     if turn.context_strategy == "facts" and (
         not turn.usage or turn.facts_usage is None
     ):
@@ -619,7 +622,7 @@ async def run_turn(
                     turn.finish_reason,
                     turn.usage,
                     agent_obj.profile.name,
-                    tokens.format_price(_turn_price(turn)),
+                    tokens.format_price(turn_price(turn)),
                 ),
                 pane,
             )
@@ -643,14 +646,14 @@ async def run_turn(
             )
         if turn is not None:
             # Деньги копим тем тарифом, что действовал на весь пользовательский обмен.
-            # Sticky Facts платит за два обращения; `_turn_price` — одна формула и для этой
+            # Sticky Facts платит за два обращения; `turn_price` — одна формула и для этой
             # строки, и для итога сеанса. Неизвестный usage не превращается в ноль.
             if turn.context_strategy == "facts" and (
                 not turn.usage or turn.facts_usage is None
             ):
                 state.session_usage_known = False
                 state.unknown_usage_agent_ids.add(id(agent_obj))
-            цена = _turn_price(turn)
+            цена = turn_price(turn)
             if цена is None:
                 state.session_cost_known = False
             else:

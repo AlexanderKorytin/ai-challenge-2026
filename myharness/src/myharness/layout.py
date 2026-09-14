@@ -113,6 +113,20 @@ class HarnessCompleter(Completer):
             for name in self.state.known_models:
                 if name.startswith(word):
                     yield Completion(name, start_position=-len(word), display=name, display_meta="модель DeepSeek")
+        else:
+            # Команды памяти подсказывают и вторым уровнем, и третьим: после «/task » — слова
+            # команды, после «/task забыть » — разделы, после «/task забыть план » — номера
+            # строк вместе с их текстом. Состав считает `ui.подсказки` — чистая функция,
+            # которая проверяется без терминала; здесь остаётся только отбор по набранным
+            # буквам и обёртка в вид prompt_toolkit.
+            for значение, показ, пояснение in ui.подсказки(self.state, text):
+                if значение.lower().startswith(word.lower()):
+                    yield Completion(
+                        значение,
+                        start_position=-len(word),
+                        display=показ,
+                        display_meta=пояснение,
+                    )
 
 
 class LogWindow(Window):

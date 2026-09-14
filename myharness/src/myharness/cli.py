@@ -25,7 +25,7 @@ from . import layout as layout_mod
 from . import profiles, ui
 from .api import DeepSeekClient
 from .config import load as load_config
-from .conversation import restore_conversation
+from .conversation import restore_conversation, поднять_слои
 from .output import append_log
 from .state import State
 from .strategies import open_profile_surfaces
@@ -138,6 +138,12 @@ async def _main(args: argparse.Namespace) -> None:
     # Прежний разговор поднимается ЗДЕСЬ: настройки и профиль уже прочитаны, агент уже есть,
     # ни один запрос ещё невозможен. В конструкторе состояния этому места нет — его зовут
     # проверки напрямую, и любое состояние начало бы читать и писать в каталог состояния.
+    # Слои поднимаются ПЕРЕД разговором, а не после, ровно по одной причине: подъём разговора
+    # решает, сколько пар влезет в порог, и считает при этом вес эфемерного хвоста — а хвост
+    # берётся из активной задачи, которую и выбирает `поднять_слои`. Подними мы их после, вес
+    # подъёма был бы занижен на длину хвоста, и первый же вопрос выбросил бы лишние пары.
+    # (Карточка от порядка не зависит: её поставщик читает диск сам.)
+    поднять_слои(state)
     restore_conversation(state)
     open_profile_surfaces(state, state.initial_strategy)
     await repl(state)

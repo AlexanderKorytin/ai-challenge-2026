@@ -1,0 +1,190 @@
+"""Команда `/project` — карточка проекта: показать, дописать, завести интервью.
+
+Карточка принадлежит папке, а не персоне: две персоны в одной папке видят одну карточку, и
+это решение, а не упущение. Устройство взято с образца, который у нас перед глазами: файл
+соглашений в корне репозитория отдельно, память о человеке отдельно.
+
+Раздел «Ограничения» правит только человек — команда передаёт это хранилищу источником.
+Причина узкая: по этим строкам программа однажды начнёт судить ответы модели на нарушение,
+и правило, сочинённое самой моделью, проверкой не является.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from . import project_card, ui
+from .conversation import забыть_счёт_занятости
+from .output import append_log
+from .state import State
+
+ПОДСКАЗКА = (
+    "/project — показать карточку; /project new — завести интервью; /project отмена — "
+    "прервать идущее; /project <раздел> <текст> — дописать; /project забыть <раздел> <номер> "
+    "— убрать строку; /project забыть карточку — убрать целиком. Разделы: "
+    + ", ".join(project_card.РАЗДЕЛЫ)
+)
+
+
+def cmd_project(state: State, arg: str) -> None:
+    """`/project` без довода — показать карточку; `new` — интервью; иначе — дописать раздел."""
+    каталог = Path.cwd()
+    текст = arg.strip()
+
+    if not текст:
+        карточка, жалобы = project_card.load(каталог)
+        for предупреждение in жалобы:
+            append_log(state, ui.error_fragments(предупреждение))
+        if карточка is None:
+            if жалобы:
+                # Файл лежит, но карточкой не читается. Советовать `/project new` тут нельзя:
+                # он откажется затирать этот файл, и совет заведомо упёрся бы в отказ.
+                append_log(
+                    state,
+                    ui.hint_fragments("поправьте файл руками или уберите его — затирать его я не буду"),
+                )
+                return
+            append_log(
+                state,
+                ui.hint_fragments(
+                    f"у папки {каталог.name} карточки нет — /project new заведёт её интервью"
+                ),
+            )
+            return
+        append_log(state, ui.card_fragments(карточка))
+        return
+
+    части = текст.split(maxsplit=1)
+    if части[0].lower() == "отмена" and len(части) == 1:
+        from . import interview
+
+        if not interview.отменить(state):
+            append_log(state, ui.hint_fragments("интервью сейчас не идёт — отменять нечего"))
+        return
+    if части[0].lower() == "забыть":
+        _забыть(state, каталог, части[1].strip() if len(части) > 1 else "")
+        return
+    if части[0].lower() == "new" and len(части) == 1:
+        # Поздний ввоз: интервью тянет за собой агента и клиент, а показ карточки — нет.
+        from . import interview
+
+        interview.начать(state)
+        return
+
+    # Имя раздела состоит из нескольких слов («Что это за проект», «Где что лежит»), поэтому
+    # разделить строку по первому пробелу нельзя: разбираем с конца — самое длинное известное
+    # имя раздела, какое подходит к началу строки.
+    имя, остаток = _разделить(текст)
+    if имя is None:
+        append_log(state, ui.error_fragments(f"не понимаю «{текст}»"))
+        append_log(state, ui.hint_fragments(ПОДСКАЗКА))
+        return
+    if not остаток:
+        append_log(state, ui.hint_fragments(f"нужен текст: /project {имя} <строка>"))
+        return
+
+    карточка, жалобы = project_card.load(каталог)
+    if карточка is None and жалобы:
+        # Жалобу печатаем ОДИН раз: `create` вернёт её же, и повтор той же строки читается
+        # как две разные беды.
+        for предупреждение in жалобы:
+            append_log(state, ui.error_fragments(предупреждение))
+        append_log(
+            state,
+            ui.hint_fragments("поправьте файл руками или уберите его — затирать его я не буду"),
+        )
+        return
+    if карточка is None:
+        # Первая строка заводит карточку: требовать интервью ради одной строки значило бы
+        # платить за два запроса там, где человек уже знает, что хочет записать.
+        карточка, сообщение = project_card.create(каталог, {имя: [остаток]}, источник="человек")
+        if карточка is None:
+            append_log(state, ui.error_fragments(сообщение))
+            return
+        забыть_счёт_занятости(state)
+        append_log(state, ui.system_fragments(f"карточка проекта заведена; {имя.lower()}: {остаток}"))
+        return
+
+    записано, сообщение = project_card.add_line(карточка, имя, остаток, источник="человек")
+    if not записано:
+        append_log(state, ui.error_fragments(сообщение))
+        return
+    забыть_счёт_занятости(state)
+    append_log(state, ui.system_fragments(f"{имя.lower()}: {сообщение}"))
+
+
+def _разделить(текст: str) -> tuple[str | None, str]:
+    """Отделяет имя раздела от текста строки. Неизвестное начало — `(None, "")`."""
+    слова = текст.split()
+    # Идём от самого длинного возможного имени к короткому: «Что это за проект» состоит из
+    # четырёх слов, и проверь мы сперва одно слово, оно не совпало бы ни с одним разделом.
+    for длина in range(min(len(слова), 4), 0, -1):
+        имя = project_card.нормализовать_раздел(" ".join(слова[:длина]))
+        if имя is not None:
+            return имя, " ".join(слова[длина:]).strip()
+    return None, ""
+
+
+def _забыть(state: State, каталог: Path, остаток: str) -> None:
+    """`/project забыть <раздел> <номер>` и `/project забыть карточку`.
+
+    Удаление карточки целиком — отдельное слово, а не пустой довод: пустой довод здесь значил
+    бы «убрать всё», и одна лишняя клавиша стирала бы работу интервью.
+    """
+    if not остаток:
+        append_log(
+            state,
+            ui.hint_fragments(
+                "нужен раздел и номер строки: /project забыть Стек 2; убрать целиком: /project забыть карточку"
+            ),
+        )
+        return
+    if остаток.casefold() in ("карточку", "карточка", "всё", "все"):
+        # Печатаем карточку ДО удаления — вторая сеть под копией и первая защита от опечатки:
+        # человек видит, что именно исчезает, ровно как при закрытии задачи.
+        прежняя, _ = project_card.load(каталог)
+        if прежняя is not None:
+            append_log(state, ui.card_fragments(прежняя))
+        убрана, сообщение, путь_копии = project_card.remove_card(каталог)
+        if not убрана:
+            append_log(state, ui.error_fragments(сообщение))
+            return
+        забыть_счёт_занятости(state)
+        append_log(state, ui.system_fragments(сообщение))
+        if путь_копии is not None:
+            append_log(state, ui.hint_fragments(f"копия лежит рядом: {путь_копии}"))
+        return
+
+    куски = остаток.rsplit(maxsplit=1)
+    номер = _номер(куски[1]) if len(куски) == 2 else None
+    if номер is None:
+        append_log(
+            state,
+            ui.hint_fragments("нужен раздел и номер строки: /project забыть Стек 2 (номера показывает /project)"),
+        )
+        return
+    карточка, жалобы = project_card.load(каталог)
+    for предупреждение in жалобы:
+        append_log(state, ui.error_fragments(предупреждение))
+    if карточка is None:
+        append_log(state, ui.error_fragments("карточки у этой папки нет — удалять нечего"))
+        return
+    убрана, сообщение = project_card.remove_line(карточка, куски[0], номер, источник="человек")
+    if not убрана:
+        append_log(state, ui.error_fragments(сообщение))
+        return
+    забыть_счёт_занятости(state)
+    append_log(state, ui.system_fragments(f"убрано из карточки: {сообщение}"))
+
+
+def _номер(текст: str) -> int | None:
+    """Номер строки из набранного человеком слова; `None` — это не номер.
+
+    Через `try/except`, а не `isdigit`: `'²'.isdigit()` истинно, а `int('²')` бросает — и
+    исключение уходит в задачу отправки, где его глотают. Человек при этом видит пустую
+    строку ввода и НИЧЕГО больше: ни ответа, ни ошибки. Тот же разбор уже стоит у `/forget`.
+    """
+    try:
+        return int(текст)
+    except ValueError:
+        return None

@@ -22,7 +22,7 @@ from .config import save as save_config
 from .conversation import restore_conversation
 from .panes import active_profile, apply_prefill, drop_agent_screens, switch_screen
 from .profiles import Profile
-from .state import State, profile_for_strategy, user_facts
+from .state import State, profile_for_strategy, главный_агент
 
 # Человеческие названия режимов — ими подписаны вкладки, панель выбора и подсказки команд.
 STRATEGY_TITLES = {
@@ -288,11 +288,7 @@ async def switch_profile(state: State, name: str) -> None:
 
         state.profile = profile
         state.initial_strategy = initial_strategy
-        state.main.first.agent = Agent(
-            screens_mod.MAIN_KEY,
-            profile,
-            facts=user_facts,
-        )
+        state.main.first.agent = главный_агент(state, profile)
         state.main.first.prefill_queue.clear()
         state.main.first.prefill_initialized = False
         state.profile_dirty = False
