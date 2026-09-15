@@ -33,7 +33,8 @@ class ParamSpec:
     parse: Callable[[str], Any] | None = None
 
 
-def _parse_float(raw: str) -> float:
+def parse_float(raw: str) -> float:
+    """Число с запятой или точкой. Имя открытое: разбор зовёт и мастер профиля."""
     return float(raw.replace(",", "."))
 
 
@@ -67,7 +68,7 @@ SPECS: dict[str, ParamSpec] = {
             Choice(1.3, "1.3 — творческий", "заметный разброс формулировок"),
         ),
         custom_hint="число от 0 до 2",
-        parse=_parse_float,
+        parse=parse_float,
     ),
     "top_p": ParamSpec(
         name="top_p",
@@ -81,7 +82,7 @@ SPECS: dict[str, ParamSpec] = {
             Choice(1.0, "1.0 — без отсечения", ""),
         ),
         custom_hint="число от 0 до 1",
-        parse=_parse_float,
+        parse=parse_float,
     ),
     "max_tokens": ParamSpec(
         name="max_tokens",

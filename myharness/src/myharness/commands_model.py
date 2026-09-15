@@ -277,6 +277,7 @@ def _записать_профиль(state: State, интервью: Any, тек
             ui.hint_fragments(f"инструкция лежит рядом и правится руками: {путь_md}"),
         )
     append_log(state, ui.system_prompt_fragments(профиль.name, профиль.system or ""))
+    append_log(state, ui.hint_fragments(profile_maker.словами_о_запросе(профиль.params)))
     if профиль.overrides:
         append_log(
             state,
