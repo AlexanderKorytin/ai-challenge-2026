@@ -1718,8 +1718,39 @@ async def main():
         panes.switch_pane(state, 0)
         check("Enter с первой A подготовил вторую A", buffer.text == "A2", repr(buffer.text))
         buffer.text = ""
+        # Реплика с зачином — просьба запомнить, а не вопрос, и очередь заготовок её ходом
+        # считать не должна. Проверяем ОБЕ стороны границы: на вкладке исполнителя зачин не
+        # значит ничего, и заготовку там реплика берёт, как любой вопрос.
+        панель_a.prefill_queue = ["A2", "A3"]
+        buffer.text = ""
+        await send("запиши: собираем через uv" + ENTER)
+        check(
+            "на вкладке исполнителя зачин заготовку берёт — он там обычный вопрос",
+            панель_a.prefill_queue == ["A3"],
+            str(панель_a.prefill_queue),
+        )
+        buffer.text = ""
+
         panes.switch_screen(state, 0)
         state.screens.remove(экран_очередей)
+
+        state.main.first.prefill_queue = ["следующий вопрос", "и ещё один"]
+        buffer.text = ""
+        await send("запиши: собираем через uv" + ENTER)
+        check(
+            "а на главном экране заготовку не тратит",
+            state.main.first.prefill_queue == ["следующий вопрос", "и ещё один"],
+            str(state.main.first.prefill_queue),
+        )
+        buffer.text = ""
+        await send("обычный вопрос" + ENTER)
+        check(
+            "и там же обычная строка заготовку берёт",
+            state.main.first.prefill_queue == ["и ещё один"],
+            str(state.main.first.prefill_queue),
+        )
+        state.main.first.prefill_queue = []
+        buffer.text = ""
 
         print("\n12о. Независимые последовательные исполнители панелей")
         управляемый = УправляемыйКлиент()

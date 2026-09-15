@@ -15,6 +15,7 @@ import asyncio
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 
+from . import recognizer
 from . import ui
 from .agents_panel import step_agent
 from .commands import handle_submit
@@ -87,6 +88,13 @@ def привязки(state: State, раскладка: Раскладка) -> Ke
             # ходом считать не должна: иначе обряд из трёх вопросов съедал бы три заготовки,
             # приготовленных для разговора.
             and state.интервью is None
+            # По той же причине не тратим заготовку на реплике с зачином: человек просит
+            # запомнить, а не спрашивает. Только на ГЛАВНОМ экране — там, где естественная
+            # запись и работает: на вкладке способа, стратегии или исполнителя зачин не значит
+            # ничего, «запиши функцию, которая…» там обычный вопрос и заготовки заслуживает.
+            # Здесь, на нажатии, ещё неизвестно, окажется ли реплика записью, — и выбор сделан
+            # в пользу ложного зачина: заготовка достанется следующему настоящему вопросу.
+            and not (destination_screen is state.main and recognizer.есть_зачин(stripped))
         ):
             next_prefill(state, destination_pane)
         if not state.screen.interactive:
@@ -119,6 +127,21 @@ def привязки(state: State, раскладка: Раскладка) -> Ke
                     state,
                     ui.hint_fragments("идёт интервью о проекте — прервать: /project отмена"),
                 )
+                return
+            if state.идёт_распознавание:
+                # Стоит ПОСЛЕ интервью, и порядок не случаен: человек мог начать `/project new`
+                # прямо во время секундного разбора, и тогда истинны оба. Назвать надо команду,
+                # которая правда прерывает, — а прерывать можно только обряд.
+                #
+                # Разбор идёт секунду, но человек этого не знает: строка «разбираю…» стоит,
+                # ответа нет, и первое, что он жмёт, — Ctrl+C. Прерывать нечего (деньги за
+                # обмен уже отданы), и молчать нельзя по той же причине, что и у интервью
+                # ниже: молчащий инструмент человек жмёт ещё и ещё.
+                append_log(
+                    state,
+                    ui.hint_fragments("разбираю, куда положить, — это один короткий запрос, сейчас закончу"),
+                )
+                return
             return
         existing = state.pane_workers.get(id(addressed_pane))
         if existing is not None and existing.pane is addressed_pane:
