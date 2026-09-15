@@ -33,3 +33,6 @@
 
 - видео: https://drive.google.com/open?id=1yq7Om4UtDEmRZwmBXCo_w9A2_Ujn6zLz
 - код дня: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w3d2/week_3/day_2
+
+Ролик 1 мин 24 с: ожидания ответа модели ускорены в двенадцать раз, остальное — вдвое,
+хвост после 3:50 исходной записи убран.
