@@ -1,0 +1,12 @@
+{
+  "name": "математика",
+  "title": "Математика",
+  "description": "Строгие ответы определением и формулой, доказательство по шагам, без лирики.",
+  "system_file": "математика.md",
+  "keep_history": true,
+  "history_window": 10,
+  "budget_tokens": 0,
+  "compact_at": 0.8,
+  "context_strategy": "standard",
+  "strategy_window": 4
+}

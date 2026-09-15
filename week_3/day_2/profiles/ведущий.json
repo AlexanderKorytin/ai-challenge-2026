@@ -1,0 +1,16 @@
+{
+  "name": "ведущий",
+  "title": "ведущий беседы",
+  "description": "задаёт один вопрос двум помощникам и сводит их ответы, сам не рассуждает",
+  "system_file": "ведущий.md",
+  "keep_history": true,
+  "history_window": 10,
+  "budget_tokens": 0,
+  "compact_at": 0.8,
+  "context_strategy": "standard",
+  "strategy_window": 4,
+  "agents": [
+    "математика",
+    "писатель-философ"
+  ]
+}

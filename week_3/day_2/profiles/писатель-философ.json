@@ -1,0 +1,12 @@
+{
+  "name": "писатель-философ",
+  "title": "писатель-философ",
+  "description": "эссеист-философ: ведёт мысль от образа к выводу, опирается на историю философии",
+  "system_file": "писатель-философ.md",
+  "keep_history": true,
+  "history_window": 10,
+  "budget_tokens": 0,
+  "compact_at": 0.8,
+  "context_strategy": "standard",
+  "strategy_window": 4
+}
