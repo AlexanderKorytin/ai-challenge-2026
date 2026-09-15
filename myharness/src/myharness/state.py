@@ -61,6 +61,7 @@ def profile_for_strategy(source: Profile, strategy: str) -> Profile:
         screens=list(source.screens),
         methods=list(source.methods),
         result=list(source.result),
+        overrides=list(source.overrides),
         vars=dict(source.vars),
         params=dict(source.params),
     )

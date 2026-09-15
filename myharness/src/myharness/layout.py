@@ -49,7 +49,7 @@ from . import screens as screens_mod
 from .agents_panel import agent_index, collect_agents, goto_agent, show_agent_panel
 from .output import Fragments
 from .panes import active_input_pane, pane_profile, restore_active_draft, apply_prefill
-from .state import State, user_facts
+from .state import State
 from .strategies import STRATEGY_TITLES
 
 
