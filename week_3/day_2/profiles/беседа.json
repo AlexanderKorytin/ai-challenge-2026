@@ -1,0 +1,16 @@
+{
+  "name": "беседа",
+  "title": "беседа",
+  "description": "ведущий беседы: задаёт один вопрос математику и философу, сводит ответы в короткий итог и называет расхождения",
+  "system_file": "беседа.md",
+  "keep_history": true,
+  "history_window": 10,
+  "budget_tokens": 0,
+  "compact_at": 0.8,
+  "context_strategy": "standard",
+  "strategy_window": 4,
+  "agents": [
+    "математик",
+    "философ"
+  ]
+}
