@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from dataclasses import dataclass, field, replace
@@ -778,13 +779,35 @@ def save_pair(
     путь_json = directory / f"{profile.name}.json"
     инструкция = (profile.system or "").strip()
     путь_md = directory / f"{profile.name}.md" if инструкция else None
+    if перезаписывать and путь_md is not None and profile.vars and путь_md.exists():
+        # Шаблон с `$переменными` дошёл до нас уже подставленным — писать его обратно значило
+        # бы заменить шаблон человека сегодняшними числами, молча и навсегда. Профиль при этом
+        # сохраняется: JSON пишется, а инструкция остаётся прежним файлом.
+        путь_md = None
+        данные_ссылаются = True
+    else:
+        данные_ссылаются = False
     if not перезаписывать:
         лежат = [путь for путь in (путь_json, путь_md) if путь is not None and путь.exists()]
         if лежат:
             raise FileExistsError(", ".join(str(путь) for путь in лежат))
 
-    данные = replace(profile, system_file=путь_md.name) if путь_md else profile
+    данные = (
+        replace(profile, system_file=путь_md.name)
+        if путь_md
+        else (profile if not данные_ссылаются else replace(profile, system=None))
+    )
     текст_json = json.dumps(данные.to_dict(), ensure_ascii=False, indent=2) + "\n"
+
+    # Прежний текст `.md` держим в руках, чтобы вернуть его при сбое: «оба файла или ни одного»
+    # обязано выполняться и при перезаписи, иначе на диске останется НОВАЯ инструкция рядом со
+    # СТАРЫМ профилем — расхождение пары, о котором никто не узнает.
+    прежний_md: str | None = None
+    if перезаписывать and путь_md is not None and путь_md.exists():
+        try:
+            прежний_md = путь_md.read_text(encoding="utf-8")
+        except OSError:
+            прежний_md = None
 
     написан_md = False
     try:
@@ -801,13 +824,17 @@ def save_pair(
             файл.write(текст_json)
     except FileExistsError:
         # Имя заняли между проверкой и записью. `.md` убираем, только если написали его сами.
-        if написан_md and путь_md is not None:
+        if написан_md and путь_md is not None and прежний_md is None:
             путь_md.unlink(missing_ok=True)
         raise
     except BaseException:
         # Любой сбой, а не только `OSError`: сирота `.md` занял бы имя профиля, которого нет.
-        if написан_md and путь_md is not None and not перезаписывать:
-            путь_md.unlink(missing_ok=True)
+        if написан_md and путь_md is not None:
+            if прежний_md is not None:
+                with contextlib.suppress(OSError):
+                    путь_md.write_text(прежний_md, encoding="utf-8")
+            elif not перезаписывать:
+                путь_md.unlink(missing_ok=True)
         raise
     return путь_json, путь_md
 

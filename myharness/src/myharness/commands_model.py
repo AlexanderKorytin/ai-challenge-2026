@@ -10,11 +10,13 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from . import context_strategy, profiles, ui
 from . import picker as picker_mod
 from .api import DeepSeekClient
+from . import interview, memory, profile_maker
 from .config import save as save_config
 from .output import append_log, refresh
 from .panes import active_profile
@@ -135,18 +137,219 @@ def open_profile_picker(state: State) -> None:
     refresh(state)
 
 
+# Слова команды `/profile`. Держим их здесь, рядом с разбором: копия в подсказке разошлась бы
+# с командой при первом же переименовании, а проверка осталась бы зелёной.
+СЛОВО_NEW = "new"
+СЛОВО_ОТМЕНА = "отмена"
+
+
+def _записи_о_человеке(state: State) -> list[str]:
+    """Записи о человеке для запросов мастера. Сбой чтения — пустой список, а не отказ.
+
+    Обряд без записей беднее (он не спросит про язык занятия), но он возможен; отказаться
+    заводить профиль из-за попорченного файла памяти значило бы запереть человека там, где
+    работа ещё вся впереди."""
+    try:
+        записи, жалобы = memory.load_facts()
+    except Exception as exc:  # noqa: BLE001 — хранилище живёт на диске и правится руками
+        append_log(
+            state,
+            ui.error_fragments(f"записи о вас не прочитаны ({exc}) — обряд пойдёт без них"),
+        )
+        return []
+    for жалоба in жалобы:
+        # Молчать нельзя: с обеднённым списком модель не задаст вопроса, который должна была
+        # задать, и человек не поймёт, почему профиль вышел не таким.
+        append_log(state, ui.error_fragments(жалоба))
+    return записи
+
+
+def _подготовить_профиль(state: State, _интервью: Any) -> bool:
+    """Что сказать до первого платного запроса мастера.
+
+    Заслона здесь нет намеренно: занятость имени до сборки не проверить — имени ещё не
+    существует, его придумает модель. Цена названа в требовании к команде.
+    """
+    append_log(
+        state,
+        ui.system_fragments(
+            "завожу профиль занятия по вашему описанию — спрашиваю у модели, чего в нём не хватает"
+        ),
+    )
+    return True
+
+
+def _шаг_запрос_профиля(интервью: Any) -> tuple[Any, str]:
+    return profile_maker.questions_profile(), profile_maker.questions_request(
+        интервью.описание, интервью.записи, интервью.доступные, интервью.пары
+    )
+
+
+def _итог_запрос_профиля(интервью: Any) -> tuple[Any, str]:
+    return profile_maker.draft_profile(), profile_maker.draft_request(
+        интервью.описание, интервью.записи, интервью.доступные, интервью.пары
+    )
+
+
+def _записать_профиль(state: State, интервью: Any, текст: str) -> None:
+    """Ответ модели — в профиль, профиль — парой файлов на диск, инструмент — в него.
+
+    Порядок здесь не случаен. Сперва отбор (помощники, перекрытые записи) и проверка имени,
+    потом запись, и только потом переход: перейти в профиль, которого нет на диске, значило бы
+    получить его при следующем запуске из воздуха — то есть не получить вовсе.
+    """
+    черновик = profile_maker.parse_draft(текст)  # ValueError поднимается наверх, там его ждут
+    профиль, жалобы = profile_maker.собрать(
+        черновик, доступные=интервью.доступные, записи=интервью.записи
+    )
+    for жалоба in жалобы:
+        # Отброшенное называем вслух: за строку заплачен обмен, и человек должен знать, чего в
+        # профиле нет и почему.
+        append_log(state, ui.hint_fragments(жалоба))
+
+    беда_имени = profiles.проверить_имя(профиль.name)
+    if беда_имени:
+        raise ValueError(f"модель предложила негодное имя профиля: {беда_имени}")
+
+    # Сверяем имя со ВСЕМИ заведёнными профилями, а не только с каталогом записи. `save_pair`
+    # видит один каталог — тот, что выбрал `target_dir`, — и профиль с тем же именем из
+    # дальнего каталога отказа бы не вызвал: новый молча перекрыл бы прежний, и прежний стал
+    # бы недостижим по имени, оставшись лежать на диске.
+    занято = next(
+        (имя for имя in интервью.доступные if имя.casefold() == профиль.name.casefold()), None
+    )
+    if занято is not None:
+        interview.прибрать(state, интервью)
+        append_log(state, ui.error_fragments(f"профиль с именем «{занято}» уже есть"))
+        append_log(
+            state,
+            ui.hint_fragments(
+                "профиль не записан; повторите, назвав другое имя прямо в описании: "
+                "/profile new <описание>"
+            ),
+        )
+        return
+
+    каталог = profiles.target_dir(Path.cwd())
+    try:
+        путь_json, путь_md = profiles.save_pair(профиль, каталог)
+    except FileExistsError as exc:
+        # Лежащий профиль мог быть написан человеком. Своё имя модель придумала сама, поэтому
+        # и просим человека назвать другое — переименовывать за него мы не вправе.
+        interview.прибрать(state, интервью)
+        append_log(
+            state,
+            ui.error_fragments(f"профиль с именем «{профиль.name}» уже есть: {exc}"),
+        )
+        append_log(
+            state,
+            ui.hint_fragments(
+                "профиль не записан; повторите с другим именем: /profile new <описание>, "
+                "назвав имя прямо в описании"
+            ),
+        )
+        return
+    except OSError as exc:
+        interview.прибрать(state, интервью)
+        append_log(state, ui.error_fragments(f"профиль не записан: {exc}"))
+        return
+
+    interview.прибрать(state, интервью)
+    append_log(state, ui.system_fragments(f"профиль «{профиль.name}» записан: {путь_json}"))
+    if путь_md is not None:
+        append_log(
+            state,
+            ui.hint_fragments(f"инструкция лежит рядом и правится руками: {путь_md}"),
+        )
+    append_log(state, ui.system_prompt_fragments(профиль.name, профиль.system or ""))
+    if профиль.overrides:
+        append_log(
+            state,
+            ui.hint_fragments(
+                "в этом занятии не действуют записи о вас: "
+                + "; ".join(профиль.overrides)
+                + " — они остаются в памяти и помечаются в запросе"
+            ),
+        )
+    # Переход отдельной задачей: `switch_profile` дожидается очереди прежнего собеседника, а
+    # обряд сейчас сам исполняется внутри задачи — ждать себя же он не вправе.
+    track_submission(state, asyncio.create_task(switch_profile(state, профиль.name)))
+
+
+РОД_ПРОФИЛЯ = interview.Род(
+    имя="мастер профиля",
+    итог_не_записан="профиль не записан",
+    прерван="мастер профиля прерван",
+    не_удался="мастер профиля не справился",
+    итог_вот_вот="профиль вот-вот будет записан",
+    команда_заново="/profile new",
+    команда_заново_с_доводом="/profile new <описание>",
+    команда_отмены="/profile отмена",
+    агент=profile_maker.ИМЯ_МАСТЕРА,
+    подсказка_после_неудачи=(
+        "запрос к модели уже оплачен, профиль не записан; "
+        "повторить — /profile new <описание>, завести руками — файл profiles/<имя>.json"
+    ),
+    сборка_объявление="описание и ответы собраны — прошу модель собрать профиль",
+    подготовить=_подготовить_профиль,
+    шаг_запрос=_шаг_запрос_профиля,
+    шаг_разбор=profile_maker.parse_step,
+    итог_запрос=_итог_запрос_профиля,
+    итог_записать=_записать_профиль,
+)
+
+
 async def cmd_profile(state: State, arg: str) -> None:
     if not arg:
         open_profile_picker(state)
         return
     parts = arg.split(maxsplit=1)
+    if parts[0] == СЛОВО_ОТМЕНА:
+        if not interview.отменить(state):
+            append_log(state, ui.hint_fragments("прерывать нечего — обряд не идёт"))
+        return
+    if parts[0] == СЛОВО_NEW:
+        описание = parts[1].strip() if len(parts) > 1 else ""
+        if not описание:
+            # Без описания мастеру не с чего начинать: он спросил бы «а чего вы хотите?» —
+            # тот же вопрос, но за деньги.
+            append_log(
+                state,
+                ui.hint_fragments(
+                    "опишите занятие одной репликой: роль, стиль, формат ответа, чего не делать, "
+                    "кого звать в помощь — например: /profile new профиль математика, отвечает "
+                    "определением и формулой, без лирики"
+                ),
+            )
+            return
+        interview.начать(
+            state,
+            род=РОД_ПРОФИЛЯ,
+            описание=описание,
+            записи=_записи_о_человеке(state),
+            доступные=[имя for имя, _ in profiles.available()],
+        )
+        return
     if parts[0] == "save":
         target = active_profile(state)
         name = parts[1].strip() if len(parts) > 1 else target.name
+        # Имя проверяем ДО того, как оно попало в живой профиль и на диск. Негодное имя здесь
+        # не опечатка, а путь: `/profile save ../../ключи` означал бы запись мимо каталога
+        # профилей. И живому профилю такое имя оставлять нельзя — следующий `/profile save`
+        # повторил бы попытку уже без довода.
+        беда_имени = profiles.проверить_имя(name)
+        if беда_имени:
+            append_log(state, ui.error_fragments(f"профиль не сохранён: {беда_имени}"))
+            return
+        прежнее_имя = target.name
         target.name = name
         try:
             path = profiles.save(target)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
+            # `ValueError` ловим наравне с `OSError`: без него отказ уходил бы в задачу
+            # `handle_submit`, где исключение снимается ради чистоты вывода, — и человек
+            # получил бы на свою команду ПУСТУЮ ленту, ни строки о том, что ничего не вышло.
+            target.name = прежнее_имя
             append_log(
                 state,
                 ui.error_fragments(f"не удалось сохранить профиль: {exc}"),
@@ -156,6 +359,12 @@ async def cmd_profile(state: State, arg: str) -> None:
         state.config.profile = name
         save_config(state.config)
         append_log(state, ui.system_fragments(f"профиль сохранён: {path}"))
+        соседняя = path.with_suffix(".md")
+        if соседняя.exists():
+            append_log(
+                state,
+                ui.hint_fragments(f"инструкция лежит рядом и правится руками: {соседняя}"),
+            )
         return
     await switch_profile(state, parts[0])
 

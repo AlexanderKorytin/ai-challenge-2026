@@ -189,9 +189,15 @@ async def handle_submit(
             if адресат is state.main:
                 await interview.принять_ответ(state, text)
                 return
+            # Имя обряда — у его рода, по той же причине, что и в подсказке Ctrl+C: обрядов
+            # два, и чужое имя послало бы человека искать то, чего он не начинал.
+            идущий = state.интервью.род if state.интервью is not None else None
             append_log(
                 state,
-                ui.hint_fragments("идёт интервью о проекте — ответьте на главном экране"),
+                ui.hint_fragments(
+                    f"идёт {идущий.имя if идущий is not None else 'интервью о проекте'}"
+                    " — ответьте на главном экране"
+                ),
                 destination_pane or адресат.pane,
             )
             return
