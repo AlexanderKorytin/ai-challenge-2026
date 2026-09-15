@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from string import Template
 from typing import Any
@@ -131,6 +131,9 @@ class Profile:
     methods: list[str] = field(default_factory=list)  # непусто — набор способов решения
     # какие шаги цепочки составляют её итог; пусто — все шаги в порядке исполнения
     result: list[str] = field(default_factory=list)
+    # Записи о человеке, с которыми это занятие расходится: дословно, как они лежат в
+    # глобальной памяти. Не выбрасывают запись из запроса, а помечают её — см. `memory.facts_block`.
+    overrides: list[str] = field(default_factory=list)
     vars: dict[str, Any] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     source: Path | None = None
@@ -161,6 +164,8 @@ class Profile:
                 snapshot["result"] = list(self.result)
         if self.methods:
             snapshot["methods"] = list(self.methods)
+        if self.overrides:
+            snapshot["overrides"] = list(self.overrides)
         return snapshot
 
     def to_dict(self) -> dict[str, Any]:
@@ -198,6 +203,8 @@ class Profile:
                 data["result"] = list(self.result)
         if self.methods:
             data["methods"] = list(self.methods)
+        if self.overrides:
+            data["overrides"] = list(self.overrides)
         if self.vars:
             data["vars"] = self.vars
         data.update(self.params)
@@ -224,13 +231,19 @@ def _upward_dirs(start: Path) -> list[Path]:
     return found
 
 
-def search_dirs() -> list[Path]:
+def search_dirs(cwd: Path | None = None) -> list[Path]:
+    """Каталоги поиска по убыванию близости. `cwd` — откуда считать «рядом»; умолчание —
+    каталог запуска.
+
+    Довод заведён затем, чтобы порядок жил в ОДНОМ месте: `target_dir` пишет новый профиль по
+    тому же порядку, и второй его список неизбежно разошёлся бы с этим — молча и в ту сторону,
+    где записанный профиль перекрыт одноимённым из ближнего каталога."""
     dirs: list[Path] = []
     env_dir = os.environ.get("MYHARNESS_PROFILES")
     if env_dir:
         dirs.append(Path(env_dir).expanduser())
     try:
-        dirs.extend(_upward_dirs(Path.cwd().resolve()))
+        dirs.extend(_upward_dirs((cwd or Path.cwd()).resolve()))
     except OSError:  # каталог запуска удалён из-под нас
         pass
     dirs.append(user_profiles_dir())
@@ -275,6 +288,32 @@ def _prefills(value: Any, warnings: list[str]) -> list[str]:
         else:
             warnings.append(f"в prefills пропущен элемент, который не текст: {элемент!r}")
     return очередь
+
+
+def _overrides(raw: Any, warnings: list[str]) -> list[str]:
+    """Записи о человеке, которые это занятие перекрывает. Мусор отбрасываем вслух.
+
+    Строки хранятся ДОСЛОВНО: сверяются они с записями глобальной памяти совпадением текста,
+    и любая «нормализация» здесь развела бы файл профиля с тем, что лежит в памяти.
+
+    Повтор отбрасываем по той же причине, что и в списках имён: записи уникальны, значит
+    повтор — опечатка, и молчание о ней скрывает её от человека."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        warnings.append("поле «overrides» — список записей о человеке, значение другого вида пропущено")
+        return []
+    записи: list[str] = []
+    for элемент in raw:
+        if not isinstance(элемент, str) or not элемент.strip():
+            warnings.append(f"поле «overrides»: {элемент!r} — не текст записи, пропущено")
+            continue
+        запись = элемент.strip()
+        if any(запись.casefold() == прежняя.casefold() for прежняя in записи):
+            warnings.append(f"поле «overrides»: «{запись}» указана повторно — второе упоминание пропущено")
+            continue
+        записи.append(запись)
+    return записи
 
 
 def _profile_names(raw: Any, field_name: str, warnings: list[str]) -> list[str]:
@@ -536,6 +575,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "methods",
         "layout",
         "result",
+        "overrides",
         "vars",
     }
 
@@ -615,6 +655,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         layout=_layout(data.get("layout"), screen_names, warnings),
         methods=_profile_names(data.get("methods"), "methods", warnings),
         result=result_names,
+        overrides=_overrides(data.get("overrides"), warnings),
         vars=dict(variables),
         params=collected,
         source=source,
@@ -660,9 +701,128 @@ def load(name: str) -> tuple[Profile, list[str]]:
     return builtin_default(), [f"профиль «{name}» не найден — взят default. Искали: {search_hint()}"]
 
 
-def save(profile: Profile) -> Path:
-    directory = user_profiles_dir()
+# Знаки, которых не бывает в имени профиля: имя приходит из ответа модели и становится
+# ИМЕНЕМ ФАЙЛА. Без проверки текст ответа решал бы, куда пишет программа, — «../../ключи» для
+# модели такая же строка, как «математик».
+ЗАПРЕЩЕНО_В_ИМЕНИ = ("/", "\\", "\0")
+
+
+def проверить_имя(name: str) -> str | None:
+    """Жалоба словами, если имя не годится файлу; `None` — имя годится.
+
+    Длину не ограничиваем: предел имени файла ставит сама система, и её отказ придёт
+    `OSError` с настоящей причиной. Своего потолка здесь быть не должно — он отказал бы там,
+    где человек назвал профиль верно.
+    """
+    имя = name or ""
+    if not имя.strip():
+        return "имя профиля пустое"
+    if имя != имя.strip():
+        # Имя с краевым пробелом создало бы файл «матем .json»: в перечне профилей он виден,
+        # а `/profile матем` его не находит — человек смотрит на профиль, который не
+        # выбирается. Обрезать за человека нельзя: `profile.name` ушёл бы в файл одним, а имя
+        # файла стало бы другим.
+        return "имя профиля начинается или кончается пробелом — уберите его"
+    if any(знак < " " for знак in имя):
+        return "в имени профиля есть управляющий знак — имя становится именем файла"
+    for знак in ЗАПРЕЩЕНО_В_ИМЕНИ:
+        показ = "\\0" if знак == "\0" else знак
+        if знак in имя:
+            return f"в имени профиля недопустим знак «{показ}»: имя становится именем файла"
+    if ".." in имя:
+        return "в имени профиля недопустимы две точки подряд: имя становится именем файла"
+    if имя.startswith("."):
+        return "имя профиля начинается с точки — такой файл не виден в перечне профилей"
+    return None
+
+
+def target_dir(cwd: Path) -> Path:
+    """Куда лечь НОВОМУ профилю: первый существующий каталог из порядка поиска.
+
+    Порядок тот же, по которому профили ищутся, и это не удобство, а условие работоспособности:
+    запиши мы профиль в дальний каталог, одноимённый из ближнего перекрыл бы его — и человек
+    правил бы файл, который в запрос не уходит.
+
+    Не существует ни одного каталога — личный: он единственный, чьё появление не зависит от
+    того, откуда запущен инструмент.
+    """
+    личный = user_profiles_dir()
+    return next((каталог for каталог in search_dirs(cwd) if каталог.is_dir()), личный)
+
+
+def save_pair(
+    profile: Profile, directory: Path, *, перезаписывать: bool = False
+) -> tuple[Path, Path | None]:
+    """Кладёт профиль ПАРОЙ файлов: `<имя>.json` и, при непустой инструкции, `<имя>.md`.
+
+    Пара — не украшение: в JSON длинный текст превращается в одну строку с экранированными
+    переносами, и профиль, записанный программой, нельзя ни прочитать в редакторе, ни сравнить
+    с прежней версией. Требование «Профиль хранится парой файлов» до сих пор выполнялось только
+    у профилей, написанных руками.
+
+    Без `перезаписывать` лежащие файлы дают `FileExistsError`: профиль с этим именем мог быть
+    написан человеком, и тот, кто заводит НОВЫЙ, не вправе стереть его молча. С
+    `перезаписывать` (это `/profile save`, где имя назвал сам человек) файлы заменяются — но
+    `.md` при этом НЕ удаляется никогда: имени `.md` человек не называл, а в нём может лежать
+    его собственный текст с `$переменными`, которых в `profile.system` уже нет — там стоят
+    подставленные значения.
+
+    Оба файла или ни одного. Текст JSON собирается ДО первой записи на диск: соберись он
+    после, непригодное к записи значение в `vars` оставило бы рядом `.md`-сироту, а сирота
+    занимает имя — повторная попытка получила бы «имя занято» для профиля, которого нет.
+    """
+    жалоба = проверить_имя(profile.name)
+    if жалоба:
+        raise ValueError(жалоба)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{profile.name}.json"
-    path.write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return path
+    путь_json = directory / f"{profile.name}.json"
+    инструкция = (profile.system or "").strip()
+    путь_md = directory / f"{profile.name}.md" if инструкция else None
+    if not перезаписывать:
+        лежат = [путь for путь in (путь_json, путь_md) if путь is not None and путь.exists()]
+        if лежат:
+            raise FileExistsError(", ".join(str(путь) for путь in лежат))
+
+    данные = replace(profile, system_file=путь_md.name) if путь_md else profile
+    текст_json = json.dumps(данные.to_dict(), ensure_ascii=False, indent=2) + "\n"
+
+    написан_md = False
+    try:
+        if путь_md is not None:
+            # Режим «x» вместо проверки существования: между `exists()` и записью успевает
+            # вклиниться вторая запущенная копия инструмента, а на висящей ссылке `exists()`
+            # вернул бы «нет» и запись ушла бы по ссылке наружу каталога.
+            режим = "w" if перезаписывать else "x"
+            with open(путь_md, режим, encoding="utf-8") as файл:
+                файл.write(инструкция + "\n")
+            написан_md = True
+        режим = "w" if перезаписывать else "x"
+        with open(путь_json, режим, encoding="utf-8") as файл:
+            файл.write(текст_json)
+    except FileExistsError:
+        # Имя заняли между проверкой и записью. `.md` убираем, только если написали его сами.
+        if написан_md and путь_md is not None:
+            путь_md.unlink(missing_ok=True)
+        raise
+    except BaseException:
+        # Любой сбой, а не только `OSError`: сирота `.md` занял бы имя профиля, которого нет.
+        if написан_md and путь_md is not None and not перезаписывать:
+            путь_md.unlink(missing_ok=True)
+        raise
+    return путь_json, путь_md
+
+
+def save(profile: Profile) -> Path:
+    """`/profile save`: записать текущий профиль под своим именем в личный каталог.
+
+    Перезапись своим именем здесь законна: человек сам назвал имя и сам видит, что профиль с
+    ним уже есть. Этим `save` и отличается от `save_pair` без довода, который чужого файла не
+    трогает вовсе.
+
+    Файлы НЕ удаляются заранее, и это не мелочь. Удаляй мы их до записи — негодное имя
+    («../../ключи») стирало бы посторонний файл ДО того, как имя проверено, а нечитаемый `.md`
+    исчезал бы навсегда: при сбое чтения `profile.system` пуст, и записывать на его место было
+    бы нечего.
+    """
+    путь_json, _ = save_pair(profile, user_profiles_dir(), перезаписывать=True)
+    return путь_json

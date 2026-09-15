@@ -912,7 +912,7 @@ class Agent:
         if self._facts is None:
             return ""
         try:
-            return memory.facts_block(self._facts())
+            return memory.facts_block(self._facts(), перекрытые=self.profile.overrides)
         except Exception:  # noqa: BLE001 — источник фактов приходит снаружи
             return ""
 
@@ -1372,7 +1372,7 @@ class Agent:
         block = ""
         if self._facts is not None:
             try:
-                block = memory.facts_block(self._facts())
+                block = memory.facts_block(self._facts(), перекрытые=self.profile.overrides)
             except Exception as exc:  # noqa: BLE001 — источник фактов приходит снаружи
                 жалобы.append(f"не удалось прочитать глобальную память: {exc}")
         card = ""
