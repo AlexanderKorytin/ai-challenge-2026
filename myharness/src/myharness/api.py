@@ -31,10 +31,14 @@ EXTRA_BODY_PARAMS = ("thinking", "reasoning_effort")
 
 @dataclass
 class StreamEvent:
-    kind: str  # "reasoning" | "content" | "meta"
+    kind: str  # "reasoning" | "content" | "tool_calls" | "meta"
     text: str = ""
     finish_reason: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
+    # Только у события "tool_calls": вызовы инструментов круга, склеенные из кусков, по
+    # порядку номера. Каждый — `{"id", "type": "function", "function": {"name",
+    # "arguments"}}`, доводы — строка JSON как пришла: разбирает их исполнитель, не поток.
+    calls: list[dict] = field(default_factory=list)
 
 
 class AuthError(Exception):
@@ -45,6 +49,41 @@ def split_params(params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]
     direct = {k: v for k, v in params.items() if k in DIRECT_PARAMS and v is not None}
     extra = {k: v for k, v in params.items() if k in EXTRA_BODY_PARAMS and v is not None}
     return direct, extra
+
+
+def _копить_вызов(вызовы: dict[int, dict[str, str]], кусок: Any) -> None:
+    """Добавить один кусок `delta.tool_calls` к накопленному вызову с тем же номером.
+
+    `id` и имя берутся первые непустые: сервер присылает их в первом куске, а в следующих
+    оставляет пустыми, и перезапись пустым стёрла бы имя. Доводы склеиваются по порядку."""
+    номер = getattr(кусок, "index", None)
+    if isinstance(номер, bool) or not isinstance(номер, int):
+        # Кусок без номера — продолжение последнего вызова, а не новый вызов: иначе его
+        # части доводов стали бы отдельным вызовом без имени.
+        номер = max(вызовы) if вызовы else 0
+    вызов = вызовы.setdefault(номер, {"id": "", "name": "", "arguments": ""})
+    if not вызов["id"] and getattr(кусок, "id", None):
+        вызов["id"] = кусок.id
+    функция = getattr(кусок, "function", None)
+    if функция is None:
+        return
+    if not вызов["name"] and getattr(функция, "name", None):
+        вызов["name"] = функция.name
+    части = getattr(функция, "arguments", None)
+    if части:
+        вызов["arguments"] += части
+
+
+def _собрать_вызовы(вызовы: dict[int, dict[str, str]]) -> list[dict]:
+    """Накопленные вызовы в виде сообщения API, по порядку номера."""
+    return [
+        {
+            "id": вызов["id"],
+            "type": "function",
+            "function": {"name": вызов["name"], "arguments": вызов["arguments"]},
+        }
+        for _, вызов in sorted(вызовы.items())
+    ]
 
 
 class DeepSeekClient:
@@ -69,9 +108,20 @@ class DeepSeekClient:
         model: str,
         messages: list[dict],
         params: dict[str, Any] | None = None,
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Потоковый ответ. Последним отдаёт событие "meta" с причиной остановки и расходом токенов."""
+        """Потоковый ответ. Последним отдаёт событие "meta" с причиной остановки и расходом токенов.
+
+        `tools` уходит в запрос прямым доводом и только непустым: без инструментов запрос
+        остаётся байт в байт прежним. Вызовы модели приходят кусками `delta.tool_calls`:
+        первый кусок вызова несёт `index`, `id`, `type` и имя с пустыми доводами, следующие с
+        тем же `index` — части строки доводов (живой замер 2026-09-16). Куски копятся
+        словарём по номеру и отдаются ОДНИМ событием "tool_calls" после всего текста и перед
+        "meta": вызов по половине доводов исполнять нельзя, а номер, а не порядок прихода,
+        держит части каждого вызова вместе."""
         direct, extra_body = split_params(params or {})
+        if tools:
+            direct["tools"] = tools
         response = await self._client.chat.completions.create(
             model=model,
             messages=messages,
@@ -82,6 +132,7 @@ class DeepSeekClient:
         )
         finish_reason: str | None = None
         usage: dict[str, Any] = {}
+        вызовы: dict[int, dict[str, str]] = {}
         # Поток закрываем явно: иначе HTTP-соединение остаётся подвешенным до сборки мусора,
         # и при выходе сыплются ошибки закрытия асинхронных генераторов — особенно заметно,
         # когда ответ оборван по max_tokens или запрос отменён на полуслове.
@@ -102,6 +153,10 @@ class DeepSeekClient:
                     yield StreamEvent("reasoning", reasoning)
                 if delta.content:
                     yield StreamEvent("content", delta.content)
+                for кусок in getattr(delta, "tool_calls", None) or ():
+                    _копить_вызов(вызовы, кусок)
+        if вызовы:
+            yield StreamEvent("tool_calls", calls=_собрать_вызовы(вызовы))
         yield StreamEvent("meta", finish_reason=finish_reason, usage=usage)
 
     async def aclose(self) -> None:

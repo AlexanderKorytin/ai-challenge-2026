@@ -246,7 +246,13 @@ def _predict_outgoing(state: State, agent_obj: Agent, content: str) -> int:
         превью.append({"role": "system", "content": системная})
     превью.append({"role": "user", "content": content})
     обёртка = agent_obj.overhead(state.model)
-    return tokens.count_messages(превью, overhead=обёртка) + agent_obj.history_tokens()
+    # Описания инструментов — по последнему обмену: поставщика на каждый запрос отсюда не
+    # зовём, и после включения или снятия паузы число отстаёт на один обмен.
+    return (
+        tokens.count_messages(превью, overhead=обёртка)
+        + agent_obj.history_tokens()
+        + agent_obj.вес_инструментов
+    )
 
 
 def _show_wait(
@@ -316,6 +322,10 @@ def draw_event(state: State, pane: screens_mod.Pane, event: api.StreamEvent, mar
     Строку ожидания событие больше не гасит: она живёт весь обмен, а свой кусок текста
     событие печатает ниже неё.
     """
+    if event.kind == "tool_calls":
+        # Показ вызова инструмента — шаг 8. До него событие пропускается: текста у него нет,
+        # и дальше оно напечаталось бы пустым ярлыком ответа.
+        return
     if event.kind in ("reasoning", "content"):
         # Кусок потока считаем за токен: живой замер 2026-09-09 дал 180 кусков размышления
         # при `reasoning_tokens` = 180. Число приблизительное и живёт до конца обмена —
@@ -459,8 +469,8 @@ def _warn_if_over_window(state: State, pane: screens_mod.Pane, agent_obj: Agent,
     ответа сервера: ошибись мы в большую сторону — и человек не смог бы отправить запрос,
     который на самом деле проходит. Наше дело — назвать причину заранее, а решает сервер.
     """
-    место_под_ответ = agent_obj.profile.params.get("max_tokens") or 0
-    всего = предсказание + (место_под_ответ if isinstance(место_под_ответ, int) else 0)
+    всего = agent_obj.с_местом_под_ответ(предсказание)
+    место_под_ответ = всего - предсказание
     if всего <= tokens.CONTEXT_WINDOW:
         return
     append_log(

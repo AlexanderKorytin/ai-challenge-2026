@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -56,6 +56,9 @@ WINDOW_SLACK_PAIRS = 5
 # рассуждениями весит больше. Число не из документации, а из наблюдения: на живом прогоне
 # при остатке в 81 токен модель израсходовала его на рассуждения и ответ не начала.
 ОСТАТОК_НА_ОТВЕТ = 500
+
+# Исход обмена, чей круг инструментов прервала команда `/clear`.
+ОЧИЩЕН_ПОСРЕДИ_КРУГА = "разговор очищен посреди круга — дальнейшие вызовы не исполнены"
 
 # Потолок правдоподобия для подстроенной надбавки обёртки. Обёртка — это разделители ролей,
 # то есть десятки токенов; тысяча взята с запасом в десять раз от замеренных 83. Всё, что
@@ -225,6 +228,19 @@ def раскрыть(сообщения: list[dict], полные: bool, *, ко
 
 
 @dataclass
+class Инструменты:
+    """Набор инструментов одного обмена: что предложить модели и как исполнить вызов.
+
+    Агент смысла инструментов не знает — схемы уходят в запрос как есть, а вызов уходит
+    исполнителю именем и строкой доводов JSON как пришла. Исполнитель возвращает текст
+    результата; его исключение агент превращает в текст «ошибка инструмента: …», и круг
+    продолжается: модель должна узнать о сбое, а не потерять весь обмен."""
+
+    схемы: list[dict]
+    исполнить: Callable[[str, str], Awaitable[str]]
+
+
+@dataclass
 class Turn:
     """Итог одного обмена с моделью — тем, кто позвал: тексту ответа и цене.
 
@@ -290,6 +306,9 @@ class Turn:
     branch: str | None = None
     branch_head: str | None = None
     branch_checkpoint: str | None = None
+    # Сообщения круга инструментов по порядку: ответы модели с вызовами и результаты с ролью
+    # `tool`. Пусто, если модель ничего не вызывала или инструментов в обмене не было.
+    звенья: list[dict] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -311,6 +330,7 @@ class Agent:
         branch: str | None = None,
         project: Callable[[], str] | None = None,
         work: Callable[[], str] | None = None,
+        инструменты: Callable[[], Инструменты | None] | None = None,
     ) -> None:
         self.name = name
         self.profile = profile
@@ -330,6 +350,19 @@ class Agent:
         # пакетный наряд и архивариус собирают ровно тот же запрос, что и до появления слоёв.
         self._project = project
         self._work = work
+        # Поставщик инструментов — ВЫЗЫВАЕМЫЙ по той же причине, что `work`: есть ли у
+        # обмена инструменты, решает состояние задачи на миг запроса (пауза, закрытая
+        # задача), а не миг создания агента. Зовётся ровно один раз за обмен, в его начале:
+        # набор, сменившийся посреди круга, предложил бы модели не те инструменты, что
+        # взвешены и отправлены. Умолчание — `None`: служебные агенты (архивариус,
+        # сжиматель, извлекатель фактов, исполнители группы) инструментов не получают.
+        self._инструменты = инструменты
+        # Вес описаний инструментов ПОСЛЕДНЕГО обмена — для тех, кто взвешивает запрос вне
+        # обмена (полоска занятости, заготовка выжимки, строка ожидания). Звать поставщика на
+        # каждое нажатие клавиши нельзя: он читает состояние задачи. Цена — отставание на один
+        # обмен: после включения или снятия паузы первый расчёт вне обмена ещё несёт прежний
+        # вес. Сама обрезка внутри обмена получает точный вес доводом.
+        self._вес_инструментов = 0
         # Хранилища новых стратегий тоже приходят готовыми. Агент не знает рабочего каталога
         # и не выбирает путь сам: пакетный агент может законно жить вообще без диска.
         self._facts_store = facts_store
@@ -1081,6 +1114,45 @@ class Agent:
         except Exception:  # noqa: BLE001 — поставщик рабочего состояния приходит снаружи
             return ""
 
+    @property
+    def вес_инструментов(self) -> int:
+        """Вес описаний инструментов последнего обмена; отстаёт на один обмен (см. `__init__`)."""
+        return self._вес_инструментов
+
+    def с_местом_под_ответ(self, предсказание: int) -> int:
+        """Вес запроса вместе с местом под ответ — то, что сервер сравнивает с окном модели.
+
+        Место под ответ входит в окно, а не идёт сверх него: живой отказ 2026-09-09 сложил
+        1 047 324 токена сообщений и 2000 запрошенного ответа и сравнил сумму с окном. Одно
+        правило на двоих: предупреждение до отправки (`output._warn_if_over_window`) и
+        остановку круга инструментов перед очередным потоком."""
+        место = self.profile.params.get("max_tokens") or 0
+        if isinstance(место, bool) or not isinstance(место, int):
+            место = 0
+        return предсказание + место
+
+    def _набор_инструментов(self) -> tuple[Инструменты | None, str | None]:
+        """Набор инструментов этого обмена и жалоба: поставщик зовётся здесь и один раз.
+
+        Сбой поставщика — «инструментов нет» плюс жалоба, по образцу `_с_хвостом`: обмен
+        без инструментов остаётся годным ответом, а молча пропавшие инструменты отлаживались
+        бы как «модель не хочет вести задачу». Набор чужого вида — тоже жалоба."""
+        if self._инструменты is None:
+            return None, None
+        try:
+            набор = self._инструменты()
+        except Exception as exc:  # noqa: BLE001 — поставщик инструментов приходит снаружи
+            return None, f"не удалось получить инструменты: {exc}"
+        if набор is None:
+            return None, None
+        if not isinstance(набор, Инструменты):
+            return None, f"поставщик инструментов вернул не набор ({type(набор).__name__})"
+        if not набор.схемы:
+            # Пустой набор — то же, что его отсутствие: `tools` без элементов в запрос не
+            # уходит, а раскрывать пары и ждать вызовов тогда незачем.
+            return None, None
+        return набор, None
+
     def _с_хвостом(self, content: str) -> tuple[str, str | None]:
         """Текст последнего сообщения запроса и жалоба: рабочее состояние, пустая строка, вопрос.
 
@@ -1204,7 +1276,7 @@ class Agent:
         порог = self.порог_сжатия() if self.profile.keep_history else 0
         предел = self.profile.budget_tokens
         if порог > 0 or предел > 0:
-            вес = self._вес(content, facts, card, model)
+            вес = self._вес(content, facts, card, model, self._вес_инструментов)
             if порог > 0:
                 список.append(Ограничитель(ПОРОГ_СЖАТИЯ, "токенов", вес, порог))
             if предел > 0:
@@ -1262,7 +1334,9 @@ class Agent:
         preview.append({"role": "user", "content": content})
         return preview
 
-    def _вес(self, content: str, facts: str, card: str, model: str) -> int:
+    def _вес(
+        self, content: str, facts: str, card: str, model: str, вес_инструментов: int = 0
+    ) -> int:
         """Предсказанный вес будущего запроса при нынешней памяти и нынешней выжимке.
 
         Системная часть пересобирается на каждый замер намеренно: посреди обрезки заготовка
@@ -1275,8 +1349,15 @@ class Agent:
         `content` здесь — текст последнего сообщения ЦЕЛИКОМ, то есть с эфемерным хвостом
         рабочего состояния, если он есть: взвешивать надо ровно то, что уйдёт в модель.
         Склейку делает вызывающий, `build_messages`, и делает её один раз на всю обрезку.
+
+        `вес_инструментов` — вес описаний инструментов этого запроса (`tokens.count_tools`),
+        посчитанный вызывающим один раз: описания уходят в запрос рядом с разговором, и
+        обрезка, не знающая их веса, решала бы «влезает» там, где не влезает. Числом, а не
+        признаком «запрос с инструментами», — набор меняется от обмена к обмену, и взвешивать
+        надо тот, что уйдёт сейчас. Ноль — инструментов нет, вес прежний.
         """
-        return self.predict_tokens(self._preview(content, self._система(facts, card)), model)
+        система = self._система(facts, card)
+        return self.predict_tokens(self._preview(content, система), model) + вес_инструментов
 
     def _выбросить(self, требуется: int) -> int:
         """Выбросить старейшие пары — не меньше, чем требует ограничитель. Возвращает сколько.
@@ -1332,7 +1413,15 @@ class Agent:
         self._forgotten_pairs += сколько - покрыто
         return сколько
 
-    def _срезать_по_весу(self, предел: int, content: str, facts: str, card: str, model: str) -> int:
+    def _срезать_по_весу(
+        self,
+        предел: int,
+        content: str,
+        facts: str,
+        card: str,
+        model: str,
+        вес_инструментов: int = 0,
+    ) -> int:
         """Резать блоками, пока вес запроса не уложится в предел. Возвращает число пар.
 
         Общий цикл для двух весовых ограничителей — порога сжатия и предела профиля. Они
@@ -1348,7 +1437,10 @@ class Agent:
         if предел <= 0:
             return 0
         выброшено = 0
-        while len(self._messages) > 2 and self._вес(content, facts, card, model) > предел:
+        while (
+            len(self._messages) > 2
+            and self._вес(content, facts, card, model, вес_инструментов) > предел
+        ):
             ушло = self._выбросить(WINDOW_SLACK_PAIRS)
             if ушло <= 0:
                 # Выбрасывать больше нечего: осталась защищённая последняя пара. Здесь же
@@ -1359,7 +1451,15 @@ class Agent:
             выброшено += ушло
         return выброшено
 
-    def _trim(self, content: str, *, facts: str = "", card: str = "", model: str = "") -> int:
+    def _trim(
+        self,
+        content: str,
+        *,
+        facts: str = "",
+        card: str = "",
+        model: str = "",
+        вес_инструментов: int = 0,
+    ) -> int:
         """Обрезать память. Возвращает число выброшенных пар — сжатых и забытых вместе.
 
         `content` — текст последнего сообщения целиком, то есть вопрос вместе с эфемерным
@@ -1403,20 +1503,11 @@ class Agent:
         # запрос не идёт, на вес не влияет, и цикл, не проверяй он этого, выбрасывал бы пару
         # за парой, ничего не добиваясь, — пока не упёрся бы в последнюю.
         порог = self.порог_сжатия() if self.profile.keep_history else 0
-        dropped += self._срезать_по_весу(порог, content, facts, card, model)
+        dropped += self._срезать_по_весу(порог, content, facts, card, model, вес_инструментов)
         budget = self.profile.budget_tokens if self.profile.keep_history else 0
-        dropped += self._срезать_по_весу(budget, content, facts, card, model)
-        # Признак «предел не сработал»: обрезка сделала что могла, а запрос всё равно тяжелее
-        # бюджета — потому что системная часть с фактами и сам вопрос уже перевешивают предел,
-        # а их выбросить нельзя. Молчать об этом нельзя: предел, который тихо не сработал,
-        # хуже отсутствующего — на отсутствующий человек хотя бы не рассчитывает.
-        # Считаем по ПРЕДЕЛУ ПРОФИЛЯ, а не по `budget`: у профиля с выключенной историей
-        # `budget` обнулён, потому что резать нечего, — но это не значит, что предел
-        # соблюдён. Инструкция и вопрос могут перевешивать его и там, и молчать об этом
-        # нельзя: получилось бы, что предел не срабатывает и не жалуется именно у того
-        # профиля, где его нельзя выправить обрезкой.
-        предел = self.profile.budget_tokens
-        self._over_budget = bool(предел > 0 and self._вес(content, facts, card, model) > предел)
+        dropped += self._срезать_по_весу(budget, content, facts, card, model, вес_инструментов)
+        # Признак «предел не сработал» ставит `build_messages` по собранному запросу, а не
+        # обрезка по полному весу памяти: см. там.
         # Поднятых с диска пар не может быть больше, чем пар в памяти: обрезка только что
         # могла выбросить как раз их. Оставь число прежним — и запись прогона утверждала бы,
         # что обмену предшествовал подъём десяти пар, которых в запросе нет ни одной.
@@ -1426,7 +1517,14 @@ class Agent:
         self.passed_pairs += dropped
         return dropped
 
-    def build_messages(self, content: str, model: str = "", *, полные: bool = False) -> list[dict]:
+    def build_messages(
+        self,
+        content: str,
+        model: str = "",
+        *,
+        полные: bool = False,
+        вес_инструментов: int = 0,
+    ) -> list[dict]:
         """Политика входа: что именно уйдёт в модель на этот вопрос.
 
         Имя модели нужно не сборке, а обрезке внутри неё: надбавка обёртки подстраивается
@@ -1499,7 +1597,10 @@ class Agent:
         больше двух, и деление пополам дало бы неверное число.
 
         Обрезка при этом взвешивает память полным раскрытием и при `полные=False` — см.
-        `_вес_памяти`."""
+        `_вес_памяти`.
+
+        `вес_инструментов` — вес описаний инструментов, которые уйдут рядом с запросом; он
+        входит и в обрезку, и в признак перевеса (см. `_вес`)."""
         # Жалобы копятся списком и ложатся в `store_error` разом. Присваивай их по очереди —
         # и вторая затирала бы первую: человеку сказали бы про карточку и промолчали про
         # записи, хотя пропали оба слоя.
@@ -1539,7 +1640,13 @@ class Agent:
             else None
         )
         if strategy == context_strategy.CONTEXT_STANDARD:
-            self._dropped_pairs = self._trim(payload, facts=block, card=card, model=model)
+            self._dropped_pairs = self._trim(
+                payload,
+                facts=block,
+                card=card,
+                model=model,
+                вес_инструментов=вес_инструментов,
+            )
             system = self._система(block, card)
             self._summary_sent = bool(self._блок_выжимки())
             selected_messages = list(self._messages) if self.profile.keep_history else []
@@ -1586,11 +1693,21 @@ class Agent:
         # а не свойство выбора истории. Пропусти его здесь — и слой памяти молча исчезал бы у
         # трёх стратегий из четырёх, причём узнать об этом человеку было бы неоткуда.
         messages.append({"role": "user", "content": payload})
-        if strategy != context_strategy.CONTEXT_STANDARD:
-            limit = self.profile.budget_tokens
-            self._over_budget = bool(
-                limit > 0 and self.predict_tokens(messages, model) > limit
-            )
+        # Признак «предел не сработал»: обрезка сделала что могла, а запрос всё равно тяжелее
+        # предела — системная часть, вопрос и описания инструментов уже перевешивают его, а
+        # их выбросить нельзя. Молчать об этом нельзя: предел, который тихо не сработал, хуже
+        # отсутствующего — на отсутствующий человек хотя бы не рассчитывает.
+        #
+        # Считаем по СОБРАННОМУ запросу у всех стратегий, а не по полному весу памяти, как
+        # взвешивает обрезка: полный вес включает звенья и рассуждения, которые голый запрос
+        # (пауза автомата) не несёт, и человеку сказали бы «запрос тяжелее предела» про
+        # запрос, ушедший в пределе. Предел берём ПРОФИЛЯ, а не обнулённый у профиля без
+        # истории: там инструкция и вопрос тоже могут его перевешивать, и жаловаться надо
+        # именно там, где обрезка ничего не выправит.
+        limit = self.profile.budget_tokens
+        self._over_budget = bool(
+            limit > 0 and self.predict_tokens(messages, model) + вес_инструментов > limit
+        )
         return messages
 
     async def exchange(
@@ -1617,22 +1734,50 @@ class Agent:
         effective_run_id = run_id
         if strategy == context_strategy.CONTEXT_FACTS and effective_run_id is None:
             effective_run_id = uuid4().hex
-        request_messages = self.build_messages(content, model)
+        набор, жалоба_набора = self._набор_инструментов()
+        вес_инструментов = tokens.count_tools(набор.схемы) if набор is not None else 0
+        self._вес_инструментов = вес_инструментов
+        request_messages = self.build_messages(
+            content,
+            model,
+            полные=набор is not None,
+            вес_инструментов=вес_инструментов,
+        )
+        if жалоба_набора:
+            # После сборки: она сама пишет в `store_error`, и жалоба на набор, положенная
+            # раньше, была бы затёрта жалобой на записи или карточку.
+            self.store_error = "; ".join(
+                part for part in (self.store_error, жалоба_набора) if part
+            )
         selected_pairs = self._selected_pairs
         omitted_pairs = self._omitted_pairs
         branch_head = self._request_branch_head
         branch_checkpoint = self._branch_checkpoint
         # Оба числа снимаются до ответа: память и запрос ещё описывают один и тот же ход.
         history_tokens = self.history_tokens()
-        text_tokens = tokens.count_messages(request_messages, overhead=0)
-        predicted = self.predict_tokens(request_messages, model)
+        # Описания инструментов — часть входа, за который сервер назовёт `prompt_tokens`:
+        # без них калибровка списала бы их вес на обёртку разговора.
+        text_tokens = tokens.count_messages(request_messages, overhead=0) + вес_инструментов
+        predicted = self.predict_tokens(request_messages, model) + вес_инструментов
         self.task = content
         generation = self._generation
 
         answer_text = ""
         reasoning_text = ""
+        # Рассуждения итогового круга отдельно от общих: в приложение пары ложатся только
+        # они, рассуждения промежуточных кругов уже лежат в своих звеньях.
+        final_reasoning = ""
         finish_reason: str | None = None
         usage: dict[str, Any] = {}
+        # Расход каждого круга как прислал сервер; сумма собирается после обмена.
+        round_usages: list[dict[str, Any]] = []
+        звенья: list[dict] = []
+        # Почему круг остановлен до ответа модели: разговор очищен или следующий запрос не
+        # влезет в окно. `None` — круг дошёл до итогового ответа или не начинался.
+        круг_прерван: str | None = None
+        # Предупреждения «следующий круг не влезет в окно» — по одному на круг, где оценка
+        # превысила окно. Запрос при этом уходил; см. сверку перед потоком.
+        предупреждения_окна: list[str] = []
         status = "error"
         error_text: str | None = None
         render_error: str | None = None
@@ -1642,26 +1787,127 @@ class Agent:
         started = time.monotonic()
 
         async def consume_main() -> None:
-            nonlocal answer_text, reasoning_text, finish_reason, usage, render_error
-            async for event in client.stream_chat(
-                model, request_messages, self.profile.params
-            ):
-                if on_event is not None:
-                    try:
-                        on_event(event)
-                    except Exception as exc:
-                        # Отрисовка живёт снаружи агента: её сбой не является сетевым.
-                        render_error = (
-                            f"ответ получен, но показать его не удалось: {exc}"
+            """Круг «поток → вызовы → результаты → поток», пока модель не ответит без вызовов.
+
+            Предела числа кругов нет — это решение пользователя и правило проекта: круг
+            кончает модель, а человек в любой миг останавливает его отменой. Звенья каждого
+            круга дописываются к запросу, и следующий поток видит всю цепочку, — так требует
+            DeepSeek. `answer_text` — текст ТЕКУЩЕГО круга: к концу обмена это текст
+            итогового, а текст промежуточных живёт в их звеньях."""
+            nonlocal answer_text, reasoning_text, final_reasoning, finish_reason
+            nonlocal render_error, request_messages, круг_прерван
+            рассуждения_кругов: list[str] = []
+            номер_вызова = 0
+            первый_круг = True
+            while True:
+                if not первый_круг:
+                    # Перед КАЖДЫМ следующим потоком две сверки. Первая: `/clear` посреди
+                    # круга — забытый разговор не должен ни уходить в модель, ни тратить
+                    # деньги. Вторая: результат инструмента мог раздуть запрос сверх окна.
+                    # Тогда запрос всё равно УХОДИТ, а человеку говорится заранее — то же
+                    # правило, что у первого запроса (`output._warn_if_over_window`): своя
+                    # оценка веса звеньев приблизительна, отвергнутый запрос не оплачивается,
+                    # а побочные действия инструментов к этому мигу уже случились.
+                    if self._generation != generation:
+                        круг_прерван = ОЧИЩЕН_ПОСРЕДИ_КРУГА
+                        return
+                    вес = self.predict_tokens(request_messages, model) + вес_инструментов
+                    всего = self.с_местом_под_ответ(вес)
+                    if всего > tokens.CONTEXT_WINDOW:
+                        предупреждения_окна.append(
+                            f"следующий круг занял бы по оценке {всего} из "
+                            f"{tokens.CONTEXT_WINDOW} (включая место под ответ) — "
+                            "сервер может отказать"
                         )
-                if event.kind == "meta":
-                    finish_reason = event.finish_reason
-                    usage = event.usage
-                    continue
-                if event.kind == "reasoning":
-                    reasoning_text += event.text
-                else:
-                    answer_text += event.text
+                первый_круг = False
+                answer_text = ""
+                round_reasoning = ""
+                calls: list[dict] = []
+                # `tools` передаётся ключевым доводом только при наборе: клиенты без
+                # инструментов (и поддельные в проверках) знают лишь три довода.
+                доводы = {"tools": набор.схемы} if набор is not None else {}
+                async for event in client.stream_chat(
+                    model, request_messages, self.profile.params, **доводы
+                ):
+                    if on_event is not None:
+                        try:
+                            on_event(event)
+                        except Exception as exc:
+                            # Отрисовка живёт снаружи агента: её сбой не является сетевым.
+                            render_error = (
+                                f"ответ получен, но показать его не удалось: {exc}"
+                            )
+                    if event.kind == "meta":
+                        finish_reason = event.finish_reason
+                        round_usages.append(event.usage or {})
+                        continue
+                    if event.kind == "tool_calls":
+                        calls.extend(event.calls)
+                    elif event.kind == "reasoning":
+                        round_reasoning += event.text
+                        # Общие рассуждения копятся по ходу, а не после круга: при сбое
+                        # посреди потока журнал должен нести то, что уже пришло.
+                        reasoning_text = "\n\n".join([*рассуждения_кругов, round_reasoning])
+                    else:
+                        answer_text += event.text
+                if round_reasoning:
+                    рассуждения_кругов.append(round_reasoning)
+                if not calls or набор is None:
+                    final_reasoning = round_reasoning
+                    return
+                # Пустой `id` от сервера заменяется местным: результат обязан сослаться на свой
+                # вызов, а пустая ссылка не отличает двух вызовов. Номер сквозной на обмен —
+                # местные имена не совпадут и между кругами.
+                calls = [
+                    вызов if вызов.get("id") else {**вызов, "id": f"call_{номер_вызова + i}"}
+                    for i, вызов in enumerate(calls)
+                ]
+                номер_вызова += len(calls)
+                звено: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": answer_text,
+                    "tool_calls": calls,
+                }
+                # Ключ ставится только у непустых рассуждений — то же правило, что у
+                # `раскрыть`: продолжение после результата законно приходит без них.
+                if round_reasoning:
+                    звено["reasoning_content"] = round_reasoning
+                круг = [звено]
+                for вызов in calls:
+                    if self._generation != generation:
+                        круг_прерван = ОЧИЩЕН_ПОСРЕДИ_КРУГА
+                        # Частичный круг — звено с вызовами и готовые результаты — уходит в
+                        # звенья журнала: побочные действия уже случились, и при разборе их
+                        # должно быть видно. В память он не ляжет: исход обмена — ошибка.
+                        звенья.extend(круг)
+                        return
+                    функция = вызов.get("function") or {}
+                    try:
+                        результат = await набор.исполнить(
+                            функция.get("name", ""), функция.get("arguments", "")
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 — исполнитель приходит снаружи
+                        результат = f"ошибка инструмента: {exc}"
+                    # Исполнитель мог поймать отмену и вернуть строку. Запрос на отмену при
+                    # этом остаётся на задаче — его и уважаем, иначе Ctrl+C посреди
+                    # инструмента молча продолжил бы круг.
+                    текущая = asyncio.current_task()
+                    if текущая is not None and текущая.cancelling():
+                        raise asyncio.CancelledError
+                    круг.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": вызов["id"],
+                            "content": результат,
+                        }
+                    )
+                звенья.extend(круг)
+                # Новый список, а не дописывание на месте: запрос первого круга мог уже
+                # уйти наружу (поддельный клиент, отрисовка), и правка задним числом
+                # переписала бы то, что тот видел.
+                request_messages = [*request_messages, *круг]
 
         main_task: asyncio.Task[None] | None = None
         facts_task: asyncio.Task[Turn] | None = None
@@ -1767,12 +2013,27 @@ class Agent:
             # описывать реальное состояние на выходе, а не только успешную запись.
             facts_revision_after = self._conversation_facts.revision
 
+        # Один круг — расход как прислал сервер, байт в байт прежний. Несколько — сумма
+        # накопителем: обмен стоил все свои запросы, и счётчики, журнал и `Turn` называют
+        # одну и ту же сумму.
+        if len(round_usages) == 1:
+            usage = round_usages[0]
+        elif round_usages:
+            usage = tokens.total_usage(round_usages)
         elapsed = time.monotonic() - started
         snapshot = self.profile.snapshot()
-        if status == "ok" and not answer_text:
+        if status == "ok" and круг_прерван is not None:
+            # Раньше проверки пустоты: у прерванного круга текст может быть, но это текст
+            # промежуточного круга, а не ответ, и в память он лечь не должен.
+            status = "error"
+            error_text = круг_прерван
+        elif status == "ok" and not answer_text:
             status = "error"
             if finish_reason == "length":
-                вход = tokens.normalize(usage)["prompt_tokens"]
+                # Вход ПОСЛЕДНЕГО круга: сумма входа всех кругов с окном не сравнима и дала
+                # бы ложное «в окне не осталось места».
+                последний = round_usages[-1] if round_usages else usage
+                вход = tokens.normalize(последний)["prompt_tokens"]
                 остаток = tokens.CONTEXT_WINDOW - вход
                 предел = self.profile.params.get("max_tokens")
                 if вход and остаток < ОСТАТОК_НА_ОТВЕТ:
@@ -1796,7 +2057,12 @@ class Agent:
                 error_text = render_error
             if self.profile.keep_history and self._generation == generation:
                 try:
-                    self.remember(content, answer_text, model=model)
+                    приложение = (
+                        {"reasoning_content": final_reasoning, "звенья": звенья}
+                        if набор is not None
+                        else None
+                    )
+                    self.remember(content, answer_text, model=model, приложение=приложение)
                 except Exception as exc:  # обмен дороже любой записи на диск
                     self.store_error = f"не удалось сохранить разговор: {exc}"
 
@@ -1811,18 +2077,30 @@ class Agent:
             self.session_usage = tokens.add_usage(self.session_usage, facts_usage)
 
         # Самокалибровка относится только к основному запросу: у извлекателя свой одноразовый
-        # Agent и своя надбавка, смешивать их измерения нельзя.
-        prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+        # Agent и своя надбавка, смешивать их измерения нельзя. И только к ПЕРВОМУ кругу:
+        # предсказан его запрос, а у следующих к нему приросли звенья, и сумма входа всех
+        # кругов с предсказанием не сравнима.
+        первый = round_usages[0] if round_usages else {}
+        prompt_tokens = первый.get("prompt_tokens") if isinstance(первый, dict) else None
         if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool):
             measured = prompt_tokens - text_tokens
             if 0 <= measured <= OVERHEAD_LIMIT:
                 self._overhead[model] = measured
 
+        if предупреждения_окна:
+            # После записи разговора: её сбой присваивает `store_error` целиком и затёр бы
+            # предупреждение.
+            self.store_error = "; ".join(
+                part for part in (self.store_error, *предупреждения_окна) if part
+            )
         entry: dict[str, Any] = {
             "status": status,
             "model": model,
             "profile": snapshot,
             "query": content,
+            # Запрос ПОСЛЕДНЕГО круга: он содержит запрос первого целиком и дописанные к
+            # нему звенья, то есть всё, что модель видела за обмен. Без круга это и есть
+            # единственный запрос, как прежде.
             "messages": request_messages,
             "response": answer_text or None,
             "reasoning": reasoning_text or None,
@@ -1865,6 +2143,12 @@ class Agent:
             entry["agent"] = agent
         if effective_run_id:
             entry["run_id"] = effective_run_id
+        if звенья:
+            entry["звенья"] = звенья
+        if предупреждения_окна:
+            # Строкой, как `error`: по журналу видно, что сервер мог отказать из-за оценки
+            # веса звеньев, а не из-за сети. Несколько кругов — через «; ».
+            entry["window_warning"] = "; ".join(предупреждения_окна)
         journal_error = journal.append(entry)
 
         turn = Turn(
@@ -1899,6 +2183,7 @@ class Agent:
             branch=self._branch if strategy == context_strategy.CONTEXT_BRANCHING else None,
             branch_head=branch_head,
             branch_checkpoint=branch_checkpoint,
+            звенья=звенья,
         )
         if cancelled:
             raise asyncio.CancelledError

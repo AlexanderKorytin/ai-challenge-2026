@@ -11930,6 +11930,780 @@ check(
 check("пустой список инструментов не весит ничего", tokens_mod.count_tools([]) == 0)
 check("описания инструментов весят", tokens_mod.count_tools([{"type": "function", "function": {"name": "план"}}]) > 0)
 
+# Шаг 3 автомата задачи. Круг вызовов инструментов идёт внутри одного обмена.
+print("\nКруг вызовов инструментов")
+from types import SimpleNamespace  # noqa: E402
+
+from myharness.agent import Инструменты  # noqa: E402
+
+СХЕМЫ = [
+    {
+        "type": "function",
+        "function": {
+            "name": "update_plan",
+            "description": "обновить план",
+            "parameters": {"type": "object", "properties": {"пункт": {"type": "string"}}},
+        },
+    }
+]
+
+
+def вызов_инструмента(номер, имя, доводы):
+    return {"id": номер, "type": "function", "function": {"name": имя, "arguments": доводы}}
+
+
+class КруговойКлиент:
+    """Отдаёт по кругам заранее заданные события и запоминает каждый запрос.
+
+    Подпись с `tools` — только ключевым доводом, как у настоящего клиента. Запрос без `tools`
+    получает простой ответ из запасного круга: так отвечает, например, извлекатель фактов."""
+
+    def __init__(self, круги, запасной=None, пауза=None):
+        self.круги = list(круги)
+        self.запасной = запасной or [
+            api.StreamEvent("content", "{}"),
+            api.StreamEvent("meta", finish_reason="stop", usage={"prompt_tokens": 1, "completion_tokens": 1}),
+        ]
+        self.пауза = пауза
+        self.calls = []
+
+    async def stream_chat(self, model, messages, params=None, **доводы):
+        self.calls.append({"messages": [dict(m) for m in messages], "доводы": dict(доводы)})
+        if "tools" in доводы:
+            события = self.круги.pop(0)
+        else:
+            события = self.запасной
+        for событие in события:
+            yield событие
+
+
+class ТрёхдоводныйКлиент(КруговойКлиент):
+    """Клиент старой подписи: четвёртого довода не знает вовсе, как поддельные клиенты выше."""
+
+    async def stream_chat(self, model, messages, params=None):
+        async for событие in super().stream_chat(model, messages, params):
+            yield событие
+
+
+КРУГ_ВЫЗОВА = [
+    api.StreamEvent("reasoning", "надо обновить план"),
+    api.StreamEvent("tool_calls", calls=[вызов_инструмента("c1", "update_plan", '{"пункт": "шаг"}')]),
+    api.StreamEvent("meta", finish_reason="tool_calls", usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}),
+]
+КРУГ_ОТВЕТА = [
+    api.StreamEvent("content", "план обновлён"),
+    api.StreamEvent("meta", finish_reason="stop", usage={"prompt_tokens": 150, "completion_tokens": 5, "total_tokens": 155}),
+]
+
+исполненные = []
+
+
+async def исполнитель(имя, доводы):
+    исполненные.append((имя, доводы))
+    return f"готово: {имя}"
+
+
+def профиль_круга(имя):
+    return profiles.Profile(name=имя, keep_history=True)
+
+
+# Вызов, затем текст.
+события_круга = []
+кругом = Agent(
+    "кругом",
+    профиль_круга("кругом"),
+    инструменты=lambda: Инструменты(СХЕМЫ, исполнитель),
+)
+клиент_круга = КруговойКлиент([КРУГ_ВЫЗОВА, КРУГ_ОТВЕТА])
+ход_круга = asyncio.run(
+    кругом.exchange(клиент_круга, "deepseek-v4-flash", "обнови план", on_event=события_круга.append)
+)
+check("обмен с кругом удался", ход_круга.ok, str(ход_круга.error))
+check("клиент позван дважды — круг вызова и итоговый", len(клиент_круга.calls) == 2, str(len(клиент_круга.calls)))
+память_круга = кругом.history()
+check(
+    "в памяти одна пара с итоговым текстом",
+    [(m["role"], m["content"]) for m in память_круга]
+    == [("user", "обнови план"), ("assistant", "план обновлён")],
+    str(память_круга),
+)
+звенья_круга = память_круга[1].get("приложение", {}).get("звенья", [])
+check(
+    "у ответа два звена: ответ модели с вызовом и результат",
+    [з["role"] for з in звенья_круга] == ["assistant", "tool"]
+    and звенья_круга[0]["tool_calls"][0]["id"] == "c1"
+    and звенья_круга[0].get("reasoning_content") == "надо обновить план"
+    and звенья_круга[1] == {"role": "tool", "tool_call_id": "c1", "content": "готово: update_plan"},
+    str(звенья_круга),
+)
+check(
+    "итоговый круг без рассуждений — у приложения их нет",
+    "reasoning_content" not in память_круга[1]["приложение"],
+    str(память_круга[1]["приложение"]),
+)
+check("исполнитель получил имя и доводы как пришли", исполненные == [("update_plan", '{"пункт": "шаг"}')], str(исполненные))
+второй_запрос = клиент_круга.calls[1]
+check(
+    "оба запроса несут tools",
+    all(вызов["доводы"].get("tools") == СХЕМЫ for вызов in клиент_круга.calls),
+    str([вызов["доводы"] for вызов in клиент_круга.calls]),
+)
+check(
+    "второй запрос несёт звено с вызовом и результат после вопроса",
+    [m["role"] for m in второй_запрос["messages"][-3:]] == ["user", "assistant", "tool"]
+    and второй_запрос["messages"][-2].get("tool_calls")
+    and второй_запрос["messages"][-2].get("reasoning_content") == "надо обновить план",
+    str(второй_запрос["messages"]),
+)
+check(
+    "расход — сумма двух кругов",
+    ход_круга.usage.get("prompt_tokens") == 250
+    and ход_круга.usage.get("completion_tokens") == 15
+    and ход_круга.usage.get("total_tokens") == 265
+    and кругом.total_tokens == 265,
+    f"{ход_круга.usage} / {кругом.total_tokens}",
+)
+check("Turn несёт звенья", ход_круга.звенья == звенья_круга, str(ход_круга.звенья))
+check("текст Turn — итоговый круг", ход_круга.text == "план обновлён", ход_круга.text)
+check("рассуждения Turn — всех кругов", ход_круга.reasoning == "надо обновить план", ход_круга.reasoning)
+check(
+    "on_event получил событие вызова",
+    [с.kind for с in события_круга].count("tool_calls") == 1,
+    str([с.kind for с in события_круга]),
+)
+запись_круга = json.loads(journal_lines()[-1])
+check(
+    "журнал несёт звенья и запрос последнего круга",
+    запись_круга.get("звенья") == звенья_круга
+    and запись_круга["messages"][-1]["role"] == "tool"
+    and запись_круга["usage"]["total_tokens"] == 265,
+    str(запись_круга),
+)
+check(
+    "калибровка надбавки — по первому кругу, а не по сумме",
+    кругом.overhead("deepseek-v4-flash")
+    == 100
+    - tokens_mod.count_messages(клиент_круга.calls[0]["messages"], overhead=0)
+    - tokens_mod.count_tools(СХЕМЫ),
+    str(кругом.overhead("deepseek-v4-flash")),
+)
+# Следующий обмен раскрывает пару полностью.
+клиент_следующий = КруговойКлиент([КРУГ_ОТВЕТА])
+asyncio.run(кругом.exchange(клиент_следующий, "deepseek-v4-flash", "дальше"))
+check(
+    "следующий запрос с инструментами раскрывает прошлую пару звеньями",
+    [m["role"] for m in клиент_следующий.calls[0]["messages"]] == ["user", "assistant", "tool", "assistant", "user"],
+    str(клиент_следующий.calls[0]["messages"]),
+)
+
+# Парная: поставщик вернул None — tools не передан, круга нет, приложения нет.
+без_набора = Agent("без-набора", профиль_круга("без-набора"), инструменты=lambda: None)
+клиент_без_набора = ТрёхдоводныйКлиент([], запасной=КРУГ_ВЫЗОВА[:1] + [api.StreamEvent("content", "просто ответ")] + КРУГ_ВЫЗОВА[2:])
+ход_без_набора = asyncio.run(без_набора.exchange(клиент_без_набора, "deepseek-v4-flash", "вопрос"))
+check(
+    "без набора: клиент старой подписи позван один раз, tools нет",
+    ход_без_набора.ok and len(клиент_без_набора.calls) == 1 and клиент_без_набора.calls[0]["доводы"] == {},
+    f"{ход_без_набора.error} / {клиент_без_набора.calls}",
+)
+check(
+    "без набора: память без приложения, звеньев нет",
+    "приложение" not in без_набора.history()[1] and ход_без_набора.звенья == [],
+    str(без_набора.history()),
+)
+check(
+    "без набора: рассуждения в приложение не легли, но есть в Turn",
+    ход_без_набора.reasoning == "надо обновить план",
+    ход_без_набора.reasoning,
+)
+
+# Поставщик упал — обмен идёт без инструментов, жалоба названа.
+def поставщик_с_ошибкой():
+    raise RuntimeError("задача не читается")
+
+
+упавший_поставщик = Agent("упавший-поставщик", профиль_круга("упавший-поставщик"), инструменты=поставщик_с_ошибкой)
+клиент_упавшего = ТрёхдоводныйКлиент([], запасной=КРУГ_ОТВЕТА)
+ход_упавшего = asyncio.run(упавший_поставщик.exchange(клиент_упавшего, "deepseek-v4-flash", "вопрос"))
+check(
+    "сбой поставщика: обмен без инструментов удался, жалоба в store_error",
+    ход_упавшего.ok
+    and клиент_упавшего.calls[0]["доводы"] == {}
+    and "не удалось получить инструменты: задача не читается" in (ход_упавшего.store_error or ""),
+    f"{ход_упавшего.error} / {ход_упавшего.store_error}",
+)
+
+# Поставщик зовётся один раз за обмен, даже при двух кругах.
+счёт_поставщика = []
+
+
+def считающий_поставщик():
+    счёт_поставщика.append(1)
+    return Инструменты(СХЕМЫ, исполнитель)
+
+
+считающий = Agent("считающий", профиль_круга("считающий"), инструменты=считающий_поставщик)
+asyncio.run(считающий.exchange(КруговойКлиент([КРУГ_ВЫЗОВА, КРУГ_ОТВЕТА]), "deepseek-v4-flash", "в"))
+check("поставщик позван один раз за обмен из двух кругов", len(счёт_поставщика) == 1, str(len(счёт_поставщика)))
+
+# Два вызова в одном круге — два результата по порядку.
+двойной = Agent("двойной", профиль_круга("двойной"), инструменты=lambda: Инструменты(СХЕМЫ, исполнитель))
+клиент_двойной = КруговойКлиент(
+    [
+        [
+            api.StreamEvent(
+                "tool_calls",
+                calls=[
+                    вызов_инструмента("a", "update_plan", "{}"),
+                    вызов_инструмента("b", "move_stage", "{}"),
+                ],
+            ),
+            api.StreamEvent("meta", finish_reason="tool_calls"),
+        ],
+        КРУГ_ОТВЕТА,
+    ]
+)
+ход_двойной = asyncio.run(двойной.exchange(клиент_двойной, "deepseek-v4-flash", "в"))
+check(
+    "два вызова — одно звено ответа и два результата по порядку",
+    [з["role"] for з in ход_двойной.звенья] == ["assistant", "tool", "tool"]
+    and [з.get("tool_call_id") for з in ход_двойной.звенья[1:]] == ["a", "b"]
+    and [з["content"] for з in ход_двойной.звенья[1:]] == ["готово: update_plan", "готово: move_stage"],
+    str(ход_двойной.звенья),
+)
+check(
+    "звено без рассуждений не несёт ключа reasoning_content",
+    "reasoning_content" not in ход_двойной.звенья[0],
+    str(ход_двойной.звенья[0]),
+)
+
+
+# Исполнитель бросил исключение — текст результата, круг продолжился.
+async def падающий_исполнитель(имя, доводы):
+    raise ValueError("нет такой стадии")
+
+
+падающий = Agent("падающий", профиль_круга("падающий"), инструменты=lambda: Инструменты(СХЕМЫ, падающий_исполнитель))
+клиент_падающего = КруговойКлиент([КРУГ_ВЫЗОВА, КРУГ_ОТВЕТА])
+ход_падающего = asyncio.run(падающий.exchange(клиент_падающего, "deepseek-v4-flash", "в"))
+check(
+    "исключение исполнителя стало результатом, круг дошёл до ответа",
+    ход_падающего.ok
+    and ход_падающего.text == "план обновлён"
+    and ход_падающего.звенья[1]["content"] == "ошибка инструмента: нет такой стадии"
+    and len(клиент_падающего.calls) == 2,
+    f"{ход_падающего.error} / {ход_падающего.звенья}",
+)
+
+# Отмена во время исполнения инструмента — памяти не прибавилось.
+async def отмена_на_исполнении():
+    начато = asyncio.Event()
+
+    async def долгий_исполнитель(имя, доводы):
+        начато.set()
+        await asyncio.sleep(3600)
+        return "не дойдёт"
+
+    отменяемый = Agent("отменяемый", профиль_круга("отменяемый"), инструменты=lambda: Инструменты(СХЕМЫ, долгий_исполнитель))
+    отменяемый.remember("старый вопрос", "старый ответ")
+    клиент = КруговойКлиент([КРУГ_ВЫЗОВА, КРУГ_ОТВЕТА])
+    задача = asyncio.create_task(отменяемый.exchange(клиент, "deepseek-v4-flash", "в"))
+    await начато.wait()
+    задача.cancel()
+    try:
+        await задача
+    except asyncio.CancelledError:
+        отменено = True
+    else:
+        отменено = False
+    return отменено, отменяемый.history(), len(клиент.calls)
+
+
+отменено, память_отменённого, запросов_отменённого = asyncio.run(отмена_на_исполнении())
+check(
+    "отмена на исполнении инструмента: CancelledError наружу, памяти не прибавилось",
+    отменено and len(память_отменённого) == 2 and запросов_отменённого == 1,
+    f"{отменено} / {память_отменённого} / {запросов_отменённого}",
+)
+
+# Пустой итоговый круг после вызова — ошибка, память не пополняется.
+пустой_итог = Agent("пустой-итог", профиль_круга("пустой-итог"), инструменты=lambda: Инструменты(СХЕМЫ, исполнитель))
+ход_пустого = asyncio.run(
+    пустой_итог.exchange(
+        КруговойКлиент([КРУГ_ВЫЗОВА, [api.StreamEvent("meta", finish_reason="stop")]]),
+        "deepseek-v4-flash",
+        "в",
+    )
+)
+check(
+    "итоговый круг без текста и вызовов — ошибка, памяти нет",
+    not ход_пустого.ok and ход_пустого.error == "модель вернула пустой ответ" and пустой_итог.history() == [],
+    f"{ход_пустого.status} / {ход_пустого.error}",
+)
+# Парная: круг вызова без текста не пустой ответ, если за ним пришёл итоговый текст.
+check("круг вызова без текста не считается пустым ответом (парная)", ход_круга.ok and ход_круга.error is None)
+
+# Sticky Facts: извлекатель инструментов не получает.
+фактовый_профиль = profiles.Profile(
+    name="фактовый", keep_history=True, context_strategy=context_strategy.CONTEXT_FACTS
+)
+фактовый = Agent("фактовый", фактовый_профиль, инструменты=lambda: Инструменты(СХЕМЫ, исполнитель))
+клиент_фактов = КруговойКлиент([КРУГ_ОТВЕТА])
+ход_фактов = asyncio.run(фактовый.exchange(клиент_фактов, "deepseek-v4-flash", "в"))
+check(
+    "у фактов два запроса: основной с tools, извлекатель без",
+    len(клиент_фактов.calls) == 2
+    and sorted("tools" in вызов["доводы"] for вызов in клиент_фактов.calls) == [False, True],
+    str([вызов["доводы"].keys() for вызов in клиент_фактов.calls]),
+)
+
+# Вес: предсказание с набором больше предсказания без него ровно на вес описаний.
+взвешенный_с = Agent("взвешенный-с", профиль_круга("взвешенный"), инструменты=lambda: Инструменты(СХЕМЫ, исполнитель))
+взвешенный_без = Agent("взвешенный-без", профиль_круга("взвешенный"))
+ход_с = asyncio.run(взвешенный_с.exchange(КруговойКлиент([КРУГ_ОТВЕТА]), "deepseek-v4-flash", "в"))
+ход_без = asyncio.run(взвешенный_без.exchange(ТрёхдоводныйКлиент([], запасной=КРУГ_ОТВЕТА), "deepseek-v4-flash", "в"))
+check(
+    "предусловие: описания инструментов весят",
+    tokens_mod.count_tools(СХЕМЫ) > 0,
+)
+check(
+    "предсказание с набором тяжелее ровно на вес описаний",
+    ход_с.predicted_prompt - ход_без.predicted_prompt == tokens_mod.count_tools(СХЕМЫ),
+    f"{ход_с.predicted_prompt} / {ход_без.predicted_prompt} / {tokens_mod.count_tools(СХЕМЫ)}",
+)
+# Обрезка знает вес описаний: предел, который голый запрос держит, а с описаниями нет.
+голый_вес = взвешенный_без.predict_tokens(взвешенный_без.build_messages("в", ""), "")
+предельный = profiles.Profile(name="предельный", keep_history=True, budget_tokens=голый_вес + 1)
+без_описаний = Agent("без-описаний", предельный)
+без_описаний.build_messages("в", "")
+check("предусловие: голый запрос в пределе — перевеса нет", без_описаний._over_budget is False)
+без_описаний.build_messages("в", "", вес_инструментов=tokens_mod.count_tools(СХЕМЫ))
+check("с весом описаний тот же запрос тяжелее предела (парная)", без_описаний._over_budget is True)
+# Перевес считается по собранному запросу: тяжёлые звенья памяти не дают перевеса голому запросу.
+тяжёлые_звенья = [
+    {"role": "assistant", "content": "", "tool_calls": [вызов_инструмента("t", "update_plan", "слово " * 400)]},
+    {"role": "tool", "tool_call_id": "t", "content": "итог"},
+]
+голый_с_памятью = Agent("голый-с-памятью", profiles.Profile(name="голый", keep_history=True))
+голый_с_памятью.remember("старое", "ответ", приложение={"звенья": тяжёлые_звенья})
+голый_запрос = голый_с_памятью.build_messages("в", "")
+полный_запрос = голый_с_памятью.build_messages("в", "", полные=True)
+вес_голого = голый_с_памятью.predict_tokens(голый_запрос, "")
+вес_полного = голый_с_памятью.predict_tokens(полный_запрос, "")
+check("предусловие: полный запрос заметно тяжелее голого", вес_полного > вес_голого + 100, f"{вес_полного} / {вес_голого}")
+голый_с_памятью.profile.budget_tokens = вес_голого + 1
+голый_с_памятью.profile.compact_at = 0
+голый_с_памятью.build_messages("в", "")
+check(
+    "голый запрос в пределе не помечен перевесом, хотя полный вес памяти больше",
+    голый_с_памятью._over_budget is False and len(голый_с_памятью.history()) == 2,
+    str(голый_с_памятью.history()),
+)
+
+# api.stream_chat склеивает куски вызова по номеру.
+def кусок(delta=None, finish=None, usage=None):
+    choices = [] if delta is None and finish is None else [SimpleNamespace(finish_reason=finish, delta=delta)]
+    return SimpleNamespace(
+        choices=choices,
+        usage=None if usage is None else SimpleNamespace(model_dump=lambda exclude_none=True: usage),
+    )
+
+
+def дельта(content=None, tool_calls=None):
+    return SimpleNamespace(content=content, reasoning_content=None, tool_calls=tool_calls)
+
+
+def кусок_вызова(index, id=None, name=None, arguments=""):
+    return SimpleNamespace(
+        index=index,
+        id=id,
+        type="function" if id else None,
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
+
+
+class ПоддельныйПоток:
+    def __init__(self, куски):
+        self.куски = куски
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def __aiter__(self):
+        return self._идти()
+
+    async def _идти(self):
+        for к in self.куски:
+            yield к
+
+
+class ПоддельныеЗавершения:
+    def __init__(self, куски):
+        self.куски = куски
+        self.доводы = None
+
+    async def create(self, **доводы):
+        self.доводы = доводы
+        return ПоддельныйПоток(self.куски)
+
+
+def поток_на_кусках(куски, tools=None):
+    клиент = api.DeepSeekClient.__new__(api.DeepSeekClient)
+    завершения = ПоддельныеЗавершения(куски)
+    клиент._client = SimpleNamespace(chat=SimpleNamespace(completions=завершения))
+
+    async def собрать():
+        return [событие async for событие in клиент.stream_chat("m", [], {}, tools=tools)]
+
+    return asyncio.run(собрать()), завершения.доводы
+
+
+события_потока, доводы_потока = поток_на_кусках(
+    [
+        кусок(дельта(tool_calls=[кусок_вызова(0, id="call_1", name="update_plan", arguments="")])),
+        кусок(дельта(tool_calls=[кусок_вызова(1, id="call_2", name="move_stage", arguments="")])),
+        кусок(дельта(tool_calls=[кусок_вызова(0, arguments='{"пункт"')])),
+        кусок(дельта(tool_calls=[кусок_вызова(1, arguments='{}')])),
+        кусок(дельта(tool_calls=[кусок_вызова(0, arguments=': "шаг"}')])),
+        кусок(дельта(content=""), finish="tool_calls"),
+        кусок(usage={"prompt_tokens": 5}),
+    ],
+    tools=СХЕМЫ,
+)
+check(
+    "поток: одно событие вызовов перед meta",
+    [с.kind for с in события_потока] == ["tool_calls", "meta"],
+    str([с.kind for с in события_потока]),
+)
+check(
+    "поток: доводы склеены по номеру, id и имя с первого куска",
+    события_потока[0].calls
+    == [
+        вызов_инструмента("call_1", "update_plan", '{"пункт": "шаг"}'),
+        вызов_инструмента("call_2", "move_stage", "{}"),
+    ],
+    str(события_потока[0].calls),
+)
+check(
+    "поток: tools ушёл в запрос, meta несёт причину и расход",
+    доводы_потока.get("tools") == СХЕМЫ
+    and события_потока[1].finish_reason == "tool_calls"
+    and события_потока[1].usage == {"prompt_tokens": 5},
+    str(доводы_потока),
+)
+события_текста, доводы_текста = поток_на_кусках(
+    [кусок(дельта(content="привет"), finish="stop")], tools=[]
+)
+check(
+    "поток без кусков вызова: события вызовов нет, пустой tools в запрос не ушёл (парная)",
+    [с.kind for с in события_текста] == ["content", "meta"] and "tools" not in доводы_текста,
+    f"{[с.kind for с in события_текста]} / {доводы_текста}",
+)
+
+# Отрисовка пропускает событие вызова до шага 8.
+check(
+    "draw_event пропускает событие вызова, ничего не трогая",
+    output.draw_event(None, None, api.StreamEvent("tool_calls", calls=[]), {}) is None,
+)
+
+# Замечания просмотра шага 3.
+print("\nКруг вызовов: остановки и учёт")
+
+# 1. /clear посреди круга останавливает его.
+очищаемые_вызовы = []
+
+
+def очищаемый_агент():
+    агент = None
+
+    async def очищающий_исполнитель(имя, доводы):
+        очищаемые_вызовы.append(имя)
+        агент.forget()
+        return "готово"
+
+    агент = Agent("очищаемый", профиль_круга("очищаемый"), инструменты=lambda: Инструменты(СХЕМЫ, очищающий_исполнитель))
+    return агент
+
+
+очищаемый = очищаемый_агент()
+клиент_очищаемого = КруговойКлиент(
+    [
+        [
+            api.StreamEvent(
+                "tool_calls",
+                calls=[вызов_инструмента("a", "update_plan", "{}"), вызов_инструмента("b", "move_stage", "{}")],
+            ),
+            api.StreamEvent("meta", finish_reason="tool_calls", usage={"prompt_tokens": 10}),
+        ],
+        КРУГ_ОТВЕТА,
+    ]
+)
+ход_очищаемого = asyncio.run(очищаемый.exchange(клиент_очищаемого, "deepseek-v4-flash", "в"))
+check(
+    "/clear посреди круга: второго исполнения и второго запроса нет, память пуста",
+    очищаемые_вызовы == ["update_plan"]
+    and len(клиент_очищаемого.calls) == 1
+    and очищаемый.history() == []
+    and not ход_очищаемого.ok
+    and ход_очищаемого.error == "разговор очищен посреди круга — дальнейшие вызовы не исполнены",
+    f"{очищаемые_вызовы} / {len(клиент_очищаемого.calls)} / {ход_очищаемого.error}",
+)
+check(
+    "/clear посреди круга: частичный круг виден в звеньях журнала",
+    [з["role"] for з in json.loads(journal_lines()[-1]).get("звенья", [])] == ["assistant", "tool"]
+    and ход_очищаемого.звенья[1]["tool_call_id"] == "a",
+    str(ход_очищаемого.звенья),
+)
+# Парная: тот же круг без очистки доходит до второго исполнения и второго запроса (см. «два вызова»).
+check("без очистки тот же круг исполняет оба вызова (парная)", len(клиент_двойной.calls) == 2)
+
+# 2. Обрыв итогового круга по длине: вход берётся из последнего круга.
+огромный_вход = tokens_mod.CONTEXT_WINDOW
+длинный = Agent(
+    "длинный",
+    profiles.Profile(name="длинный", keep_history=True, params={"max_tokens": 100}),
+    инструменты=lambda: Инструменты(СХЕМЫ, исполнитель),
+)
+
+
+def круг_вызова_с_входом(номер, вход):
+    return [
+        api.StreamEvent("tool_calls", calls=[вызов_инструмента(номер, "update_plan", "{}")]),
+        api.StreamEvent("meta", finish_reason="tool_calls", usage={"prompt_tokens": вход, "completion_tokens": 1}),
+    ]
+
+
+клиент_длинного = КруговойКлиент(
+    [
+        круг_вызова_с_входом("a", огромный_вход // 2 + 10),
+        круг_вызова_с_входом("b", огромный_вход // 2 + 10),
+        [api.StreamEvent("meta", finish_reason="length", usage={"prompt_tokens": 300, "completion_tokens": 100})],
+    ]
+)
+ход_длинного = asyncio.run(длинный.exchange(клиент_длинного, "deepseek-v4-flash", "в"))
+check(
+    "предусловие: сумма входа трёх кругов больше окна",
+    ход_длинного.usage.get("prompt_tokens", 0) > огромный_вход,
+    str(ход_длинного.usage),
+)
+check(
+    "обрыв по длине после кругов: совет про max_tokens, а не про /clear",
+    not ход_длинного.ok and "max_tokens" in (ход_длинного.error or "") and "/clear" not in (ход_длинного.error or ""),
+    str(ход_длинного.error),
+)
+
+# 3. Исполнитель проглотил отмену — обмен всё равно отменён.
+async def проглоченная_отмена():
+    начато = asyncio.Event()
+
+    async def глотающий(имя, доводы):
+        начато.set()
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            return "отмену проглотил"
+        return "не дойдёт"
+
+    агент = Agent("глотающий", профиль_круга("глотающий"), инструменты=lambda: Инструменты(СХЕМЫ, глотающий))
+    клиент = КруговойКлиент([КРУГ_ВЫЗОВА, КРУГ_ОТВЕТА])
+    задача = asyncio.create_task(агент.exchange(клиент, "deepseek-v4-flash", "в"))
+    await начато.wait()
+    задача.cancel()
+    try:
+        await задача
+    except asyncio.CancelledError:
+        return True, агент.history(), len(клиент.calls)
+    return False, агент.history(), len(клиент.calls)
+
+
+отменён_глотающий, память_глотающего, запросов_глотающего = asyncio.run(проглоченная_отмена())
+check(
+    "исполнитель проглотил отмену: обмен отменён, памяти нет, второго запроса нет",
+    отменён_глотающий and память_глотающего == [] and запросов_глотающего == 1,
+    f"{отменён_глотающий} / {память_глотающего} / {запросов_глотающего}",
+)
+
+# 4. Результат инструмента не влезает в окно — запрос уходит, предупреждение названо.
+# Окно подменяется на время проверки: настоящий миллион токенов стоил бы многомегабайтной строки.
+настоящее_окно = tokens_mod.CONTEXT_WINDOW
+try:
+    переполненный = Agent("переполненный", профиль_круга("переполненный"), инструменты=lambda: Инструменты(СХЕМЫ, исполнитель))
+    tokens_mod.CONTEXT_WINDOW = переполненный.predict_tokens(
+        [{"role": "user", "content": "в"}], "deepseek-v4-flash"
+    ) + tokens_mod.count_tools(СХЕМЫ) + 5
+    клиент_переполненного = КруговойКлиент([КРУГ_ВЫЗОВА, КРУГ_ОТВЕТА])
+    ход_переполненного = asyncio.run(переполненный.exchange(клиент_переполненного, "deepseek-v4-flash", "в"))
+    окно_проверки = tokens_mod.CONTEXT_WINDOW
+finally:
+    tokens_mod.CONTEXT_WINDOW = настоящее_окно
+запись_переполненного = json.loads(journal_lines()[-1])
+check(
+    "результат сверх окна: второй запрос ушёл, обмен удался",
+    len(клиент_переполненного.calls) == 2 and ход_переполненного.ok and len(переполненный.history()) == 2,
+    f"{len(клиент_переполненного.calls)} / {ход_переполненного.error}",
+)
+check(
+    "предупреждение с числами названо в store_error и в журнале",
+    f"из {окно_проверки}" in (ход_переполненного.store_error or "")
+    and "сервер может отказать" in (ход_переполненного.store_error or "")
+    and "сервер может отказать" in запись_переполненного.get("window_warning", ""),
+    f"{ход_переполненного.store_error} / {запись_переполненного.get('window_warning')}",
+)
+check(
+    "без переполнения предупреждения нет (парная)",
+    ход_круга.store_error is None and "window_warning" not in запись_круга,
+    str(ход_круга.store_error),
+)
+
+# 5. Вес описаний вне обмена — по последнему обмену.
+профиль_полоски = profiles.Profile(name="полоска", keep_history=True, budget_tokens=100000)
+полоска_с = Agent("полоска-с", профиль_полоски, инструменты=lambda: Инструменты(СХЕМЫ, исполнитель))
+полоска_без = Agent("полоска-без", profiles.Profile(name="полоска", keep_history=True, budget_tokens=100000))
+asyncio.run(полоска_с.exchange(КруговойКлиент([КРУГ_ОТВЕТА]), "deepseek-v4-flash", "старт"))
+asyncio.run(полоска_без.exchange(ТрёхдоводныйКлиент([], запасной=КРУГ_ОТВЕТА), "deepseek-v4-flash", "старт"))
+def занятость(агент):
+    ограничители = агент.ограничители("в", facts="")
+    return [о for о in ограничители if о.имя == "предел веса"] or ограничители
+
+
+check(
+    "вес описаний запомнен последним обменом",
+    полоска_с.вес_инструментов == tokens_mod.count_tools(СХЕМЫ) and полоска_без.вес_инструментов == 0,
+)
+check(
+    "ограничители прибавляют вес описаний последнего обмена",
+    занятость(полоска_с)[-1].текущее - занятость(полоска_без)[-1].текущее == tokens_mod.count_tools(СХЕМЫ),
+    f"{занятость(полоска_с)} / {занятость(полоска_без)}",
+)
+состояние_строки = SimpleNamespace(model="deepseek-v4-flash")
+check(
+    "строка ожидания прибавляет вес описаний последнего обмена",
+    output._predict_outgoing(состояние_строки, полоска_с, "в")
+    - tokens_mod.count_messages(
+        [{"role": "user", "content": "в"}], overhead=полоска_с.overhead("deepseek-v4-flash")
+    )
+    - полоска_с.history_tokens()
+    == tokens_mod.count_tools(СХЕМЫ),
+)
+check("с_местом_под_ответ прибавляет max_tokens профиля", длинный.с_местом_под_ответ(1000) == 1100)
+
+# 6. Кусок без номера и пустой id.
+события_без_номера, _ = поток_на_кусках(
+    [
+        кусок(дельта(tool_calls=[кусок_вызова(0, id="call_1", name="update_plan", arguments='{"a"')])),
+        кусок(дельта(tool_calls=[SimpleNamespace(index=None, id=None, function=SimpleNamespace(name=None, arguments=": 1}"))])),
+        кусок(дельта(content=""), finish="tool_calls"),
+    ],
+    tools=СХЕМЫ,
+)
+check(
+    "кусок без номера дописан к последнему вызову",
+    события_без_номера[0].calls == [вызов_инструмента("call_1", "update_plan", '{"a": 1}')],
+    str(события_без_номера[0].calls),
+)
+безымянный = Agent("безымянный", профиль_круга("безымянный"), инструменты=lambda: Инструменты(СХЕМЫ, исполнитель))
+ход_безымянного = asyncio.run(
+    безымянный.exchange(
+        КруговойКлиент(
+            [
+                [
+                    api.StreamEvent("tool_calls", calls=[вызов_инструмента("", "update_plan", "{}"), вызов_инструмента("", "move_stage", "{}")]),
+                    api.StreamEvent("meta", finish_reason="tool_calls"),
+                ],
+                КРУГ_ОТВЕТА,
+            ]
+        ),
+        "deepseek-v4-flash",
+        "в",
+    )
+)
+check(
+    "пустой id заменён местным и в звене, и в ссылке результата",
+    [в["id"] for в in ход_безымянного.звенья[0]["tool_calls"]] == ["call_0", "call_1"]
+    and [з["tool_call_id"] for з in ход_безымянного.звенья[1:]] == ["call_0", "call_1"],
+    str(ход_безымянного.звенья),
+)
+
+# 7. Отмена во время потока второго круга: расход первого учтён, памяти нет.
+async def отмена_во_втором_потоке():
+    ворота = asyncio.Event()
+
+    class ЗависающийКлиент(КруговойКлиент):
+        async def stream_chat(self, model, messages, params=None, **доводы):
+            async for событие in super().stream_chat(model, messages, params, **доводы):
+                if len(self.calls) == 2:
+                    ворота.set()
+                    await asyncio.sleep(3600)
+                yield событие
+
+    агент = Agent("второй-поток", профиль_круга("второй-поток"), инструменты=lambda: Инструменты(СХЕМЫ, исполнитель))
+    клиент = ЗависающийКлиент([КРУГ_ВЫЗОВА, КРУГ_ОТВЕТА])
+    задача = asyncio.create_task(агент.exchange(клиент, "deepseek-v4-flash", "в"))
+    await ворота.wait()
+    задача.cancel()
+    try:
+        await задача
+    except asyncio.CancelledError:
+        pass
+    return агент
+
+
+агент_второго_потока = asyncio.run(отмена_во_втором_потоке())
+check(
+    "отмена во втором потоке: расход первого круга учтён, памяти нет",
+    агент_второго_потока.total_tokens == 110 and агент_второго_потока.history() == [],
+    f"{агент_второго_потока.total_tokens} / {агент_второго_потока.history()}",
+)
+
+# Сложение подробностей расхода по кругам.
+подробный = Agent("подробный", профиль_круга("подробный"), инструменты=lambda: Инструменты(СХЕМЫ, исполнитель))
+ход_подробного = asyncio.run(
+    подробный.exchange(
+        КруговойКлиент(
+            [
+                [
+                    КРУГ_ВЫЗОВА[1],
+                    api.StreamEvent(
+                        "meta",
+                        finish_reason="tool_calls",
+                        usage={
+                            "prompt_tokens": 100,
+                            "completion_tokens": 20,
+                            "prompt_cache_hit_tokens": 60,
+                            "completion_tokens_details": {"reasoning_tokens": 15},
+                        },
+                    ),
+                ],
+                [
+                    КРУГ_ОТВЕТА[0],
+                    api.StreamEvent(
+                        "meta",
+                        finish_reason="stop",
+                        usage={
+                            "prompt_tokens": 130,
+                            "completion_tokens": 7,
+                            "prompt_cache_hit_tokens": 100,
+                            "completion_tokens_details": {"reasoning_tokens": 4},
+                        },
+                    ),
+                ],
+            ]
+        ),
+        "deepseek-v4-flash",
+        "в",
+    )
+)
+check(
+    "кэш и рассуждения складываются по кругам",
+    ход_подробного.usage.get("prompt_cache_hit_tokens") == 160
+    and ход_подробного.usage.get("reasoning_tokens") == 19
+    and подробный.session_usage["reasoning_tokens"] == 19
+    and подробный.session_usage["prompt_cache_hit_tokens"] == 160,
+    f"{ход_подробного.usage} / {подробный.session_usage}",
+)
+
 print()
 if failures:
     print(f"ПРОВАЛЕНО: {len(failures)} — " + "; ".join(failures))
