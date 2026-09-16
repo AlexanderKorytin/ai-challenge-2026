@@ -657,6 +657,13 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
             data.get("stages"), известные.__contains__, свой_профиль=свои
         )
         warnings.extend(жалобы_карты)
+        if стадии is not None and (data.get("agents") or data.get("methods")):
+            # Вопрос профиля с группой или набором способов уходит им, а не собеседнику главного
+            # экрана, — инструментов автомата модель не получает, и задача стоит молча.
+            warnings.append(
+                "карта стадий не действует: профиль с agents или methods отправляет вопросы "
+                "группе, а автомат ведёт только собеседник главного экрана"
+            )
 
     profile = Profile(
         name=имя_профиля,

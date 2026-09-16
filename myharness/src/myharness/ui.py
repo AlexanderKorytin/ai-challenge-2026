@@ -1672,7 +1672,7 @@ class СчётЗанятости:
         профиль = агент.profile
         return (
             id(агент),
-            len(агент.history()),
+            агент.длина_памяти(),
             агент.runs,
             агент.passed_pairs,
             выжимка.поколение if выжимка is not None else -1,
