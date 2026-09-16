@@ -41,6 +41,7 @@ from .context_strategy import (
     DEFAULT_CONTEXT_STRATEGY,
     DEFAULT_STRATEGY_WINDOW,
 )
+from . import machine
 from . import params as params_mod
 from . import tokens
 from .agent import DEFAULT_WINDOW_PAIRS
@@ -135,6 +136,8 @@ class Profile:
     # Записи о человеке, с которыми это занятие расходится: дословно, как они лежат в
     # глобальной памяти. Не выбрасывают запись из запроса, а помечают её — см. `memory.facts_block`.
     overrides: list[str] = field(default_factory=list)
+    # Карта стадий автомата задачи; `None` — профиль задачу стадиями не ведёт.
+    стадии: machine.Карта | None = None
     vars: dict[str, Any] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     source: Path | None = None
@@ -167,6 +170,8 @@ class Profile:
             snapshot["methods"] = list(self.methods)
         if self.overrides:
             snapshot["overrides"] = list(self.overrides)
+        if self.стадии is not None:
+            snapshot["stages"] = machine.в_список(self.стадии)
         return snapshot
 
     def to_dict(self) -> dict[str, Any]:
@@ -206,6 +211,8 @@ class Profile:
             data["methods"] = list(self.methods)
         if self.overrides:
             data["overrides"] = list(self.overrides)
+        if self.стадии is not None:
+            data["stages"] = machine.в_список(self.стадии)
         if self.vars:
             data["vars"] = self.vars
         data.update(self.params)
@@ -578,6 +585,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "layout",
         "result",
         "overrides",
+        "stages",
         "vars",
     }
 
@@ -636,8 +644,22 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
             f"«{CONTEXT_BRANCHING}»"
         )
 
+    имя_профиля = data.get("name") or name
+    стадии: machine.Карта | None = None
+    if "stages" in data:
+        # Имена консилиума сверяются с тем, что видит `/profile`, только ради предупреждения:
+        # перечень зависит от каталога запуска, окончательная проверка — при созыве.
+        известные = {имя for имя, _ in available()}
+        свои = tuple(
+            имя for имя in (name, data.get("name")) if isinstance(имя, str) and имя
+        )
+        стадии, жалобы_карты = machine.разобрать_карту(
+            data.get("stages"), известные.__contains__, свой_профиль=свои
+        )
+        warnings.extend(жалобы_карты)
+
     profile = Profile(
-        name=data.get("name") or name,
+        name=имя_профиля,
         title=data.get("title", ""),
         description=data.get("description", ""),
         system=system_text.strip() if isinstance(system_text, str) else None,
@@ -658,6 +680,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         methods=_profile_names(data.get("methods"), "methods", warnings),
         result=result_names,
         overrides=_overrides(data.get("overrides"), warnings),
+        стадии=стадии,
         vars=dict(variables),
         params=collected,
         source=source,
