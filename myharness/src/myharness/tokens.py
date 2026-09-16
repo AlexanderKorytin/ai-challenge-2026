@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -162,14 +163,52 @@ def count_messages(messages: list[dict], *, overhead: int = BASE_OVERHEAD) -> in
         items = []
     total = float(overhead) + PER_MESSAGE_OVERHEAD * max(0, len(items) - 1)
     for message in items:
-        if not isinstance(message, dict):
-            continue
-        content = message.get("content")
-        # Содержимое бывает списком частей (модели с картинками) или вовсе отсутствует —
-        # такую реплику считаем пустой, но реплику как таковую учитываем.
-        if isinstance(content, str):
-            total += count_text(content)
+        if isinstance(message, dict):
+            total += count_message(message)
     return int(total)
+
+
+def count_message(message: dict) -> int:
+    """Вес одной реплики без обёртки: текст, возвращаемые рассуждения и вызовы инструментов.
+
+    Рассуждения и вызовы считаются потому, что при круге инструментов они уходят в запрос
+    вместе с ответом модели (DeepSeek требует вернуть их), и сервер за них берёт так же, как
+    за текст. У обычной реплики обоих полей нет, и вес совпадает с прежним счётом одного
+    текста — число, сверенное живым замером, не сдвигается.
+
+    Вызовы весят как их JSON: доводы модели — строка JSON внутри JSON, и точнее этого без
+    знания обёртки сервера не посчитать. Одна функция на два места (`count_messages` и вес
+    памяти агента), чтобы правило не разошлось."""
+    if not isinstance(message, dict):
+        return 0
+    total = 0
+    content = message.get("content")
+    # Содержимое бывает списком частей (модели с картинками) или вовсе отсутствует —
+    # такую реплику считаем пустой, но реплику как таковую учитывает обёртка.
+    if isinstance(content, str):
+        total += count_text(content)
+    рассуждения = message.get("reasoning_content")
+    if isinstance(рассуждения, str):
+        total += count_text(рассуждения)
+    вызовы = message.get("tool_calls")
+    if вызовы:
+        try:
+            total += count_text(json.dumps(вызовы, ensure_ascii=False))
+        except (TypeError, ValueError):
+            # Счёт — удобство: несериализуемый вызов уронит запрос позже и с понятной
+            # ошибкой, а не здесь, посреди предсказания веса.
+            pass
+    return total
+
+
+def count_tools(схемы: list[dict]) -> int:
+    """Вес описаний инструментов: они уходят в каждый запрос с `tools` рядом с разговором.
+
+    Считаются как их JSON — так их видит сервер. Пустой список — ноль: без инструментов поле
+    `tools` в запрос не уходит вовсе."""
+    if not схемы:
+        return 0
+    return count_text(json.dumps(схемы, ensure_ascii=False))
 
 
 @dataclass(frozen=True)

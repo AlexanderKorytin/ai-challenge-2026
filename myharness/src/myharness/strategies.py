@@ -62,7 +62,7 @@ def _linear_strategy_agent(
         window=0,
         system_fp=memory.fingerprint(profile.system),
     )
-    agent.restore(restored.pairs)
+    agent.restore(restored.pairs, restored.приложения)
     warnings = list(restored.warnings)
     if restored.fingerprint_changed:
         warnings.append(
