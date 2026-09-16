@@ -327,6 +327,10 @@ def _записать_профиль(state: State, интервью: Any, тек
         )
     append_log(state, ui.system_prompt_fragments(профиль.name, профиль.system or ""))
     append_log(state, ui.hint_fragments(profile_maker.словами_о_запросе(профиль.params)))
+    if профиль.стадии is not None:
+        # Карту называем отдельной строкой: она и есть то, что превращает профиль в автомат
+        # задачи, и человек должен видеть её до первой `/task new`, а не узнать из файла.
+        append_log(state, ui.hint_fragments(profile_maker.словами_о_карте(профиль.стадии)))
     if профиль.overrides:
         append_log(
             state,
