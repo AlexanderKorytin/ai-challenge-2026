@@ -3279,6 +3279,52 @@ async def main():
         созданные_исполнители = tuple(state.pane_workers.values())
         check("перед выходом панельный обмен действительно идёт", state.pane_workers[id(панель_выхода)].busy)
 
+        # Шаг 8: круг с вызовом инструмента — у каждого круга свой свёрнутый заголовок,
+        # строка вызова и строка результата стоят между ними, ответ — после.
+        панель_круга = screens.Pane(key="tool-rounds", profile=state.profile)
+        отметки_круга: dict = {}
+        вызов_круга = {"id": "c1", "type": "function", "function": {"name": "move_stage", "arguments": '{"стадия": "PLAN", "итог": "x"}'}}
+        for событие in (
+            api.StreamEvent("reasoning", "черновик-один"),
+            api.StreamEvent("tool_calls", calls=[вызов_круга]),
+            api.StreamEvent("meta", finish_reason="tool_calls", usage={"completion_tokens_details": {"reasoning_tokens": 11}}),
+            api.StreamEvent("tool_result", "ждёт утверждения человека: переход RESEARCH → PLAN не применён", calls=[вызов_круга]),
+            api.StreamEvent("reasoning", "черновик-два"),
+            api.StreamEvent("content", "итог стадии"),
+            api.StreamEvent("meta", finish_reason="stop", usage={"completion_tokens_details": {"reasoning_tokens": 7}}),
+        ):
+            output.draw_event(state, панель_круга, событие, отметки_круга)
+        видно_круга = fragments_text(панель_круга.visible_log())
+        check("два круга — два свёрнутых заголовка", видно_круга.count("▸ размышления") == 2, видно_круга)
+        check("черновики кругов свёрнуты", "черновик-один" not in видно_круга and "черновик-два" not in видно_круга, видно_круга)
+        check(
+            "порядок: вызов, результат, ответ",
+            видно_круга.index("⚙ move_stage: предлагаю переход в PLAN")
+            < видно_круга.index("↳ move_stage: ждёт утверждения человека")
+            < видно_круга.index("итог стадии"),
+            видно_круга,
+        )
+        check("заголовок первого круга несёт его токены", "11 токен" in видно_круга, видно_круга)
+        # Итог обмена несёт СУММУ кругов (11 + 7): проверка отличает её от расхода последнего круга.
+        from myharness.agent import Turn
+
+        итог_обмена = Turn(status="ok", usage={"completion_tokens_details": {"reasoning_tokens": 18}})
+        output._finish_reasoning_head(state, панель_круга, отметки_круга, итог_обмена)
+        видно_итог = fragments_text(панель_круга.visible_log())
+        check("заголовок последнего круга — токены своего круга, не сумма", "7 токен" in видно_итог and "18 токен" not in видно_итог, видно_итог)
+        панель_круга.show_reasoning = True
+        развёрнуто_круга = fragments_text(панель_круга.visible_log())
+        check("Ctrl+R разворачивает черновики обоих кругов", "черновик-один" in развёрнуто_круга and "черновик-два" in развёрнуто_круга)
+        панель_круга.show_reasoning = False
+        check(
+            "строка состояния несёт стадию задачи",
+            "задача: RESEARCH" in fragments_text(ui.status_fragments("m", True, "p", False, задача="задача: RESEARCH")),
+        )
+        check(
+            "без задачи строка состояния прежняя (парная)",
+            fragments_text(ui.status_fragments("m", True, "p", False)) == fragments_text(ui.status_fragments("m", True, "p", False, задача="")),
+        )
+
         await send("/exit" + ENTER, pause=0)
         await run
         check("приложение завершилось", run.done())

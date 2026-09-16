@@ -31,7 +31,7 @@ EXTRA_BODY_PARAMS = ("thinking", "reasoning_effort")
 
 @dataclass
 class StreamEvent:
-    kind: str  # "reasoning" | "content" | "tool_calls" | "meta"
+    kind: str  # "reasoning" | "content" | "tool_calls" | "tool_result" | "meta"
     text: str = ""
     finish_reason: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)

@@ -323,8 +323,21 @@ def draw_event(state: State, pane: screens_mod.Pane, event: api.StreamEvent, mar
     событие печатает ниже неё.
     """
     if event.kind == "tool_calls":
-        # Показ вызова инструмента — шаг 8. До него событие пропускается: текста у него нет,
-        # и дальше оно напечаталось бы пустым ярлыком ответа.
+        # Круг кончился вызовом: его рассуждения закрываются своим заголовком, и следующий круг
+        # заведёт свой. Иначе черновики всех кругов слились бы под одним заголовком, а время
+        # в нём было бы временем первого круга.
+        _закрыть_круг(state, pane, marks)
+        for вызов in event.calls:
+            функция = вызов.get("function") or {}
+            append_log(state, ui.tool_call_fragments(функция.get("name", ""), функция.get("arguments", "")), pane)
+        marks["tool_rounds"] = marks.get("tool_rounds", 0) + 1
+        _show_wait(state, pane, marks, mark=marks.get("frame", ui.SPINNER_FRAMES[0]))
+        return
+    if event.kind == "tool_result":
+        имя = ((event.calls or [{}])[0].get("function") or {}).get("name", "")
+        # Имя в строке результата различает результаты двух вызовов одного круга.
+        append_log(state, ui.tool_result_fragments(имя, event.text), pane)
+        _show_wait(state, pane, marks, mark=marks.get("frame", ui.SPINNER_FRAMES[0]))
         return
     if event.kind in ("reasoning", "content"):
         # Кусок потока считаем за токен: живой замер 2026-09-09 дал 180 кусков размышления
@@ -332,6 +345,13 @@ def draw_event(state: State, pane: screens_mod.Pane, event: api.StreamEvent, mar
         # точное придёт в `usage`, и оно же встанет в замершую строку.
         marks["incoming"] = marks.get("incoming", 0) + 1
     if event.kind == "meta":
+        marks["usage_круга"] = event.usage or {}
+        круг = marks.pop("заголовок_круга", None)
+        if круг is not None:
+            at, длина, секунды = круг
+            рассуждения = tokens.normalize(event.usage or {})["reasoning_tokens"]
+            заголовок = ui.reasoning_head_fragments(рассуждения or None, секунды)
+            replace_log(state, pane, at, длина, заголовок)
         return
     if event.kind == "reasoning":
         if not marks.get("reasoning"):
@@ -428,6 +448,31 @@ def _freeze_wait(
     _show_wait(state, pane, marks, mark=ui.WAIT_MARKS[исход], frozen=True)
 
 
+def _закрыть_круг(state: State, pane: screens_mod.Pane, marks: dict[str, Any]) -> None:
+    """Закрыть показ круга, кончившегося вызовом инструмента.
+
+    Заголовок размышлений круга получает своё время, а отметки сбрасываются — следующий круг
+    напечатает свой заголовок и свой ярлык ответа. Токены круга подставляет событие `meta`
+    этого круга: каждый круг — отдельный запрос со своим расходом.
+    """
+    if marks.get("reasoning") and marks.get("head_at") is not None:
+        секунды = marks.get("reasoning_seconds")
+        if секунды is None:
+            секунды = time.monotonic() - marks["reasoning_started"]
+            # Разделитель принадлежит черновику: ответа в этом круге не было.
+            append_log(state, [(screens_mod.REASONING, "\n")], pane)
+        заголовок = ui.reasoning_head_fragments(None, секунды)
+        replace_log(state, pane, marks["head_at"], marks.get("head_len", 0), заголовок)
+        # Токены круга придут его же событием `meta` — сразу за вызовами. Место заголовка
+        # запоминаем до сброса отметок, чтобы подставить их туда.
+        marks["заголовок_круга"] = (marks["head_at"], len(заголовок), секунды)
+    if marks.get("answer"):
+        # Текст круга оборван вызовом — строку вызова начинаем с новой строки.
+        append_log(state, [("", "\n")], pane)
+    for ключ in ("reasoning", "answer", "head_at", "head_len", "reasoning_started", "reasoning_seconds"):
+        marks.pop(ключ, None)
+
+
 def _finish_reasoning_head(
     state: State, pane: screens_mod.Pane, marks: dict[str, Any], turn: Turn | None
 ) -> None:
@@ -445,6 +490,9 @@ def _finish_reasoning_head(
     if at is None:
         return
     рассуждения = tokens.normalize(turn.usage)["reasoning_tokens"] if turn is not None else 0
+    if marks.get("tool_rounds"):
+        # `turn.usage` — сумма всех кругов; под заголовком последнего круга нужен его расход.
+        рассуждения = tokens.normalize(marks.get("usage_круга") or {})["reasoning_tokens"]
     секунды = marks.get("reasoning_seconds")
     if секунды is None and marks.get("reasoning_started") is not None:
         # Ответа так и не было — одни размышления. Тогда время черновика и есть время обмена.

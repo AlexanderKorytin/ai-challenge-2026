@@ -285,6 +285,7 @@ def собрать_раскладку(state: State) -> Раскладка:
                 state.mouse_enabled,
                 archivist.running(state),
                 compact.идёт(state),
+                ui.строка_задачи(state),
             )
         ),
         height=1,
