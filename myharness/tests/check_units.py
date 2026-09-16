@@ -10673,33 +10673,35 @@ check(
     f"отказ {отказ_имени}",
 )
 
-# Куда ложится новый профиль: ближний каталог перекрывает дальний, и запись обязана идти по
-# тому же порядку — иначе записанный профиль оказался бы перекрыт одноимённым из ближнего.
-# Пара: каталог существует и каталога нет.
+# Куда ложится новый профиль: без уточнения — личный каталог (при заданном $MYHARNESS_PROFILES —
+# он), с уточнением «для проекта» — ближний profiles/, а без него — заведённый ./profiles.
 прежний_MYHARNESS_PROFILES = os.environ["MYHARNESS_PROFILES"]
 os.environ["MYHARNESS_PROFILES"] = str(каталог_занятий)
 check(
-    "существующий каталог из порядка поиска выбран для записи",
+    "заданный MYHARNESS_PROFILES старше личного каталога",
     profiles.target_dir(Path.cwd()) == каталог_занятий,
     str(profiles.target_dir(Path.cwd())),
 )
-os.environ["MYHARNESS_PROFILES"] = str(tmp / "которого-нет")
-# Корень берём ОТДЕЛЬНЫЙ: у `tmp` в проверках уже лежит свой `profiles/`, и подъём по дереву
-# нашёл бы его у родителя — то есть проверка мерила бы не то, что собиралась.
-корень_без_профилей = Path(tempfile.mkdtemp())
-# Утверждение предусловия: личного каталога нет на диске. Без него проверка истинна в обеих
-# ветвях — и когда личный каталог НАЙДЕН перебором, и когда сработал запасной возврат, — то
-# есть не различает того, ради чего заведена.
+del os.environ["MYHARNESS_PROFILES"]
+корень_проекта = Path(tempfile.mkdtemp())
+(корень_проекта / "profiles").mkdir()
+(корень_проекта / "папка").mkdir()
 check(
-    "личного каталога профилей нет — запасной путь действительно проверяется",
-    not profiles.user_profiles_dir().exists(),
-    str(profiles.user_profiles_dir()),
+    "рядом есть проектный profiles/, но без просьбы — личный каталог",
+    profiles.target_dir(корень_проекта / "папка") == profiles.user_profiles_dir(),
+    str(profiles.target_dir(корень_проекта / "папка")),
 )
-выбранный_без_каталогов = profiles.target_dir(корень_без_профилей / "пусто")
 check(
-    "без существующих каталогов выбран личный",
-    выбранный_без_каталогов == profiles.user_profiles_dir(),
-    str(выбранный_без_каталогов),
+    "с просьбой «для проекта» — ближний profiles/ выше рабочего (парная)",
+    profiles.target_dir(корень_проекта / "папка", проект=True) == (корень_проекта / "profiles").resolve(),
+    str(profiles.target_dir(корень_проекта / "папка", проект=True)),
+)
+# Отдельный корень: у `tmp` в проверках уже лежит свой `profiles/`, и подъём нашёл бы его.
+корень_без_профилей = Path(tempfile.mkdtemp())
+check(
+    "для проекта без profiles/ — profiles/ рабочего каталога",
+    profiles.target_dir(корень_без_профилей, проект=True) == корень_без_профилей / "profiles",
+    str(profiles.target_dir(корень_без_профилей, проект=True)),
 )
 os.environ["MYHARNESS_PROFILES"] = прежний_MYHARNESS_PROFILES
 
@@ -11996,7 +11998,7 @@ class ТрёхдоводныйКлиент(КруговойКлиент):
 КРУГ_ВЫЗОВА = [
     api.StreamEvent("reasoning", "надо обновить план"),
     api.StreamEvent("tool_calls", calls=[вызов_инструмента("c1", "update_plan", '{"пункт": "шаг"}')]),
-    api.StreamEvent("meta", finish_reason="tool_calls", usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}),
+    api.StreamEvent("meta", finish_reason="tool_calls", usage={"prompt_tokens": 500, "completion_tokens": 10, "total_tokens": 510}),
 ]
 КРУГ_ОТВЕТА = [
     api.StreamEvent("content", "план обновлён"),
@@ -12065,10 +12067,10 @@ check(
 )
 check(
     "расход — сумма двух кругов",
-    ход_круга.usage.get("prompt_tokens") == 250
+    ход_круга.usage.get("prompt_tokens") == 650
     and ход_круга.usage.get("completion_tokens") == 15
-    and ход_круга.usage.get("total_tokens") == 265
-    and кругом.total_tokens == 265,
+    and ход_круга.usage.get("total_tokens") == 665
+    and кругом.total_tokens == 665,
     f"{ход_круга.usage} / {кругом.total_tokens}",
 )
 check("Turn несёт звенья", ход_круга.звенья == звенья_круга, str(ход_круга.звенья))
@@ -12084,13 +12086,13 @@ check(
     "журнал несёт звенья и запрос последнего круга",
     запись_круга.get("звенья") == звенья_круга
     and запись_круга["messages"][-1]["role"] == "tool"
-    and запись_круга["usage"]["total_tokens"] == 265,
+    and запись_круга["usage"]["total_tokens"] == 665,
     str(запись_круга),
 )
 check(
     "калибровка надбавки — по первому кругу, а не по сумме",
     кругом.overhead("deepseek-v4-flash")
-    == 100
+    == 500
     - tokens_mod.count_messages(клиент_круга.calls[0]["messages"], overhead=0)
     - tokens_mod.count_tools(СХЕМЫ),
     str(кругом.overhead("deepseek-v4-flash")),
@@ -12661,7 +12663,7 @@ async def отмена_во_втором_потоке():
 агент_второго_потока = asyncio.run(отмена_во_втором_потоке())
 check(
     "отмена во втором потоке: расход первого круга учтён, памяти нет",
-    агент_второго_потока.total_tokens == 110 and агент_второго_потока.history() == [],
+    агент_второго_потока.total_tokens == 510 and агент_второго_потока.history() == [],
     f"{агент_второго_потока.total_tokens} / {агент_второго_потока.history()}",
 )
 
@@ -13963,6 +13965,94 @@ check(
 check(
     "строка результата консилиума — число ответов, а не их текст",
     "".join(т for _, т in ui.tool_result_fragments("call_council", совет)) == "  ↳ call_council: ответов консилиума: 2 — на его вкладке\n",
+)
+
+# --- Итоговый просмотр дня 13 -----------------------------------------------------------------
+from myharness import commands_task as commands_task_mod  # noqa: E402
+
+os.chdir(папка_автомата)
+try:
+    ждущая = задача_автомата("ждёт без предложения", "EXECUTING", ждёт="человек", ожидается="посмотреть руками")
+    сост_ждущей = состояние_автомата(ждущая.слаг)
+    commands_task_mod.cmd_task(сост_ждущей, "отклонить продолжай по плану")
+    после = перечесть(ждущая)
+    check(
+        "/task отклонить снимает ожидание без предложения: ход у модели, этап прежний",
+        после.ждёт == ws.ЖДЁТ_МОДЕЛЬ and после.этап == "EXECUTING" and "продолжай по плану" in после.ожидается
+        and any("ожидание снято" in строка for строка in после.пункты("Находки")),
+        после.текст(),
+    )
+    простая = задача_автомата("без ожидания", "EXECUTING")
+    до = файл_задачи(простая)
+    commands_task_mod.cmd_task(состояние_автомата(простая.слаг), "отклонить что-то")
+    check("/task отклонить без предложения и без ожидания — отказ, файл прежний (парная)", файл_задачи(простая) == до)
+finally:
+    os.chdir(прежний_каталог_автомата)
+
+каталог_группы = tmp / "profiles-group-map"
+каталог_группы.mkdir(parents=True, exist_ok=True)
+(каталог_группы / "с-группой.json").write_text(
+    json.dumps({"name": "с-группой", "agents": ["кто-то"], "stages": [{"name": "A", "next": []}]}, ensure_ascii=False),
+    encoding="utf-8",
+)
+_, жалобы_группы = profiles._from_dict(
+    json.loads((каталог_группы / "с-группой.json").read_text(encoding="utf-8")),
+    "с-группой", каталог_группы, каталог_группы / "с-группой.json",
+)
+check("профиль с картой и agents предупреждает, что карта не действует", any("карта стадий не действует" in ж for ж in жалобы_группы), str(жалобы_группы))
+_, жалобы_без_группы = profiles._from_dict(
+    {"name": "без-группы", "stages": [{"name": "A", "next": []}]}, "без-группы", каталог_группы, None
+)
+check("профиль с картой без agents — без этого предупреждения (парная)", not any("не действует" in ж for ж in жалобы_без_группы))
+
+группа_при_карте = profile_maker.parse_draft(_черновик_карты([{"name": "A", "next": []}], ["продюсер"]))
+профиль_группы, жалобы_мастера_группы = profile_maker.собрать(группа_при_карте, доступные=доступные_карты, записи=[])
+check(
+    "мастер: при принятой карте группа на каждый вопрос убрана вслух",
+    профиль_группы.стадии is not None and профиль_группы.agents == [] and any("консилиум стадии" in ж for ж in жалобы_мастера_группы),
+    f"{профиль_группы.agents} {жалобы_мастера_группы}",
+)
+check("вес описаний включает обёртку сервера", tokens_mod.count_tools([{"a": 1}]) == tokens_mod.count_text('[{"a": 1}]') + tokens_mod.ОБЁРТКА_ИНСТРУМЕНТОВ)
+
+# --- Шаг 11: /profile new --проект --------------------------------------------------------------
+from myharness import commands_model as commands_model_mod, interview as interview_mod  # noqa: E402
+
+
+async def _начать_мастер(довод):
+    сост = state_mod.State(config=Config(api_key="sk-test"), client=StubClient(), model="deepseek-v4-flash", profile=профиль_автомата)
+    await commands_model_mod.cmd_profile(сост, довод)
+    обряд = сост.интервью
+    if обряд is not None:
+        interview_mod.отменить(сост)
+    return обряд
+
+
+обряд_проекта = asyncio.run(_начать_мастер("new --проект профиль сценариста"))
+check(
+    "/profile new --проект: слово снято с описания и запомнено на обряде",
+    обряд_проекта is not None and обряд_проекта.описание == "профиль сценариста" and обряд_проекта.состояние_рода.get("проект") is True,
+    str(обряд_проекта and (обряд_проекта.описание, обряд_проекта.состояние_рода)),
+)
+async def _чужой_опрос():
+    сост = state_mod.State(config=Config(api_key="sk-test"), client=StubClient(), model="deepseek-v4-flash", profile=профиль_автомата)
+    await commands_model_mod.cmd_profile(сост, "new профиль первый")
+    первый = сост.интервью
+    await commands_model_mod.cmd_profile(сост, "new --проект профиль второй")
+    итог = (первый is not None and сост.интервью is первый, dict(первый.состояние_рода) if первый else None)
+    interview_mod.отменить(сост)
+    return итог
+
+
+тот_же, состояние_первого = asyncio.run(_чужой_опрос())
+check(
+    "/profile new --проект при идущем опросе не помечает чужой опрос",
+    тот_же and not (состояние_первого or {}).get("проект"),
+    str(состояние_первого),
+)
+обряд_личный = asyncio.run(_начать_мастер("new профиль сценариста"))
+check(
+    "/profile new без слова — профиль не проектный (парная)",
+    обряд_личный is not None and not обряд_личный.состояние_рода.get("проект"),
 )
 
 print()

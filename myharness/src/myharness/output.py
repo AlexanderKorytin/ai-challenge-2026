@@ -21,6 +21,7 @@ from typing import Any
 
 from . import api, tokens, ui
 from . import screens as screens_mod
+from . import agent as agent_mod
 from .agent import Agent, Turn
 from .state import State
 
@@ -626,7 +627,11 @@ async def run_turn(
             # `Turn.error` бывает и не сетевой: агент кладёт сюда сбой отрисовки, но только
             # при удавшемся обмене. Поэтому про DeepSeek говорим лишь когда обмен не удался —
             # иначе пользователь пойдёт чинить связь, которая исправна.
-            append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {turn.error}"), pane)
+            if turn.error.startswith(agent_mod.ОЧИЩЕН_ПОСРЕДИ_КРУГА):
+                # Очистку заказал человек — сеть тут ни при чём, и чинить связь незачем.
+                append_log(state, ui.error_fragments(turn.error), pane)
+            else:
+                append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {turn.error}"), pane)
         if marks.get("reasoning") or marks.get("answer"):
             append_log(state, [("", "\n")], pane)
         if turn is not None and agent_obj.выжимка_отвергнута():
