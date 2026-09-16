@@ -763,6 +763,138 @@ async def main():
         finally:
             state.config.api_key = ключ
 
+        print("\nАвтомат задачи: команды человека")
+        # Профиль с картой лежит в каталоге профилей проверки — его находит настоящий `/profile`.
+        import json
+
+        имя_карты = "ведущий-карты"
+        (tmp / "profiles" / f"{имя_карты}.json").write_text(
+            json.dumps(
+                {
+                    "name": имя_карты,
+                    "system": "ты ведёшь задачу по стадиям",
+                    "stages": [
+                        {"name": "RESEARCH", "approval": True, "next": ["PLAN", "EXECUTING"]},
+                        {"name": "PLAN", "approval": True, "next": ["EXECUTING"]},
+                        {"name": "EXECUTING", "next": ["DONE"]},
+                        {"name": "DONE"},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        прежний_профиль = state.profile.name
+        await send(f"/profile {имя_карты}" + ENTER, пауза=0.3)
+        check("профиль с картой поднят", state.profile.name == имя_карты and state.profile.стадии is not None, state.profile.name)
+        await send("/task new сценарий фильма" + ENTER)
+        автомат = workspace.load_task(папка, state.слаг_задачи)[0]
+        check(
+            "/task new в профиле с картой — этап первой стадии и профиль в файле",
+            автомат is not None and автомат.этап == "RESEARCH" and f"профиль: {имя_карты}" in автомат.путь.read_text(encoding="utf-8"),
+            автомат.путь.read_text(encoding="utf-8") if автомат else "",
+        )
+        # Как после ворот: модель предложила переход, итог ждёт утверждения.
+        workspace.обновить(
+            автомат,
+            ждёт="человек",
+            предложено="PLAN",
+            ожидается="утвердить итог стадии RESEARCH и переход в PLAN",
+            итог="дизайн готов",
+        )
+        await send("/task" + ENTER)
+        показ = лента(state)[-900:]
+        check("показ задачи называет ворота и итог", "на утверждении: переход в PLAN" in показ and "итог на утверждении: дизайн готов" in показ, показ)
+        await send("/task утвердить" + ENTER)
+        автомат = workspace.load_task(папка, state.слаг_задачи)[0]
+        check(
+            "/task утвердить — этап сменился, итог в «Сделано», ключи ворот сняты",
+            автомат.этап == "PLAN"
+            and автомат.пункты("Сделано") == ["стадия RESEARCH: дизайн готов"]
+            and (автомат.ждёт, автомат.предложено, автомат.ожидается, автомат.итог) == ("", "", "", ""),
+            автомат.путь.read_text(encoding="utf-8"),
+        )
+        check("и сказано «утверждено: RESEARCH → PLAN»", "утверждено: RESEARCH → PLAN" in лента(state), лента(state)[-300:])
+        await send("/task new сценарий фильма" + ENTER)
+        check(
+            "повторный /task new продолжает задачу и этап не сбрасывает",
+            workspace.load_task(папка, state.слаг_задачи)[0].этап == "PLAN",
+            workspace.load_task(папка, state.слаг_задачи)[0].этап,
+        )
+        await send("/task утвердить" + ENTER)
+        check("повторное утверждение — «утверждать нечего»", "утверждать нечего" in лента(state)[-200:], лента(state)[-200:])
+        await send("/task отклонить нужен второй вариант" + ENTER)
+        check("отклонить без предложения — «отклонять нечего»", "отклонять нечего" in лента(state)[-200:], лента(state)[-200:])
+        workspace.обновить(автомат, ждёт="человек", предложено="EXECUTING", ожидается="утвердить план", итог="план из трёх шагов")
+        до_пустого = автомат.путь.read_bytes()
+        await send("/task отклонить" + ENTER)
+        check(
+            "отклонить без замечания — подсказка, файл прежний",
+            "нужно замечание" in лента(state)[-200:] and автомат.путь.read_bytes() == до_пустого,
+            лента(state)[-200:],
+        )
+        await send("/task отклонить нужен второй вариант" + ENTER)
+        автомат = workspace.load_task(папка, state.слаг_задачи)[0]
+        check(
+            "/task отклонить — этап прежний, ждёт модель, ожидание с замечанием, предложение и итог сняты",
+            автомат.этап == "PLAN"
+            and автомат.ждёт == "модель"
+            and автомат.ожидается == "переделать итог стадии PLAN по замечанию: нужен второй вариант"
+            and (автомат.предложено, автомат.итог) == ("", ""),
+            автомат.путь.read_text(encoding="utf-8"),
+        )
+        check("замечание легло в «Находки»", автомат.пункты("Находки") == ["отклонено: нужен второй вариант"], автомат.пункты("Находки"))
+        check("человеку сказано, что написать модели", "она получит замечание" in лента(state)[-300:], лента(state)[-300:])
+        await send("/task пауза" + ENTER)
+        текст_файла = автомат.путь.read_text(encoding="utf-8")
+        check("/task пауза — в файле «пауза: да»", "пауза: да" in текст_файла, текст_файла)
+        from myharness import machine
+
+        check("на паузе инструментов автомата нет", machine.набор(state, state.profile) is None)
+        await send("/task пауза" + ENTER)
+        check("повторная пауза — «уже на паузе»", "уже на паузе" in лента(state)[-200:], лента(state)[-200:])
+        await send("/task продолжить" + ENTER)
+        текст_файла = автомат.путь.read_text(encoding="utf-8")
+        check("/task продолжить — ключа паузы нет", "пауза:" not in текст_файла, текст_файла)
+        check("после продолжения инструменты автомата вернулись", machine.набор(state, state.profile) is not None)
+        await send("/task продолжить" + ENTER)
+        check("повторное продолжение — «задача не на паузе»", "задача не на паузе" in лента(state)[-200:], лента(state)[-200:])
+        до_леса = автомат.путь.read_bytes()
+        await send("/task этап лес" + ENTER)
+        check(
+            "/task этап не из карты — отказ со списком стадий, файл прежний",
+            "стадии ЛЕС нет в карте" in лента(state)[-300:]
+            and "RESEARCH, PLAN, EXECUTING, DONE" in лента(state)[-300:]
+            and автомат.путь.read_bytes() == до_леса,
+            лента(state)[-300:],
+        )
+        await send("/task этап done" + ENTER)
+        автомат = workspace.load_task(папка, state.слаг_задачи)[0]
+        check(
+            "/task этап мимо переходов карты — применён и назван «вне карты»",
+            автомат.этап == "DONE" and "переход вне карты сделан человеком: PLAN → DONE" in лента(state)[-300:],
+            лента(state)[-300:],
+        )
+        await send("/task done" + ENTER)
+
+        # Парная: профиль без карты — задача дня 11, без новых ключей.
+        await send(f"/profile {прежний_профиль}" + ENTER, пауза=0.3)
+        check("вернулись в профиль без карты", state.profile.стадии is None, state.profile.name)
+        await send("/task new задача без карты" + ENTER)
+        простая = workspace.load_task(папка, state.слаг_задачи)[0]
+        текст_простой = простая.путь.read_text(encoding="utf-8")
+        check(
+            "профиль без карты — этап по умолчанию, ключей автомата нет",
+            простая.этап == workspace.ЭТАП_ПО_УМОЛЧАНИЮ
+            and not any(f"{ключ}:" in текст_простой for ключ in ("профиль", "ждёт", "ожидается", "предложено", "итог", "пауза")),
+            текст_простой,
+        )
+        await send("/task утвердить" + ENTER)
+        check("утвердить без предложения — «утверждать нечего»", "утверждать нечего" in лента(state)[-200:], лента(state)[-200:])
+        await send("/task этап лес" + ENTER)
+        check("без карты этап — любое слово", workspace.load_task(папка, state.слаг_задачи)[0].этап == "ЛЕС")
+        await send("/task done" + ENTER)
+
         await send("/exit" + ENTER, пауза=0.3)
         await asyncio.wait_for(run, timeout=5)
 
