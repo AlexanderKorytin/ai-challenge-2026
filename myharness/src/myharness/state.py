@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from pathlib import Path
 
-from . import api, background, context_strategy, memory, project_card, tokens, workspace
+from . import api, background, context_strategy, machine, memory, project_card, tokens, workspace
 from . import screens as screens_mod
 from .agent import Agent
 from .api import DeepSeekClient
@@ -323,6 +323,10 @@ def work_block(state: State) -> str:
 
     Спора с выбором человека тут нет: какая задача активна, решает он, а что в ней написано
     — решает файл.
+
+    Карта стадий идёт в блок, только если задача заведена в профиле главного собеседника
+    (`state.profile` — его профиль: его же получает `главный_агент`). Задаче чужого профиля
+    карта этого профиля не указ — блок остаётся прежним.
     """
     if state.слаг_задачи is None:
         return ""
@@ -333,7 +337,10 @@ def work_block(state: State) -> str:
         # уходит на поиск поломки, которой нет. Исключение здесь — законный путь: его ловит
         # `_с_хвостом` и кладёт жалобу в `store_error`, ради чего тот канал и заведён.
         raise RuntimeError("; ".join(жалобы))
-    return workspace.блок(задача) if задача is not None else ""
+    if задача is None:
+        return ""
+    карта = state.profile.стадии if задача.профиль == state.profile.name else None
+    return workspace.блок(задача, карта)
 
 
 def главный_агент(state: State, profile: Profile) -> Agent:
@@ -350,6 +357,9 @@ def главный_агент(state: State, profile: Profile) -> Agent:
     Получает их только собеседник главного экрана. Исполнителям группы, шагам цепочки и
     пакетному наряду нужна их роль, а не задача пользователя: наряд ещё и обязан быть
     воспроизводимым, а слои памяти меняются между прогонами.
+
+    Инструменты автомата задачи (`machine.набор`) — тоже только ему и тоже вызываемым: пауза,
+    смена задачи и правка файла руками решают, будут ли они в следующем обмене.
     """
     return Agent(
         screens_mod.MAIN_KEY,
@@ -357,4 +367,5 @@ def главный_агент(state: State, profile: Profile) -> Agent:
         facts=user_facts,
         project=project_block,
         work=lambda: work_block(state),
+        инструменты=lambda: machine.набор(state, profile),
     )
