@@ -1,0 +1,37 @@
+{
+  "name": "архитектор",
+  "title": "архитектор службы клиники",
+  "description": "ведёт задачи службы записи пациентов по стадиям",
+  "system_file": "архитектор.md",
+  "keep_history": true,
+  "context_strategy": "standard",
+  "stages": [
+    {
+      "name": "RESEARCH",
+      "goal": "разбор задачи и вариантов",
+      "approval": true,
+      "next": [
+        "PLAN"
+      ]
+    },
+    {
+      "name": "PLAN",
+      "goal": "план работ",
+      "approval": true,
+      "next": [
+        "EXECUTING"
+      ]
+    },
+    {
+      "name": "EXECUTING",
+      "goal": "исполнение",
+      "next": [
+        "DONE"
+      ]
+    },
+    {
+      "name": "DONE",
+      "goal": "задача закрыта"
+    }
+  ]
+}
