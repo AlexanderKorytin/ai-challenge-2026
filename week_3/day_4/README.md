@@ -1,6 +1,6 @@
 # День 14. Инварианты и ограничения состояния
 
-**Стадия: Report.** Пройдены `Research` → `Plan` → `Spec` → `Executing` → `Spec` → `Validation` →
+**Стадия: Done.** Пройдены `Research` → `Plan` → `Spec` → `Executing` → `Spec` → `Validation` →
 `Report`. Результат подтверждён проверками, живым сценарием на настоящем DeepSeek и снят на видео.
 
 ## Условие
