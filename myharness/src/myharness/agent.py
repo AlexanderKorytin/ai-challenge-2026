@@ -2216,6 +2216,10 @@ class Agent:
             # подставляется даже при пустом usage.
             facts_usage = dict(facts_turn.usage)
 
+        # Разобранные факты применяются ПОСЛЕ проверки ответа, а не здесь: проверка ждёт судью,
+        # и отмена посреди него отбрасывает пару — факты обмена, которого нет в разговоре, не
+        # имеют права осесть на диске и пережить перезапуск.
+        отложенные_факты = None
         if strategy == context_strategy.CONTEXT_FACTS:
             if cancelled:
                 facts_error = facts_error or "извлечение фактов отменено"
@@ -2231,19 +2235,9 @@ class Agent:
                 )
             else:
                 try:
-                    changes = sticky_facts.parse_changes(facts_turn.text)
+                    отложенные_факты = sticky_facts.parse_changes(facts_turn.text)
                 except (TypeError, ValueError) as exc:
                     facts_error = str(exc)
-                else:
-                    facts_error = self._apply_conversation_facts(
-                        changes.set_values,
-                        changes.forget_keys,
-                        turn_id=uuid4().hex,
-                        source="extractor",
-                    )
-            # После `/clear` редакция уже нулевая; при любой ошибке — прежняя. Поле должно
-            # описывать реальное состояние на выходе, а не только успешную запись.
-            facts_revision_after = self._conversation_facts.revision
 
         # Один круг — расход как прислал сервер, байт в байт прежний. Несколько — сумма
         # накопителем: обмен стоил все свои запросы, и счётчики, журнал и `Turn` называют
@@ -2315,6 +2309,22 @@ class Agent:
                 # появляется у главной записи, только если судья действительно был позван:
                 # иначе каждый обмен главного разговора выглядел бы в журнале прогоном группы.
                 effective_run_id = проверка.run_id
+        if отложенные_факты is not None:
+            if cancelled:
+                facts_error = "извлечение фактов отменено"
+            elif self._generation != generation:
+                facts_error = "результат извлечения фактов отброшен: разговор уже очищен"
+            else:
+                facts_error = self._apply_conversation_facts(
+                    отложенные_факты.set_values,
+                    отложенные_факты.forget_keys,
+                    turn_id=uuid4().hex,
+                    source="extractor",
+                )
+        if strategy == context_strategy.CONTEXT_FACTS:
+            # После `/clear` редакция уже нулевая; при любой ошибке — прежняя. Поле должно
+            # описывать реальное состояние на выходе, а не только успешную запись.
+            facts_revision_after = self._conversation_facts.revision
         if status == "ok":
             if render_error:
                 error_text = render_error

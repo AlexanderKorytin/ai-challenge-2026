@@ -14975,6 +14975,86 @@ finally:
     os.chdir(прежний_каталог_суд)
     os.environ["MYHARNESS_STATE_DIR"] = прежний_каталог_состояния_суд
 
+# Итоговый просмотр дня 14: при Sticky Facts отмена посреди проверки ответа не оставляет на
+# диске фактов обмена, которого нет в разговоре. Пара: та же проверка без отмены факты применяет.
+class КлиентФактовИОтвета:
+    async def stream_chat(self, model, messages, params=None, **доводы):
+        if (params or {}).get("response_format") == {"type": "json_object"}:
+            yield api.StreamEvent("content", '{"set":{"stack":"Kotlin"},"forget":[]}')
+        else:
+            yield api.StreamEvent("content", "Инварианты: нарушений нет\nответ")
+        yield api.StreamEvent("meta", finish_reason="stop", usage={"prompt_tokens": 5, "completion_tokens": 2})
+
+
+def агент_фактов_с_проверкой(имя, проверка):
+    сессия = tmp / "разговоры" / f"{имя}.jsonl"
+    хранилище = memory.FactsStore(сессия)
+    return Agent(
+        имя,
+        profiles.Profile(name=имя, context_strategy="facts", strategy_window=4, compact_at=0),
+        store=memory.SessionStore(сессия),
+        facts_store=хранилище,
+        проверка=проверка,
+    ), хранилище
+
+
+async def проверка_без_отмены(вопрос, ответ, **_):
+    return Проверка(сверка="Инварианты: нарушений нет", инвариантов=1)
+
+
+проверка_началась: list[asyncio.Event] = []
+
+
+async def проверка_висящая(вопрос, ответ, **_):
+    проверка_началась[0].set()
+    await asyncio.sleep(3600)
+
+
+async def отменить_на_проверке(агент):
+    # Отменяем ПОСЛЕ отметки: отмена, пришедшая раньше проверки, прошла бы и без правки.
+    проверка_началась[:] = [asyncio.Event()]
+    задача = asyncio.create_task(агент.exchange(КлиентФактовИОтвета(), "deepseek-v4-flash", "стек — Kotlin"))
+    await asyncio.wait_for(проверка_началась[0].wait(), timeout=5)
+    задача.cancel()
+    try:
+        await задача
+    except asyncio.CancelledError:
+        return True
+    return False
+
+
+агент_без_отмены, факты_без_отмены = агент_фактов_с_проверкой("факты-без-отмены", проверка_без_отмены)
+asyncio.run(агент_без_отмены.exchange(КлиентФактовИОтвета(), "deepseek-v4-flash", "стек — Kotlin"))
+поднятые_без_отмены, _ = факты_без_отмены.load()
+check(
+    "Sticky Facts: проверка прошла — факты применены и пара записана",
+    поднятые_без_отмены.values == {"stack": "Kotlin"} and len(агент_без_отмены.history()) == 2,
+    f"{поднятые_без_отмены.values} {агент_без_отмены.history()}",
+)
+агент_отмены, факты_отмены = агент_фактов_с_проверкой("факты-отмена", проверка_висящая)
+отменён = asyncio.run(отменить_на_проверке(агент_отмены))
+поднятые_отмены, _ = факты_отмены.load()
+check(
+    "Sticky Facts: отмена посреди проверки — ни пары, ни фактов на диске",
+    отменён and поднятые_отмены.values == {} and агент_отмены.history() == []
+    and агент_отмены.conversation_facts()[0] == {},
+    f"{отменён} {поднятые_отмены.values} {агент_отмены.history()}",
+)
+
+# Номер инварианта — место строки в разделе: строка из одного хвоста признаков номер не
+# получает, но и соседние не сдвигает, иначе `/task забыть ограничение N` убрал бы не ту.
+from myharness import invariants as инв_нумерация  # noqa: E402
+
+номера_по_месту = [
+    (и.номер, и.текст)
+    for и in инв_нумерация._уровень("З", ["Только Koin [запрет: @Component]", "[запрет: foo]", "Без простоя"])
+]
+check(
+    "номер З — место строки: хвост без правила пропущен, «Без простоя» — З3",
+    номера_по_месту == [("З1", "Только Koin"), ("З3", "Без простоя")],
+    str(номера_по_месту),
+)
+
 print()
 if failures:
     print(f"ПРОВАЛЕНО: {len(failures)} — " + "; ".join(failures))
