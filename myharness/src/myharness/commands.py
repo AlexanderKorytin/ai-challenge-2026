@@ -135,6 +135,8 @@ async def handle_command(text: str, state: State) -> bool:
         commands_memory.cmd_remember(state, arg)
     elif cmd == "/memory":
         commands_memory.cmd_memory(state, arg)
+    elif cmd == "/invariants":
+        commands_memory.cmd_invariants(state, arg)
     elif cmd == "/forget":
         commands_memory.cmd_forget(state, arg)
     elif cmd == "/tokens":

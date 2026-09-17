@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from . import context_strategy, memory, project_card, ui, workspace
+from . import context_strategy, invariants, memory, project_card, ui, workspace
 from . import picker as picker_mod
 from . import screens as screens_mod
 from .config import save as save_config
@@ -357,7 +357,8 @@ def cmd_memory(state: State, arg: str) -> None:
     if ключ:
         append_log(state, ui.error_fragments(f"не понимаю «{ключ}» — /memory, /memory on или /memory off"))
         return
-    факты, предупреждения = memory.load_facts()
+    записи, предупреждения = memory.load_records()
+    факты = [текст for текст, _ in записи]
     for предупреждение in предупреждения:
         append_log(state, ui.error_fragments(предупреждение))
     # Сначала раскладка всех четырёх слоёв, потом сами записи. Порядок не случаен: вопрос
@@ -374,7 +375,76 @@ def cmd_memory(state: State, arg: str) -> None:
             else "сбор фактов выключен (/memory on — включить)"
         ),
     )
-    append_log(state, ui.facts_fragments(факты))
+    append_log(
+        state,
+        ui.facts_fragments(
+            факты,
+            frozenset(номер for номер, (_, инвариант) in enumerate(записи, 1) if инвариант),
+        ),
+    )
+
+
+# Откуда строка инварианта — по первой букве номера. Слова те же, что в дизайне и в
+# требовании: человек, увидевший «задача», знает, какой командой строку убрать.
+ИСТОЧНИКИ = {"Г": "глобально", "П": "папка", "З": "задача", "А": "автомат (карта стадий)"}
+
+
+def _номер_инварианта(текст: str) -> str:
+    """Номер записи-инварианта, каким его покажет `/invariants`.
+
+    Ищем перечитыванием, а не считаем новую запись последней: записи упорядочены по времени
+    добавления с точностью до секунды, а внутри секунды — по имени файла. Тот же класс беды
+    разобран у `recognizer._номер_факта`: номер, разошедшийся со списком, хуже никакого."""
+    ключ = memory.ключ_записи(текст)
+    инварианты, _ = memory.load_invariant_facts()
+    for номер, запись in enumerate(инварианты, 1):
+        if memory.ключ_записи(запись) == ключ:
+            return f"Г{номер}"
+    return "Г?"
+
+
+def cmd_invariants(state: State, arg: str) -> None:
+    """`/invariants` — список инвариантов; `/invariants global <текст>` — глобальный инвариант.
+
+    Писать инварианты папки и задачи здесь нельзя намеренно: для них есть `/project` и
+    `/task`, и вторая дверь в те же разделы разошлась бы с первой на первом же замке.
+    Глобальный уровень своей команды записи не имеет — `/remember` пишет мягкую запись, и
+    пометку инварианта ставит только эта команда."""
+    слово, _, остаток = arg.strip().partition(" ")
+    if слово.lower() == "global":
+        текст = остаток.strip()
+        if not текст:
+            append_log(state, ui.hint_fragments("нужен текст: /invariants global Никакой транслитерации английских терминов"))
+            return
+        добавлен, сообщение = memory.add_fact(текст, инвариант=True)
+        if not добавлен:
+            append_log(state, ui.error_fragments(сообщение))
+            if сообщение == memory.УЖЕ_ЗАПИСАНО:
+                # Тот же текст мог лечь мягкой записью: пометку на неё не поставить, а молчание
+                # здесь оставило бы человека с правилом, которое модель вправе не соблюдать.
+                append_log(
+                    state,
+                    ui.hint_fragments("если это мягкая запись — уберите её (/forget N, номер в /memory) и повторите"),
+                )
+            return
+        забыть_счёт_занятости(state)
+        append_log(state, ui.system_fragments(f"глобальный инвариант {_номер_инварианта(сообщение)} записан: {сообщение}"))
+        return
+    if слово:
+        append_log(
+            state,
+            ui.error_fragments(f"не понимаю «{arg.strip()}» — /invariants или /invariants global <текст>"),
+        )
+        return
+    список, жалобы = invariants.собрать(Path.cwd(), state.слаг_задачи, state.profile)
+    for жалоба in жалобы:
+        append_log(state, ui.error_fragments(жалоба))
+    append_log(
+        state,
+        ui.invariants_fragments(
+            [(и.номер, и.текст, и.признаки, ИСТОЧНИКИ.get(и.номер[:1], "")) for и in список]
+        ),
+    )
 
 
 def cmd_forget(state: State, arg: str) -> None:

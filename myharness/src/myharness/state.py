@@ -28,7 +28,17 @@ from typing import TYPE_CHECKING, Any
 
 from pathlib import Path
 
-from . import api, background, context_strategy, machine, memory, project_card, tokens, workspace
+from . import (
+    api,
+    background,
+    context_strategy,
+    invariants,
+    machine,
+    memory,
+    project_card,
+    tokens,
+    workspace,
+)
 from . import screens as screens_mod
 from .agent import Agent
 from .api import DeepSeekClient
@@ -285,9 +295,12 @@ def user_facts() -> list[str]:
 
     Предупреждения о попорченных файлах здесь отбрасываются намеренно: сборка запроса — не
     то место, где о них говорить (она молчалива и идёт на каждый вопрос), их показывает
-    `/memory`, куда человек за памятью и приходит."""
-    факты, _ = memory.load_facts()
-    return факты
+    `/memory`, куда человек за памятью и приходит.
+
+    Записи-инварианты сюда не входят: они уходят блоком инвариантов с номерами `Г…`
+    (`invariants_block`), и пометка перекрытия профиля на них не действует."""
+    записи, _ = memory.load_records()
+    return [текст for текст, инвариант in записи if not инвариант]
 
 
 def project_block() -> str:
@@ -343,6 +356,27 @@ def work_block(state: State) -> str:
     return workspace.блок(задача, карта)
 
 
+def invariants_block(state: State, profile: Profile | None = None) -> str:
+    """Блок инвариантов для системной части запроса ГЛАВНОГО разговора.
+
+    Читается с диска на каждую сборку — все четыре слоя правятся по ходу сеанса. Карта стадий
+    берётся у профиля главного собеседника: `главный_агент` передаёт ТОТ ЖЕ профиль, что и
+    `machine.набор`, — строки `А` обязаны появляться ровно при тех условиях, при которых
+    выдаются инструменты. Без довода — `state.profile`. Задача — выбранная человеком.
+
+    Блок собирается из того, что прочитано, и уходит в запрос ВСЕГДА. Жалобы слоёв здесь не
+    поднимаются намеренно: подними их исключением — и один испорченный файл мягкой записи о
+    человеке выбрасывал бы из каждого запроса весь блок, вместе со строками `П`, `З` и `А`,
+    которые прочитаны исправно. Жалобы при этом не теряются: испорченные записи показывают
+    `/memory` и `/invariants`, а нечитаемые карточку и задачу в том же запросе уже поднимают
+    `project_block` и `work_block` — второй раз та же жалоба была бы шумом.
+    """
+    список, _ = invariants.собрать(
+        Path.cwd(), state.слаг_задачи, profile if profile is not None else state.profile
+    )
+    return invariants.блок(список)
+
+
 def главный_агент(state: State, profile: Profile) -> Agent:
     """Собеседник главного экрана со всеми тремя слоями памяти.
 
@@ -367,5 +401,6 @@ def главный_агент(state: State, profile: Profile) -> Agent:
         facts=user_facts,
         project=project_block,
         work=lambda: work_block(state),
+        инварианты=lambda: invariants_block(state, profile),
         инструменты=lambda: machine.набор(state, profile),
     )

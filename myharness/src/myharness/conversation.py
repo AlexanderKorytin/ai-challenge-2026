@@ -135,6 +135,7 @@ def restore_conversation(state: State) -> None:
         card=агент.блок_карточки(),
         tail=агент.work_block(),
         model=state.model,
+        инварианты=агент.блок_инвариантов(),
     )
     окно = state.profile.history_window
     if окно > 0:
