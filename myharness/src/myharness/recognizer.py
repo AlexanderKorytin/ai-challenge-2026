@@ -25,9 +25,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# `ui` здесь обычным ввозом, сверху. Поздним обязан быть ввоз в ОБРАТНУЮ сторону: справка
-# печатает список зачинов отсюда, и `from . import recognizer` наверху `ui` роняет запуск
-# кругом `ui → recognizer → conversation → output → ui` — проверено запуском, а не догадкой.
+# `ui` здесь обычным ввозом, сверху. Список зачинов печатает справка из `helpdoc`, а `ui`
+# этот модуль не ввозит: ввоз `recognizer` наверху `ui` уронил бы запуск кругом
+# `ui → recognizer → conversation → output → ui` — проверено запуском, а не догадкой.
 from . import memory, project_card, ui, workspace
 from . import screens as screens_mod
 from .agent import Agent

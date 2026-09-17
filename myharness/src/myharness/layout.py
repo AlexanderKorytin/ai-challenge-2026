@@ -42,7 +42,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
-from . import archivist, compact, context_strategy, profiles, ui
+from . import archivist, compact, context_strategy, helpdoc, profiles, ui
 from . import params as params_mod
 from . import picker as picker_mod
 from . import screens as screens_mod
@@ -108,6 +108,17 @@ class HarnessCompleter(Completer):
                         start_position=-len(word),
                         display=strategy,
                         display_meta=STRATEGY_TITLES[strategy],
+                    )
+        elif command == "/help" and len(parts) == 2:
+            # Подсказываются целые слова, а команда принимает и их начало: состав подсказок
+            # не шире того, что она понимает.
+            for раздел in helpdoc.РАЗДЕЛЫ:
+                if раздел.слово.startswith(word.lower()):
+                    yield Completion(
+                        раздел.слово,
+                        start_position=-len(word),
+                        display=раздел.слово,
+                        display_meta=раздел.заголовок,
                     )
         elif command == "/model" and len(parts) == 2:
             for name in self.state.known_models:

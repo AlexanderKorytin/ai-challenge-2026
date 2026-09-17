@@ -13,7 +13,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from . import context_strategy, profiles, ui
+from . import context_strategy, helpdoc, profiles, ui
 from . import picker as picker_mod
 from .api import DeepSeekClient
 from . import interview, memory, profile_maker
@@ -98,6 +98,27 @@ async def cmd_model(state: State, arg: str) -> None:
         on_choose=choose,
         index=marked or 0,
         marked=marked,
+    )
+    refresh(state)
+
+
+def open_help_picker(state: State) -> None:
+    """Меню разделов справки. Точки «текущего значения» нет: у справки его нет, а раздел
+    читается в ленте, потому что панель выбора прокручивать текст не умеет."""
+    items = [
+        picker_mod.Item(label=раздел.заголовок, hint=раздел.подсказка, payload=раздел)
+        for раздел in helpdoc.РАЗДЕЛЫ
+    ]
+
+    def choose(payload: Any) -> None:
+        state.picker = None
+        append_log(state, helpdoc.фрагменты(payload))
+
+    state.picker = picker_mod.Picker(
+        title="/help — справка",
+        description="какой раздел показать",
+        items=items,
+        on_choose=choose,
     )
     refresh(state)
 

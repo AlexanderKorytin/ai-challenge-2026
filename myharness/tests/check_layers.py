@@ -32,7 +32,7 @@ from prompt_toolkit.application import create_app_session  # noqa: E402
 from prompt_toolkit.input import create_pipe_input  # noqa: E402
 from prompt_toolkit.output import DummyOutput  # noqa: E402
 
-from myharness import api, cli, commands, invariants, profiles, project_card, recognizer, state as state_mod, ui, workspace  # noqa: E402
+from myharness import api, cli, commands, helpdoc, invariants, profiles, project_card, recognizer, state as state_mod, ui, workspace  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 ENTER, ESC, BACKSPACE = "\r", "\x1b", "\x7f"
@@ -273,7 +273,7 @@ async def main():
 
         print("\nСправка называет зачины")
         длина_до_справки = len(лента(state))
-        await send("/help" + ENTER)
+        await send("/help карточка" + ENTER)
         # Режем хвост: `лента` растёт весь сценарий, и поиск по всей ленте нашёл бы слова,
         # напечатанные выше по ходу проверок, а не справкой.
         справка = лента(state)[длина_до_справки:]
@@ -307,10 +307,10 @@ async def main():
         # Ширина: строка, вылезшая за край, в терминале рвётся посреди слова. Мерить надо
         # ровно тот абзац, который переносится программой, — остальные набраны руками, и
         # таблица команд в справке заведомо шире.
-        абзац = ui._строка_зачинов().splitlines()
+        абзац = helpdoc._строка_зачинов().splitlines()
         check(
             "абзац зачинов перенесён по ширине",
-            max(len(с) for с in абзац) <= ui.ШИРИНА_АБЗАЦА_СПРАВКИ,
+            max(len(с) for с in абзац) <= helpdoc.ШИРИНА_АБЗАЦА_СПРАВКИ,
             str([len(с) for с in абзац]),
         )
         # Предусловие: этот абзац и правда стоит в справке. Без него проверка выше мерила бы

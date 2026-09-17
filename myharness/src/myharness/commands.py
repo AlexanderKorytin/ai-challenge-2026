@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 
-from . import background, recognizer, ui
+from . import background, helpdoc, recognizer, ui
 from . import agents_panel, commands_context, commands_memory, commands_model, commands_params
 from . import commands_project, commands_task
 from . import screens as screens_mod
@@ -53,7 +53,14 @@ async def handle_command(text: str, state: State) -> bool:
         )
         return False
     if cmd == "/help":
-        append_log(state, ui.help_fragments())
+        if not arg:
+            commands_model.open_help_picker(state)
+        else:
+            подходящие = helpdoc.найти(arg)
+            if len(подходящие) == 1:
+                append_log(state, helpdoc.фрагменты(подходящие[0]))
+            else:
+                append_log(state, helpdoc.ошибка(arg, подходящие))
     elif cmd == "/auth":
         commands_model.cmd_auth(state)
     elif cmd == "/model":
