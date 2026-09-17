@@ -32,7 +32,7 @@ from prompt_toolkit.application import create_app_session  # noqa: E402
 from prompt_toolkit.input import create_pipe_input  # noqa: E402
 from prompt_toolkit.output import DummyOutput  # noqa: E402
 
-from myharness import api, cli, commands, profiles, project_card, recognizer, state as state_mod, ui, workspace  # noqa: E402
+from myharness import api, cli, commands, invariants, profiles, project_card, recognizer, state as state_mod, ui, workspace  # noqa: E402
 from myharness.config import Config  # noqa: E402
 
 ENTER, ESC, BACKSPACE = "\r", "\x1b", "\x7f"
@@ -65,6 +65,7 @@ class FakeClient:
 
     def __init__(self):
         self.calls = []
+        self.судья = []
         # Ответы распознавателю по очереди: у каждой реплики сценария своя судьба, и задать
         # её надо до того, как реплика отправлена.
         self.ответы_распознавателя = []
@@ -82,8 +83,16 @@ class FakeClient:
 
     async def stream_chat(self, model, messages, params=None):
         params = dict(params or {})
-        self.calls.append({"model": model, "messages": messages, "params": params})
         системная = messages[0]["content"] if messages else ""
+        if системная == invariants.ИНСТРУКЦИЯ_СУДЬИ:
+            # Судья (день 14) зовётся после каждого ответа в папке с «Ограничениями» — его
+            # обмены ведутся отдельным списком: сценарии ниже считают обмены распознавателя и
+            # собеседника, и судья, попавший в общий счёт, ломал бы их без всякой беды в коде.
+            self.судья.append({"model": model, "messages": messages, "params": params})
+            yield api.StreamEvent("content", '{"нарушены": [], "довод": ""}')
+            yield api.StreamEvent("meta", finish_reason="stop", usage={"prompt_tokens": 5, "completion_tokens": 2})
+            return
+        self.calls.append({"model": model, "messages": messages, "params": params})
         if системная == recognizer.ИНСТРУКЦИЯ:
             ворота = self.ворота_распознавателя
             if ворота is not None:
@@ -419,6 +428,7 @@ async def main():
         системное = ушедшее[0]["content"]
         последнее = ушедшее[-1]["content"]
         check("системная часть /system совпала с ушедшей в модель", системное in напечатанное.replace("  ", ""), системное[:120])
+        check("в папке с «Ограничениями» после ответа звался судья", len(fake.судья) >= 1, str(len(fake.судья)))
         check("хвост ушёл перед вопросом", последнее.startswith("<рабочее-состояние>") and последнее.endswith("вопрос модели"), последнее[:80])
         check("в памяти агента лежит вопрос без хвоста", all(
             "<рабочее-состояние>" not in сообщение["content"] for сообщение in state.main_agent.history()

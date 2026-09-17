@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field, replace
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from pathlib import Path
@@ -40,7 +41,7 @@ from . import (
     workspace,
 )
 from . import screens as screens_mod
-from .agent import Agent
+from .agent import Agent, Проверка
 from .api import DeepSeekClient
 from .config import Config
 from .profiles import Profile
@@ -377,6 +378,92 @@ def invariants_block(state: State, profile: Profile | None = None) -> str:
     return invariants.блок(список)
 
 
+def проверить_ответ(
+    state: State, profile: Profile | None = None
+) -> Callable[..., Awaitable[Проверка]]:
+    """Поставщик проверки ответа ГЛАВНОГО разговора: сверка, признаки в коде, судья.
+
+    Список инвариантов собирается на миг проверки тем же профилем, что у блока в запросе
+    (`invariants_block`): модель проверяется по тем правилам, которые видела. Признаки ищутся
+    всегда, когда они есть, — это программа, без денег. Судья зовётся, только если есть строки
+    `Г/П/З` и клиент: у одних `А` судье сверять нечего, их держит проверка перехода. `судить=False`
+    (память очищена посреди обмена) — судья не зовётся: пара всё равно отброшена.
+
+    Номера вердикта сверяются со списком `Г/П/З`: упрёк несуществующему правилу человеку не
+    показывается и в пару не ложится; отброшенные номера остаются в журнале.
+
+    Судья — одноразовый служебный агент, как распознаватель: его обмен пишется в журнал своей
+    записью под именем `судья`, а расход уходит в итог сеанса на любом пути, включая
+    оборванный (`finally`). Отмену не глотаем: её разбирает обмен главного агента.
+    """
+
+    async def проверить(
+        вопрос: str, ответ: str, *, судить: bool = True, run_id: str | None = None
+    ) -> Проверка:
+        список, _ = invariants.собрать(
+            Path.cwd(), state.слаг_задачи, profile if profile is not None else state.profile
+        )
+        проверка = Проверка(
+            сверка=invariants.строка_сверки(ответ),
+            признаки=invariants.найти_признаки(ответ, список),
+            инвариантов=len(список),
+        )
+        судимые = invariants.для_судьи(список)
+        if not судимые or state.client is None or not судить:
+            return проверка
+        запрос = invariants.вход_судьи(список, вопрос, ответ)
+        агент = Agent(invariants.ИМЯ_СУДЬИ, invariants.профиль_судьи())
+        обмен = None
+        проверка.run_id = run_id
+        try:
+            обмен = await агент.exchange(
+                state.client,
+                invariants.МОДЕЛЬ_СУДЬИ,
+                запрос,
+                agent=invariants.ИМЯ_СУДЬИ,
+                run_id=run_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — сбой судьи не роняет оплаченный ответ
+            проверка.жалоба = f"судья не ответил: {exc}"
+            return проверка
+        finally:
+            state.retire([агент])
+            if обмен is not None:
+                # Цена — прямо по тарифу, а не через `output.turn_price`: состояние не ввозит
+                # показ (направление слоёв), а у судьи стратегия обычная, извлекателя фактов
+                # нет, и формула `turn_price` для него сводится ровно к этому.
+                цена = tokens.price(обмен.usage, обмен.model) if обмен.usage else 0.0
+                if цена is None:
+                    state.session_cost_known = False
+                else:
+                    state.session_cost += цена
+            else:
+                # Обмен оборвался: `usage` приходит последним, и рублёвый итог точным не назвать.
+                state.session_cost_known = False
+        if not обмен.ok:
+            проверка.жалоба = f"судья не ответил: {обмен.error or 'неизвестная причина'}"
+        elif обмен.finish_reason == "length":
+            проверка.жалоба = "судья не ответил: ответ оборван по длине"
+        else:
+            вердикт = invariants.разобрать_вердикт(обмен.text)
+            if вердикт is None:
+                проверка.жалоба = "судья не ответил: вердикт не разобран"
+            else:
+                номера, проверка.довод = вердикт
+                известные = {инвариант.номер for инвариант in судимые}
+                проверка.судья = [номер for номер in номера if номер in известные]
+                проверка.отброшены = [номер for номер in номера if номер not in известные]
+                if номера and not проверка.судья:
+                    проверка.жалоба = (
+                        "судья назвал несуществующие номера: " + ", ".join(проверка.отброшены)
+                    )
+        return проверка
+
+    return проверить
+
+
 def главный_агент(state: State, profile: Profile) -> Agent:
     """Собеседник главного экрана со всеми тремя слоями памяти.
 
@@ -403,4 +490,5 @@ def главный_агент(state: State, profile: Profile) -> Agent:
         work=lambda: work_block(state),
         инварианты=lambda: invariants_block(state, profile),
         инструменты=lambda: machine.набор(state, profile),
+        проверка=проверить_ответ(state, profile),
     )

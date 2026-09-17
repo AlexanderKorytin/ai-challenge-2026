@@ -533,6 +533,24 @@ def _warn_if_over_window(state: State, pane: screens_mod.Pane, agent_obj: Agent,
     )
 
 
+НЕТ_СТРОКИ_СВЕРКИ = "ответ без строки сверки инвариантов"
+
+
+def _show_check(state: State, pane: screens_mod.Pane, проверка: agent_mod.Проверка) -> None:
+    """Вердикт проверки под ответом: сверка, её отсутствие, нарушения, жалоба судьи.
+
+    Отсутствие строки сверки называется только при действующих инвариантах: без них модели
+    сверять нечего, и подсказка была бы шумом под каждым ответом."""
+    if проверка.сверка is not None:
+        append_log(state, ui.invariant_check_fragments(проверка.сверка), pane)
+    elif проверка.инвариантов:
+        append_log(state, ui.hint_fragments(НЕТ_СТРОКИ_СВЕРКИ), pane)
+    for строка in проверка.строки_нарушений():
+        append_log(state, ui.invariant_violation_fragments(строка), pane)
+    if проверка.жалоба:
+        append_log(state, ui.error_fragments(проверка.жалоба), pane)
+
+
 def turn_price(turn: Turn) -> float | None:
     """Цена обмена целиком, включая извлекатель Sticky Facts.
 
@@ -634,6 +652,8 @@ async def run_turn(
                 append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {turn.error}"), pane)
         if marks.get("reasoning") or marks.get("answer"):
             append_log(state, [("", "\n")], pane)
+        if turn is not None and turn.проверка is not None:
+            _show_check(state, pane, turn.проверка)
         if turn is not None and agent_obj.выжимка_отвергнута():
             # Выжимка есть, а в запрос не идёт: инструкцию правили после её сборки. Сказать
             # об этом обязаны — иначе кусок памяти пропал молча, и человек ищет поломку,

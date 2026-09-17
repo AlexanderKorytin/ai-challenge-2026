@@ -1126,6 +1126,16 @@ def invariants_fragments(список: list[tuple[str, str, tuple[str, ...], str
     return out
 
 
+def invariant_check_fragments(сверка: str) -> Fragments:
+    """Строка сверки инвариантов под ответом — выделенно: на неё ссылается отказ модели."""
+    return [("class:invariant", f"· {сверка}"), ("", "\n")]
+
+
+def invariant_violation_fragments(строка: str) -> Fragments:
+    """Строка «⚠ …» — признак, найденный в коде ответа, или вердикт судьи."""
+    return [("class:error", строка), ("", "\n")]
+
+
 def question_fragments(номер: int, вопрос: str) -> Fragments:
     """Вопрос интервью: номер приглушённо, сам вопрос — как речь собеседника.
 
