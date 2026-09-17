@@ -1122,7 +1122,7 @@ def invariants_fragments(список: list[tuple[str, str, tuple[str, ...], str
         out.append(("class:dim", f"  — {источник}\n"))
         if признаки:
             out.append(("class:dim", f"      запретные признаки в коде: {'; '.join(признаки)}\n"))
-    out.append(("class:dim", "  убрать: Г — /forget N (номер из /memory); П — /project; З — /task забыть ограничение N; А — карта стадий профиля\n"))
+    out.append(("class:dim", "  убрать: Г — /forget N (номер из /memory); П — /project забыть Ограничения N; З — /task забыть ограничение N; А — карта стадий профиля\n"))
     return out
 
 
