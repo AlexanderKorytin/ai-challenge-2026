@@ -1,0 +1,14 @@
+{
+  "name": "ведущий",
+  "title": "ведущий разработки",
+  "description": "ведёт задачу по стадиям: исследование, план, реализация, проверка",
+  "system_file": "ведущий.md",
+  "keep_history": true,
+  "stages": [
+    {"name": "RESEARCH", "goal": "разобраться в задаче и предложить подход", "approval": true, "next": ["PLAN"]},
+    {"name": "PLAN", "goal": "разбить работу на шаги", "approval": true, "next": ["EXECUTING"]},
+    {"name": "EXECUTING", "goal": "сделать по плану", "next": ["VALIDATION"]},
+    {"name": "VALIDATION", "goal": "проверить результат", "next": ["DONE"]},
+    {"name": "DONE"}
+  ]
+}
