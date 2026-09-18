@@ -787,7 +787,7 @@ async def main():
                     "system": "ты ведёшь задачу по стадиям",
                     "stages": [
                         {"name": "RESEARCH", "approval": True, "next": ["PLAN", "EXECUTING"]},
-                        {"name": "PLAN", "approval": True, "next": ["EXECUTING"]},
+                        {"name": "PLAN", "goal": "разбить работу на шаги", "approval": True, "next": ["EXECUTING"]},
                         {"name": "EXECUTING", "next": ["DONE"]},
                         {"name": "DONE"},
                     ],
@@ -947,8 +947,106 @@ async def main():
         await send("/invariants что-то" + ENTER)
         check("/invariants с неизвестным доводом — подсказка вида", "/invariants global <текст>" in лента(state)[-300:], лента(state)[-300:])
 
+        # Задача уходит в ворота и остаётся в них: этого состояния и должен хватить новому
+        # клиенту, поднятому на том же каталоге, чтобы продолжить с места. Заводим свою —
+        # прежние задачи сценария к этому месту закрыты.
+        await send(f"/profile {имя_карты}" + ENTER, пауза=0.3)
+        await send("/task new продолжение после подъёма" + ENTER, пауза=0.3)
+        слаг_до_подъёма = state.слаг_задачи
+        workspace.обновить(
+            workspace.load_task(папка, слаг_до_подъёма)[0],
+            этап="PLAN",
+            ждёт="человек",
+            предложено="EXECUTING",
+            ожидается="утвердить итог стадии PLAN и переход в EXECUTING",
+            итог="план из трёх шагов",
+        )
+        байты_до_подъёма = workspace.load_task(папка, слаг_до_подъёма)[0].путь.read_bytes()
+
         await send("/exit" + ENTER, пауза=0.3)
         await asyncio.wait_for(run, timeout=5)
+
+    print("\nПовторный подъём клиента на том же каталоге состояния")
+    # Клиент погашен. Поднимаем ЗАНОВО: своё состояние сеанса, свой собеседник, своё окно.
+    # Разговора нет ниоткуда, кроме диска, — ровно то, что должен переживать автомат задачи.
+    # Настоящего перезапуска процесса это не доказывает: процесс тот же.
+    from myharness.conversation import restore_conversation, поднять_слои
+
+    профиль_карты, _ = profiles.load(имя_карты)
+    fake2 = FakeClient()
+    state2 = state_mod.State(
+        config=Config(api_key="sk-test", model="deepseek-v4-flash", remember=False),
+        client=fake2,
+        model="deepseek-v4-flash",
+        profile=профиль_карты,
+    )
+    with create_pipe_input() as pipe2, create_app_session(input=pipe2, output=DummyOutput()):
+        run2 = asyncio.create_task(cli.repl(state2))
+        while state2.app is None:
+            await asyncio.sleep(0)
+        # Порядок как в настоящей точке входа (`cli.py`): слои ПЕРЕД разговором. Подъём
+        # разговора считает вес эфемерного хвоста, а хвост берётся из активной задачи, которую
+        # и выбирает `поднять_слои`; наоборот — вес занижен на длину хвоста.
+        поднять_слои(state2)
+        restore_conversation(state2)
+        await asyncio.sleep(0.1)
+
+        async def send2(текст, пауза=0.12):
+            pipe2.send_text(текст)
+            await asyncio.sleep(пауза)
+
+        # Слаг сверяется ДО чтения файла: не поднимись слои — `load_task(None)` уронил бы
+        # прогон крахом, и остальные проверки этого раздела не выполнились бы вовсе.
+        выбрана = state2.слаг_задачи == слаг_до_подъёма
+        поднятая = workspace.load_task(папка, state2.слаг_задачи)[0] if выбрана else None
+        check(
+            "после подъёма задача выбрана сама, ворота и итог целы, файл не тронут",
+            выбрана
+            and поднятая is not None
+            and поднятая.этап == "PLAN"
+            and поднятая.ждёт == "человек"
+            and поднятая.предложено == "EXECUTING"
+            and поднятая.итог == "план из трёх шагов"
+            and поднятая.путь.read_bytes() == байты_до_подъёма,
+            поднятая.путь.read_text(encoding="utf-8") if поднятая is not None else "задача не выбрана",
+        )
+        блок_подъёма = state_mod.work_block(state2)
+        check(
+            "блок состояния несёт стадию, цель, переходы и ожидание человека",
+            "этап PLAN" in блок_подъёма
+            and "Цель стадии: разбить работу на шаги" in блок_подъёма
+            and "Дальше можно: EXECUTING" in блок_подъёма
+            and "Ждёт человека:" in блок_подъёма
+            and "Итог стадии на утверждении: план из трёх шагов" in блок_подъёма,
+            блок_подъёма,
+        )
+        отказ = await machine.исполнить_вызов(
+            папка,
+            state2.слаг_задачи,
+            профиль_карты.name,
+            профиль_карты.стадии,
+            "move_stage",
+            '{"стадия": "EXECUTING", "итог": "готово"}',
+            state=state2,
+        )
+        check(
+            "после подъёма ворота держат: move_stage отказывает, файл прежний",
+            "уже ждёт утверждения" in отказ
+            and workspace.load_task(папка, state2.слаг_задачи)[0].путь.read_bytes() == байты_до_подъёма,
+            отказ,
+        )
+        await send2("/task утвердить" + ENTER, пауза=0.3)
+        применено = workspace.load_task(папка, state2.слаг_задачи)[0]
+        check(
+            "после подъёма /task утвердить применяет предложенный переход",
+            применено.этап == "EXECUTING"
+            and применено.ждёт == ""
+            and применено.предложено == ""
+            and "стадия PLAN: план из трёх шагов" in применено.пункты("Сделано"),
+            применено.путь.read_text(encoding="utf-8"),
+        )
+        await send2("/exit" + ENTER, пауза=0.3)
+        await asyncio.wait_for(run2, timeout=5)
 
     print()
     if сбои:
