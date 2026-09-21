@@ -410,7 +410,11 @@ class Doc:
 
 
 names = [c.text for c in comp.get_completions(Doc("/"), None)]
-check("без авторизации в меню только /auth", set(names) == {"/auth"}, str(names))
+check(
+    "без авторизации в меню /auth и команды без ключа, но не /model и /profile",
+    {"/auth", "/help", "/mcp"} <= set(names) and not ({"/model", "/profile", "/set"} & set(names)),
+    str(names),
+)
 state.config.api_key = "sk-test"
 names = [c.text for c in comp.get_completions(Doc("/"), None)]
 check("после авторизации появились остальные, а /auth ушёл",
@@ -15649,6 +15653,78 @@ check(
     "MCP: перезапись сохраняет права 600, новый файл — по umask",
     (права_файл.stat().st_mode & 0o777) == 0o600 and (новый_файл.stat().st_mode & 0o777) == (0o666 & ~маска),
     f"{oct(права_файл.stat().st_mode & 0o777)} {oct(новый_файл.stat().st_mode & 0o777)}",
+)
+
+# /mcp add: разбор доводов и правила о тайнах (день 16, шаг 2). Файл команда пишет в рабочий
+# каталог, поэтому здесь только разбор — запись проверена разделом выше через mcp_client.
+from myharness.commands_mcp import разобрать_добавление  # noqa: E402
+
+
+def отказ_mcp(доводы):
+    try:
+        разобрать_добавление(доводы)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+сервер_http, предупр_http = разобрать_добавление(
+    ["gh", "https://example.org/mcp/", "--header", "Authorization: Bearer ${T}", "-H", "X-A: b"]
+)
+check(
+    "/mcp add: HTTP с двумя заголовками",
+    сервер_http.способ == "http" and сервер_http.адрес == "https://example.org/mcp/"
+    and сервер_http.заголовки == {"Authorization": "Bearer ${T}", "X-A": "b"},
+    str(сервер_http),
+)
+check(
+    "/mcp add: Authorization через ${T} принят, буквальный X-A — с предупреждением",
+    предупр_http == ["заголовок X-A записан в .mcp.json открытым текстом"],
+    str(предупр_http),
+)
+сервер_stdio, предупр_stdio = разобрать_добавление(
+    ["git", "--env", "LOG=debug", "--", "uvx", "mcp-server-git", "--repository", "."]
+)
+check(
+    "/mcp add: stdio с --env и доводом команды со знаком «-»",
+    сервер_stdio.способ == "stdio" and сервер_stdio.команда == "uvx"
+    and сервер_stdio.доводы == ("mcp-server-git", "--repository", ".")
+    and сервер_stdio.окружение == {"LOG": "debug"}
+    and предупр_stdio == ["переменная LOG записана в .mcp.json открытым текстом"],
+    f"{сервер_stdio} {предупр_stdio}",
+)
+отказ_auth = отказ_mcp(["gh", "https://example.org/", "--header", "Authorization: Bearer abc"])
+check(
+    "/mcp add: буквальный токен в Authorization — отказ, токен не повторён",
+    отказ_auth is not None and "Authorization" in отказ_auth and "abc" not in отказ_auth,
+    str(отказ_auth),
+)
+отказ_без_двоеточия = отказ_mcp(["gh", "https://x.org/", "-H", "Authorization Bearer ghp_SECRET"])
+check(
+    "/mcp add: заголовок без двоеточия — отказ, довод с токеном не повторён",
+    отказ_без_двоеточия is not None and "ghp_SECRET" not in отказ_без_двоеточия,
+    str(отказ_без_двоеточия),
+)
+check(
+    "/mcp add: токен с подстановкой в хвосте — отказ; «Basic ${B}» — принято",
+    отказ_mcp(["gh", "https://x.org/", "-H", "Authorization: ghp_abc${E}"]) is not None
+    and отказ_mcp(["gh", "https://x.org/", "-H", "Authorization: Basic ${B}"]) is None,
+)
+check(
+    "/mcp add: имя с точкой и кириллицей — отказ; латиница с «-» и «_» — принято",
+    отказ_mcp(["a.b", "https://x.org/"]) is not None
+    and отказ_mcp(["гит", "https://x.org/"]) is not None
+    and отказ_mcp(["my-srv_2", "https://x.org/"]) is None,
+)
+check(
+    "/mcp add: ни адреса, ни «--» — отказ; пустая команда после «--» — отказ",
+    отказ_mcp(["x"]) is not None and отказ_mcp(["x", "example.org"]) is not None
+    and отказ_mcp(["x", "--"]) is not None,
+)
+check(
+    "/mcp add: --header у местного и --env у HTTP — отказ",
+    отказ_mcp(["x", "-H", "A: b", "--", "cmd"]) is not None
+    and отказ_mcp(["x", "https://x.org/", "--env", "A=b"]) is not None,
 )
 
 print()

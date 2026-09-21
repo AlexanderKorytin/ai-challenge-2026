@@ -361,7 +361,7 @@ async def main():
 
         print("\n3а. Справка разделами")
         слова = [раздел.слово for раздел in helpdoc.РАЗДЕЛЫ]
-        check("разделов справки десять", len(слова) == 10, str(слова))
+        check("разделов справки одиннадцать", len(слова) == 11, str(слова))
         check(
             "слова разделов уникальны и ни одно не начинает другое",
             not [(а, б) for а in слова for б in слова if а != б and б.startswith(а)],
@@ -450,8 +450,8 @@ async def main():
         до = len(лента_главного())
         await send("/help" + ENTER, pause=0.2)
         check(
-            "/help открывает меню из десяти разделов",
-            state.picker is not None and state.picker.title == "/help — справка" and len(state.picker.items) == 10,
+            "/help открывает меню из одиннадцати разделов",
+            state.picker is not None and state.picker.title == "/help — справка" and len(state.picker.items) == 11,
             str(state.picker and state.picker.title),
         )
         check("открытое меню ничего не печатает", len(лента_главного()) == до)

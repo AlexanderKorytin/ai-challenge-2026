@@ -15,7 +15,7 @@ import asyncio
 
 from . import background, helpdoc, recognizer, ui
 from . import agents_panel, commands_context, commands_memory, commands_model, commands_params
-from . import commands_project, commands_task
+from . import commands_mcp, commands_project, commands_task
 from . import screens as screens_mod
 from .conversation import open_new_session
 from .output import append_log, replace_log
@@ -146,6 +146,8 @@ async def handle_command(text: str, state: State) -> bool:
         commands_memory.cmd_invariants(state, arg)
     elif cmd == "/forget":
         commands_memory.cmd_forget(state, arg)
+    elif cmd == "/mcp":
+        await commands_mcp.cmd_mcp(state, arg)
     elif cmd == "/tokens":
         commands_context.cmd_tokens(state)
     elif cmd == "/budget":

@@ -131,6 +131,7 @@ COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("/invariants", "", "инварианты: показать; /invariants global <текст> — завести глобальный", True),
     ("/memory", "on", "пример включения сбора глобальных фактов", True),
     ("/forget", "2", "пример удаления факта по номеру", True),
+    ("/mcp", "", "серверы MCP из .mcp.json: список инструментов; add, remove", False),
     ("/tokens", "", "расход активного Agent и общий расход сеанса", True),
     ("/budget", "0", "показать предел без числа; 0 — снять предел", True),
     ("/context", "", "показать выжимку разговора целиком", True),
@@ -220,6 +221,11 @@ def подсказки(state: Any, текст: str) -> list[tuple[str, str, str]
     # Пустые куски от двойного пробела выбрасываем: команды к лишним пробелам терпимы, и
     # подсказка не имеет права быть строже самой команды.
     завершённые = [слово.lower() for слово in слова[1:-1] if слово]
+
+    if команда == "/mcp":
+        from .commands_mcp import СЛОВА
+
+        return [(слово, слово, пояснение) for слово, пояснение in СЛОВА] if not завершённые else []
 
     if команда == "/task":
         if not завершённые:
@@ -436,11 +442,11 @@ def _строки_раздела(хранилище: Any, раздел: str) -> 
 
 
 def visible_commands(authorized: bool) -> list[tuple[str, str, str]]:
-    """Пока ключа нет, в меню только /auth: остальное всё равно не сработает. После
-    авторизации /auth из меню уходит — он больше не нужен на каждый день. Сама команда
-    остаётся рабочей (сменить ключ можно, набрав её целиком), и в /help она есть."""
+    """Пока ключа нет, в меню /auth и команды, которым ключ не нужен: остальное всё равно не
+    сработает. После авторизации /auth из меню уходит — он больше не нужен на каждый день.
+    Сама команда остаётся рабочей (сменить ключ можно, набрав её целиком), и в /help она есть."""
     if not authorized:
-        return [(name, arg, description) for name, arg, description, needs_auth in COMMANDS if name == "/auth"]
+        return [(name, arg, description) for name, arg, description, needs_auth in COMMANDS if not needs_auth]
     return [(name, arg, description) for name, arg, description, _ in COMMANDS if name != "/auth"]
 
 
