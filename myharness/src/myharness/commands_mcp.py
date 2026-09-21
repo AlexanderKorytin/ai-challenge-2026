@@ -161,7 +161,7 @@ async def _показать_все(state: State) -> None:
     try:
         записи = mcp_client.прочитать(путь)
     except ОшибкаФайла as exc:
-        append_log(state, ui.error_fragments(f"{путь}: {exc}"))
+        append_log(state, ui.error_fragments(str(exc)))
         return
     if not записи:
         append_log(state, ui.system_fragments(f"серверов MCP нет — {путь} пуст или не заведён"))
@@ -180,7 +180,7 @@ async def _показать_все(state: State) -> None:
         итоги = await mcp_client.список_всех(путь)
     except ОшибкаФайла as exc:
         # Файл могли испортить между чтением и опросом.
-        показ = ui.error_fragments(f"{путь}: {exc}")
+        показ = ui.error_fragments(str(exc))
     else:
         показ = []
         for итог in итоги:
