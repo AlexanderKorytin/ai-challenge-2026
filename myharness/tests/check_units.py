@@ -15364,6 +15364,293 @@ check(
     str(номера_по_месту),
 )
 
+print("\n# MCP: файл серверов, подстановка, список инструментов (день 16, шаг 1)")
+# Сервер настоящий, а не подделка ответов: проверяется согласование и разбор списка по ту
+# сторону протокола. Запуск тем же интерпретатором — библиотека `mcp` стоит в его окружении.
+# Сети нет: учебный сервер местный, по stdio.
+from myharness import mcp_client  # noqa: E402
+
+учебный = Path(__file__).with_name("mcp_учебный_сервер.py")
+mcp_каталог = tmp / "mcp"
+mcp_каталог.mkdir()
+mcp_файл = mcp_каталог / mcp_client.ИМЯ_ФАЙЛА
+
+живой = mcp_client.Сервер("local", "stdio", команда=sys.executable, доводы=(str(учебный),))
+итог_живого = asyncio.run(mcp_client.список(живой))
+имена_mcp = [и.имя for и in итог_живого.инструменты]
+check(
+    "MCP: учебный сервер согласован, протокол назван, сбоя нет",
+    итог_живого.сбой is None and bool(итог_живого.протокол) and итог_живого.имя_на_сервере == "учебный",
+    f"{итог_живого.сбой} {итог_живого.протокол} {итог_живого.имя_на_сервере}",
+)
+check("MCP: инструменты add и echo в порядке сервера", имена_mcp == ["add", "echo"], str(имена_mcp))
+сложение = next((и for и in итог_живого.инструменты if и.имя == "add"), None)
+check(
+    "MCP: полное имя mcp__local__add, схема с required, описание целиком",
+    сложение is not None
+    and сложение.полное_имя == "mcp__local__add"
+    and сложение.схема.get("required") == ["a", "b"]
+    and "Вторая строка" in сложение.описание,
+    repr(сложение),
+)
+
+битый = mcp_client.Сервер("broken", "stdio", команда=str(tmp / "нет-такой-команды"))
+итог_битого = asyncio.run(mcp_client.список(битый))
+check(
+    "MCP: несуществующая команда — сбой строкой, инструменты пусты, исключения нет",
+    итог_битого.сбой is not None and "\n" not in итог_битого.сбой and итог_битого.инструменты == (),
+    repr(итог_битого),
+)
+
+check("MCP: нет файла — пустой список серверов", mcp_client.прочитать(mcp_файл) == [])
+mcp_файл.write_text(json.dumps({"прочее": {"оставить": 1}}), encoding="utf-8")
+mcp_client.добавить(mcp_файл, живой)
+mcp_client.добавить(mcp_файл, битый)
+итоги_всех = asyncio.run(mcp_client.список_всех(mcp_файл))
+check(
+    "MCP: список_всех — оба итога в порядке файла, живой цел рядом с битым",
+    [и.сервер.имя for и in итоги_всех] == ["local", "broken"]
+    and итоги_всех[0].сбой is None and len(итоги_всех[0].инструменты) == 2
+    and итоги_всех[1].сбой is not None,
+    repr(итоги_всех),
+)
+
+try:
+    mcp_client.добавить(mcp_файл, живой)
+    занято = False
+except mcp_client.ОшибкаФайла:
+    занято = True
+check("MCP: добавить занятое имя — ОшибкаФайла", занято)
+try:
+    mcp_client.убрать(mcp_файл, "nope")
+    неизвестное = ""
+except mcp_client.ОшибкаФайла as exc:
+    неизвестное = str(exc)
+check(
+    "MCP: убрать неизвестное — ОшибкаФайла с именами имеющихся",
+    "local" in неизвестное and "broken" in неизвестное,
+    неизвестное,
+)
+mcp_client.убрать(mcp_файл, "local")
+документ_mcp = json.loads(mcp_файл.read_text(encoding="utf-8"))
+check(
+    "MCP: после правок прочий ключ верхнего уровня сохранён, остался только broken",
+    документ_mcp.get("прочее") == {"оставить": 1}
+    and list(документ_mcp.get("mcpServers", {})) == ["broken"]
+    and [с.имя for с in mcp_client.прочитать(mcp_файл)] == ["broken"],
+    str(документ_mcp),
+)
+check(
+    "MCP: черновик записи не остался в каталоге",
+    sorted(п.name for п in mcp_каталог.iterdir()) == [mcp_client.ИМЯ_ФАЙЛА],
+    str(list(mcp_каталог.iterdir())),
+)
+
+mcp_файл.write_text("{не json", encoding="utf-8")
+try:
+    mcp_client.прочитать(mcp_файл)
+    кривой_mcp = False
+except mcp_client.ОшибкаФайла:
+    кривой_mcp = True
+check("MCP: файл не JSON — ОшибкаФайла", кривой_mcp)
+
+check("MCP: подстановка ${A}", mcp_client.подставить("x-${A}-y", {"A": "1"}) == "x-1-y")
+check("MCP: подстановка ${A:-x} при незаданной", mcp_client.подставить("${A:-x}", {}) == "x")
+try:
+    mcp_client.подставить("Bearer ${GITHUB_TOKEN}", {})
+    нет_переменной = None
+except KeyError as exc:
+    нет_переменной = exc
+check(
+    "MCP: незаданная без умолчания — KeyError с именем переменной",
+    нет_переменной is not None and "GITHUB_TOKEN" in str(нет_переменной),
+    repr(нет_переменной),
+)
+
+# Тайна не попадает в строку сбоя: значение подставлено в заголовок и в адрес, а соединение
+# падает на закрытом местном порту. Порт 9 — «discard», слушателя на нём нет.
+os.environ["MYHARNESS_MCP_SECRET"] = "секрет-значение-42"
+с_тайной = mcp_client.Сервер(
+    "secret",
+    "http",
+    адрес="http://127.0.0.1:9/${MYHARNESS_MCP_SECRET}",
+    заголовки={"Authorization": "Bearer ${MYHARNESS_MCP_SECRET}", "X-Lit": "буквальное-значение"},
+)
+итог_тайны = asyncio.run(mcp_client.список(с_тайной))
+del os.environ["MYHARNESS_MCP_SECRET"]
+итог_без_тайны = asyncio.run(mcp_client.список(с_тайной))
+check(
+    "MCP: значения переменных и заголовков в строку сбоя не попадают",
+    итог_тайны.сбой is not None
+    and "секрет-значение-42" not in итог_тайны.сбой
+    and "буквальное-значение" not in итог_тайны.сбой,
+    str(итог_тайны.сбой),
+)
+check(
+    "MCP: незаданная переменная — сбой называет её имя",
+    итог_без_тайны.сбой is not None and "MYHARNESS_MCP_SECRET" in итог_без_тайны.сбой,
+    str(итог_без_тайны.сбой),
+)
+
+# Вычистка работает на деле: библиотека цитирует путь команды, куда подставлена тайна.
+# Предусловие — без вычистки значение в тексте ошибки было бы, иначе проверка пуста.
+os.environ["MYHARNESS_MCP_SECRET"] = "секрет-в-команде-7"
+цитата = mcp_client.Сервер("quoted", "stdio", команда="/nonexist/${MYHARNESS_MCP_SECRET}")
+
+
+async def сырая_ошибка_соединения(сервер):
+    try:
+        async with mcp_client.соединение(сервер):
+            return ""
+    except Exception as exc:  # noqa: BLE001
+        return str(mcp_client._глубинная(exc))
+
+
+сырая = asyncio.run(сырая_ошибка_соединения(цитата))
+итог_цитаты = asyncio.run(mcp_client.список(цитата))
+del os.environ["MYHARNESS_MCP_SECRET"]
+check("MCP: предусловие — библиотека цитирует подставленное значение", "секрет-в-команде-7" in сырая, сырая)
+check(
+    "MCP: процитированная тайна в сбое заменена ***",
+    итог_цитаты.сбой is not None
+    and "секрет-в-команде-7" not in итог_цитаты.сбой
+    and "***" in итог_цитаты.сбой,
+    str(итог_цитаты.сбой),
+)
+
+# Часть значения заголовка: переменная стоит внутри строки, вычищается её значение.
+os.environ["MYHARNESS_MCP_SECRET"] = "часть-тайны-9"
+часть = mcp_client.Сервер("part", "http", адрес="http://x", заголовки={"Authorization": "Bearer ${MYHARNESS_MCP_SECRET}"})
+вычищено = mcp_client._вычистить("ошибка: токен часть-тайны-9 отвергнут", часть)
+del os.environ["MYHARNESS_MCP_SECRET"]
+check(
+    "MCP: значение переменной из части заголовка вычищается",
+    "часть-тайны-9" not in вычищено and "***" in вычищено,
+    вычищено,
+)
+
+# Предел опроса: зависший сервер не вешает опрос, живой рядом с ним показан, процесс убран.
+mcp_предел_файл = tmp / "mcp-предел" / mcp_client.ИМЯ_ФАЙЛА
+mcp_предел_файл.parent.mkdir()
+номер_файл = tmp / "mcp-предел" / "pid"
+mcp_client.добавить(mcp_предел_файл, живой)
+mcp_client.добавить(
+    mcp_предел_файл,
+    mcp_client.Сервер("hang", "stdio", команда=sys.executable, доводы=(str(учебный), "--молчать", str(номер_файл))),
+)
+os.environ["MCP_TIMEOUT"] = "1500"
+начало_предела = time.monotonic()
+итоги_предела = asyncio.run(mcp_client.список_всех(mcp_предел_файл))
+длительность_предела = time.monotonic() - начало_предела
+check(
+    "MCP: зависший сервер — сбой о пределе 1,5 с, живой рядом показан",
+    итоги_предела[0].сбой is None and len(итоги_предела[0].инструменты) == 2
+    and итоги_предела[1].сбой == "сервер не ответил за 1,5 с",
+    repr(итоги_предела),
+)
+# Сверху — предел плюс уборка процесса библиотекой (закрытие ввода, ожидание, снятие).
+check("MCP: опрос с зависшим сервером укладывается в разумное время", длительность_предела < 10, f"{длительность_предела:.1f} с")
+номер_зависшего = int(номер_файл.read_text())
+try:
+    os.kill(номер_зависшего, 0)
+    процесс_жив = True
+except ProcessLookupError:
+    процесс_жив = False
+check("MCP: процесс зависшего сервера убран", not процесс_жив, str(номер_зависшего))
+итог_пары = asyncio.run(mcp_client.список(живой))
+check(
+    "MCP: пара — живой сервер без зависшего укладывается в тот же предел 1,5 с",
+    итог_пары.сбой is None and len(итог_пары.инструменты) == 2,
+    str(итог_пары.сбой),
+)
+os.environ["MCP_TIMEOUT"] = "полминуты"
+итог_кривого_предела = asyncio.run(mcp_client.список(живой))
+del os.environ["MCP_TIMEOUT"]
+check(
+    "MCP: кривое MCP_TIMEOUT — сбой с именем переменной, а не тихое умолчание",
+    итог_кривого_предела.сбой is not None and "MCP_TIMEOUT" in итог_кривого_предела.сбой,
+    str(итог_кривого_предела.сбой),
+)
+
+# Негодная запись не ломает общий файл: годная опрошена, у негодной — причина.
+mcp_смесь = tmp / "mcp-смесь.json"
+mcp_смесь.write_text(
+    json.dumps(
+        {
+            "mcpServers": {
+                "local": {"command": sys.executable, "args": [str(учебный)]},
+                "old": {"type": "sse", "url": "http://127.0.0.1:9/sse"},
+                "empty": {},
+                "typed": {"type": "stdio", "command": sys.executable, "args": [str(учебный)], "url": "http://x"},
+            }
+        }
+    ),
+    encoding="utf-8",
+)
+записи_смеси = mcp_client.прочитать(mcp_смесь)
+check(
+    "MCP: явный type stdio старше лишнего url",
+    isinstance(записи_смеси[3], mcp_client.Сервер) and записи_смеси[3].способ == "stdio",
+    repr(записи_смеси[3]),
+)
+итоги_смеси = asyncio.run(mcp_client.список_всех(mcp_смесь))
+check(
+    "MCP: запись sse и пустая запись не ломают файл — годные опрошены, у негодных причина",
+    [и.сервер.имя for и in итоги_смеси] == ["local", "old", "empty", "typed"]
+    and итоги_смеси[0].сбой is None and len(итоги_смеси[0].инструменты) == 2
+    and итоги_смеси[3].сбой is None
+    and "SSE" in (итоги_смеси[1].сбой or "")
+    and "command" in (итоги_смеси[2].сбой or ""),
+    repr(итоги_смеси),
+)
+
+# Код ответа HTTP в сбое: местный сервер на свободном порту отвечает 401 на всё.
+import http.server  # noqa: E402
+import threading  # noqa: E402
+
+
+class Отказ401(http.server.BaseHTTPRequestHandler):
+    def _отказ(self):
+        self.send_response(401)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_POST = do_DELETE = _отказ
+
+    def log_message(self, *доводы):  # тишина: иначе строки запроса лягут в вывод проверок
+        pass
+
+
+местный_401 = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Отказ401)
+threading.Thread(target=местный_401.serve_forever, daemon=True).start()
+отказной = mcp_client.Сервер(
+    "denied", "http", адрес=f"http://127.0.0.1:{местный_401.server_address[1]}/mcp",
+    заголовки={"Authorization": "Bearer literal-key-5"},
+)
+итог_401 = asyncio.run(mcp_client.список(отказной))
+местный_401.shutdown()
+check(
+    "MCP: ответ 401 назван в сбое кодом и фразой, ключ не показан",
+    итог_401.сбой is not None and "HTTP 401 Unauthorized" in итог_401.сбой
+    and "literal-key-5" not in итог_401.сбой,
+    str(итог_401.сбой),
+)
+
+# Права: существующий файл сохраняет свои, новый получает обычные по umask.
+права_файл = tmp / "mcp-права.json"
+права_файл.write_text("{}", encoding="utf-8")
+os.chmod(права_файл, 0o600)
+mcp_client.добавить(права_файл, живой)
+новый_файл = tmp / "mcp-новый.json"
+mcp_client.добавить(новый_файл, живой)
+маска = os.umask(0)
+os.umask(маска)
+check(
+    "MCP: перезапись сохраняет права 600, новый файл — по umask",
+    (права_файл.stat().st_mode & 0o777) == 0o600 and (новый_файл.stat().st_mode & 0o777) == (0o666 & ~маска),
+    f"{oct(права_файл.stat().st_mode & 0o777)} {oct(новый_файл.stat().st_mode & 0o777)}",
+)
+
 print()
 if failures:
     print(f"ПРОВАЛЕНО: {len(failures)} — " + "; ".join(failures))
