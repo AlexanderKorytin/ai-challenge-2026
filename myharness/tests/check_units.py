@@ -15525,7 +15525,7 @@ check(
 # Часть значения заголовка: переменная стоит внутри строки, вычищается её значение.
 os.environ["MYHARNESS_MCP_SECRET"] = "часть-тайны-9"
 часть = mcp_client.Сервер("part", "http", адрес="http://x", заголовки={"Authorization": "Bearer ${MYHARNESS_MCP_SECRET}"})
-вычищено = mcp_client._вычистить("ошибка: токен часть-тайны-9 отвергнут", часть)
+вычищено = mcp_client.вычистить("ошибка: токен часть-тайны-9 отвергнут", часть)
 del os.environ["MYHARNESS_MCP_SECRET"]
 check(
     "MCP: значение переменной из части заголовка вычищается",
@@ -15726,6 +15726,260 @@ check(
     отказ_mcp(["x", "-H", "A: b", "--", "cmd"]) is not None
     and отказ_mcp(["x", "https://x.org/", "--env", "A=b"]) is not None,
 )
+
+
+print("\n# MCP-мост: разрешения, соединение на сеанс, вызов моделью (день 17, шаг 3)")
+from myharness import mcp_tools  # noqa: E402
+from myharness.agent import соединить  # noqa: E402
+
+Р = mcp_tools.Разрешения
+check(
+    "разрешения: весь сервер, «__*», точное имя",
+    Р(("mcp__local",)).разрешён("mcp__local__add")
+    and Р(("mcp__local__*",)).разрешён("mcp__local__echo")
+    and Р(("mcp__local__add",)).разрешён("mcp__local__add"),
+)
+check(
+    "парная: точное имя не разрешает соседа, «mcp__loc» не разрешает «local»",
+    not Р(("mcp__local__add",)).разрешён("mcp__local__echo")
+    and not Р(("mcp__loc",)).разрешён("mcp__local__add"),
+)
+check(
+    "правило на инструмент — точное: не разрешает «<имя>__<хвост>»; «mcp__*» не действует нигде",
+    not Р(("mcp__local__add",)).разрешён("mcp__local__add__delete")
+    and not Р(("mcp__local__*",)).разрешён("mcp__localx__add")
+    and not Р(("mcp__*",)).разрешён("mcp__local__add")
+    and not Р(("mcp__*",)).сервер_возможен("local"),
+)
+check(
+    "deny старше allow; запрет всего сервера закрывает и соединение",
+    not Р(("mcp__local",), ("mcp__local__add",)).разрешён("mcp__local__add")
+    and Р(("mcp__local",), ("mcp__local__add",)).разрешён("mcp__local__echo")
+    and not Р(("mcp__local",), ("mcp__local",)).сервер_возможен("local")
+    and Р(("mcp__local__add",)).сервер_возможен("local")
+    and not Р(("mcp__other",)).сервер_возможен("local"),
+)
+
+мост = tmp / "mcp-мост"
+(мост / ".claude").mkdir(parents=True)
+pid_мост = мост / "pid"
+(мост / mcp_client.ИМЯ_ФАЙЛА).write_text(
+    json.dumps({"mcpServers": {"local": {"type": "stdio", "command": sys.executable,
+                                         "args": [str(учебный), "--pid-файл", str(pid_мост)],
+                                         "env": {"DEBUG": "1", "УЧЕБНЫЙ_ОТКАЗ": "1", "SECRET_TOKEN": "${MOST_SECRET}"}}}}),
+    encoding="utf-8",
+)
+
+
+def правила_моста(allow=(), deny=(), файл="settings.json"):
+    (мост / ".claude" / файл).write_text(
+        json.dumps({"permissions": {"allow": list(allow), "deny": list(deny)}}), encoding="utf-8"
+    )
+
+
+def имена_набора(набор):
+    return sorted(с["function"]["name"] for с in набор.схемы) if набор else []
+
+
+def процесс_жив(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+КРУГ_MCP = [
+    api.StreamEvent("tool_calls", calls=[вызов_инструмента("m1", "mcp__local__add", '{"a": 2, "b": 3}')]),
+    api.StreamEvent("meta", finish_reason="tool_calls", usage={"prompt_tokens": 50, "completion_tokens": 5, "total_tokens": 55}),
+]
+КРУГ_MCP_ОТВЕТ = [
+    api.StreamEvent("content", "сумма — 5"),
+    api.StreamEvent("meta", finish_reason="stop", usage={"prompt_tokens": 60, "completion_tokens": 3, "total_tokens": 63}),
+]
+
+
+os.environ["MOST_SECRET"] = "тайна-моста-77"
+
+
+async def мост_сценарий():
+    итоги = {}
+    соединения = mcp_tools.Соединения()
+    try:
+        правила_моста()
+        итоги["без правил"] = await соединения.набор(мост)
+        итоги["pid без правил"] = pid_мост.exists()
+
+        правила_моста(["mcp__local__add"])
+        только_add = await соединения.набор(мост)
+        итоги["только add"] = имена_набора(только_add)
+        pid1 = int(pid_мост.read_text())
+        итоги["прямой вызов echo"] = None
+        try:
+            await только_add.исполнить("mcp__local__echo", '{"text": "x"}')
+        except PermissionError as exc:
+            итоги["прямой вызов echo"] = str(exc)
+        # Настоящий путь главного собеседника без автомата: набора автомата нет (`None`).
+        итоги["выдуманное через соединить"] = await соединить(None, только_add).исполнить(
+            "mcp__local__echo", "{}"
+        )
+
+        правила_моста(["mcp__local"])
+        весь = await соединения.набор(мост)
+        итоги["весь сервер"] = имена_набора(весь)
+        итоги["тот же процесс"] = int(pid_мост.read_text()) == pid1
+
+        правила_моста(["mcp__local"], ["mcp__local__add"])
+        итоги["deny add"] = имена_набора(await соединения.набор(мост))
+
+        # Обмен агента: модель вызывает add, результат уходит ей же следующим кругом.
+        правила_моста(["mcp__local__add"])
+        агент = Agent("мост", профиль_круга("мост"), инструменты=lambda: соединения.набор(мост))
+        клиент = КруговойКлиент([КРУГ_MCP, КРУГ_MCP_ОТВЕТ])
+        события = []
+        ход = await агент.exchange(клиент, "deepseek-v4-flash", "сложи 2 и 3", on_event=события.append)
+        итоги["обмен"] = ход
+        итоги["схемы в запросе"] = [т["function"]["name"] for т in клиент.calls[0]["доводы"].get("tools", [])]
+        итоги["результат круга"] = [м for м in клиент.calls[1]["messages"] if м.get("role") == "tool"]
+        итоги["показ результата"] = [с.text for с in события if с.kind == "tool_result"]
+
+        # Процесс сервера убит — следующий обмен переоткрывает соединение.
+        os.kill(pid1, signal.SIGKILL)
+        for _ in range(50):
+            if not процесс_жив(pid1):
+                break
+            await asyncio.sleep(0.05)
+        после_смерти = await соединения.набор(мост)
+        pid2 = int(pid_мост.read_text())
+        итоги["переоткрыто"] = (pid2 != pid1, имена_набора(после_смерти))
+        итоги["вызов после переоткрытия"] = await после_смерти.исполнить("mcp__local__add", '{"a": 1, "b": 1}')
+
+        # Результат — как есть (строки и «1» из env целы); ошибка — без подставленной тайны.
+        правила_моста(["mcp__local"])
+        весь_снова = await соединения.набор(мост)
+        итоги["многострочный"] = await весь_снова.исполнить("mcp__local__echo", json.dumps({"text": "USD: 84,1\nEUR: 91,2"}))
+        try:
+            await весь_снова.исполнить("mcp__local__fail_with_env", '{"name": "SECRET_TOKEN"}')
+        except RuntimeError as exc:
+            итоги["ошибка с тайной"] = str(exc)
+
+        # Испорченный файл правил — жалоба с путём, инструментов нет.
+        (мост / ".claude" / "settings.json").write_text("{не json", encoding="utf-8")
+        итоги["битые правила"] = await соединения.набор(мост)
+        # Жалоба набора доходит до человека через `store_error` агента.
+        агент_жалобы = Agent("мост-жалоба", профиль_круга("мост-жалоба"), инструменты=lambda: соединения.набор(мост))
+        await агент_жалобы.exchange(КруговойКлиент([], запасной=КРУГ_MCP_ОТВЕТ), "deepseek-v4-flash", "привет")
+        итоги["жалоба у агента"] = агент_жалобы.store_error
+    finally:
+        await соединения.закрыть()
+    итоги["pid после закрытия"] = int(pid_мост.read_text())
+    return итоги
+
+
+import signal  # noqa: E402
+
+итоги_моста = asyncio.run(мост_сценарий())
+check("без правил — набора нет и процесс сервера не запускается", итоги_моста["без правил"] is None and not итоги_моста["pid без правил"])
+check("разрешён только add — модели предложен только он", итоги_моста["только add"] == ["mcp__local__add"], str(итоги_моста["только add"]))
+check("парная: разрешён весь сервер — оба инструмента", итоги_моста["весь сервер"] == ["mcp__local__add", "mcp__local__echo", "mcp__local__fail_with_env"], str(итоги_моста["весь сервер"]))
+check("deny add поверх allow сервера — остался echo", итоги_моста["deny add"] == ["mcp__local__echo", "mcp__local__fail_with_env"], str(итоги_моста["deny add"]))
+check("следующий обмен — то же соединение, второго процесса нет", итоги_моста["тот же процесс"])
+check("прямой вызов неразрешённого — отказ «не разрешён»", "не разрешён" in (итоги_моста["прямой вызов echo"] or ""), str(итоги_моста["прямой вызов echo"]))
+check(
+    "вызов без схемы через общий набор — «нет такого инструмента»",
+    итоги_моста["выдуманное через соединить"] == "нет такого инструмента: mcp__local__echo",
+    итоги_моста["выдуманное через соединить"],
+)
+ход_моста = итоги_моста["обмен"]
+check("обмен с инструментом MCP удался", ход_моста.ok and ход_моста.text == "сумма — 5", str(ход_моста.error))
+check("в запросе модели схема mcp__local__add", итоги_моста["схемы в запросе"] == ["mcp__local__add"], str(итоги_моста["схемы в запросе"]))
+check(
+    "результат вызова «5» ушёл модели сообщением tool",
+    [м.get("content") for м in итоги_моста["результат круга"]] == ["5"],
+    str(итоги_моста["результат круга"]),
+)
+check("результат показан на экране", итоги_моста["показ результата"] == ["5"], str(итоги_моста["показ результата"]))
+check(
+    "умерший сервер переоткрыт следующим обменом, вызов снова работает",
+    итоги_моста["переоткрыто"] == (True, ["mcp__local__add"]) and итоги_моста["вызов после переоткрытия"] == "2",
+    f"{итоги_моста['переоткрыто']} {итоги_моста['вызов после переоткрытия']}",
+)
+битые = итоги_моста["битые правила"]
+check(
+    "испорченный settings.json — жалоба с путём, инструментов нет",
+    битые is not None and not битые.схемы and "settings.json" in (битые.жалоба or ""),
+    str(битые and битые.жалоба),
+)
+check(
+    "жалоба набора (пустого) дошла до store_error агента",
+    "settings.json" in (итоги_моста["жалоба у агента"] or ""),
+    str(итоги_моста["жалоба у агента"]),
+)
+check(
+    "успешный результат доходит как есть: строки и «1» из env не тронуты",
+    итоги_моста["многострочный"] == "USD: 84,1\nEUR: 91,2",
+    repr(итоги_моста["многострочный"]),
+)
+check(
+    "парная: ошибка сервера с подставленной тайной — тайна заменена на ***",
+    "тайна-моста-77" not in итоги_моста.get("ошибка с тайной", "тайна-моста-77")
+    and "SECRET_TOKEN=***" in итоги_моста.get("ошибка с тайной", ""),
+    итоги_моста.get("ошибка с тайной"),
+)
+check("после закрыть() процесса сервера нет", not процесс_жив(итоги_моста["pid после закрытия"]))
+
+# Главный собеседник: инструменты MCP есть без задачи и автомата. У branching их нет по
+# построению: главный экран всегда standard, а агентов экрана ветвления `strategies` заводит
+# без поставщика — это и проверяется, а не условие внутри поставщика.
+from myharness import strategies as strategies_mod  # noqa: E402
+
+правила_моста(["mcp__local__add"])
+прежний_каталог = Path.cwd()
+os.chdir(мост)
+try:
+    async def главный_и_ветвление():
+        исходный = profiles.Profile(name="мост", context_strategy=context_strategy.CONTEXT_BRANCHING)
+        состояние = state_mod.State(config=Config(), client=None, model="deepseek-v4-flash", profile=исходный)
+        try:
+            набор, жалоба = await состояние.main_agent._набор_инструментов()
+            экран = strategies_mod.create_strategy_screen(
+                состояние, исходный, context_strategy.CONTEXT_BRANCHING, key="мост-ветви", title="ветви"
+            )
+            агенты_ветвления = [п.agent for п in экран.panes if п.agent is not None]
+            return (
+                состояние.profile.context_strategy,
+                имена_набора(набор),
+                жалоба,
+                bool(агенты_ветвления) and all(а._инструменты is None for а in агенты_ветвления),
+            )
+        finally:
+            await состояние.mcp.закрыть()
+
+    главный = asyncio.run(главный_и_ветвление())
+finally:
+    os.chdir(прежний_каталог)
+check(
+    "главный собеседник (профиль с branching → экран standard) получает инструменты MCP без задачи",
+    главный[:3] == (context_strategy.CONTEXT_STANDARD, ["mcp__local__add"], None),
+    str(главный),
+)
+check("парная: у агентов экрана ветвления поставщика инструментов нет", главный[3], str(главный))
+
+
+print("\n# /mcp: пометка инструментов, доступных модели (день 17, шаг 4)")
+from myharness import commands_mcp  # noqa: E402
+
+показ_пометок = "".join(
+    текст for _, текст in commands_mcp._показ(итог_живого, mcp_tools.Разрешения(("mcp__local__add",)))
+)
+check(
+    "разрешённый инструмент помечен «✓ модели», соседний — нет",
+    "mcp__local__add ✓ модели" in показ_пометок and "mcp__local__echo ✓" not in показ_пометок
+    and "mcp__local__echo" in показ_пометок,
+    показ_пометок,
+)
+показ_без_правил = "".join(текст for _, текст in commands_mcp._показ(итог_живого, mcp_tools.Разрешения()))
+check("парная: без правил пометок нет", "✓ модели" not in показ_без_правил, показ_без_правил)
 
 print()
 if failures:

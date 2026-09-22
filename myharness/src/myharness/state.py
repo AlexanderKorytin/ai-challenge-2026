@@ -35,13 +35,14 @@ from . import (
     context_strategy,
     invariants,
     machine,
+    mcp_tools,
     memory,
     project_card,
     tokens,
     workspace,
 )
 from . import screens as screens_mod
-from .agent import Agent, Проверка
+from .agent import Agent, Инструменты, Проверка, соединить
 from .api import DeepSeekClient
 from .config import Config
 from .profiles import Profile
@@ -200,6 +201,9 @@ class State:
     # Число живёт здесь, а не в агенте: оно про ФАЙЛ сессии, а файл принадлежит состоянию —
     # его меняют `/clear` и смена профиля. Агент про файл не знает и знать не должен.
     база_границы: int = 0
+    # Соединения с серверами MCP на весь сеанс: переживают смену профиля и `/clear` — это
+    # соединения с внешними программами, а не часть разговора. Закрываются при выходе (`cli`).
+    mcp: mcp_tools.Соединения = field(default_factory=mcp_tools.Соединения)
 
     @property
     def main(self) -> screens_mod.Screen:
@@ -561,8 +565,16 @@ def главный_агент(state: State, profile: Profile) -> Agent:
     воспроизводимым, а слои памяти меняются между прогонами.
 
     Инструменты автомата задачи (`machine.набор`) — тоже только ему и тоже вызываемым: пауза,
-    смена задачи и правка файла руками решают, будут ли они в следующем обмене.
+    смена задачи и правка файла руками решают, будут ли они в следующем обмене. Инструменты
+    разрешённых серверов MCP (`mcp_tools`) идут в тот же набор: один круг вызовов, один показ,
+    один журнал.
     """
+    async def набор_главного() -> Инструменты | None:
+        # Инструменты MCP от автомата не зависят (карта, задача, пауза). У `branching` их нет
+        # по построению: главный экран всегда standard (`__post_init__`), а агенты экрана
+        # ветвления заводит `strategies` без поставщика — звенья круга там не хранятся.
+        return соединить(machine.набор(state, profile), await state.mcp.набор(Path.cwd()))
+
     return Agent(
         screens_mod.MAIN_KEY,
         profile,
@@ -570,6 +582,6 @@ def главный_агент(state: State, profile: Profile) -> Agent:
         project=project_block,
         work=lambda: work_block(state),
         инварианты=lambda: invariants_block(state, profile),
-        инструменты=lambda: machine.набор(state, profile),
+        инструменты=набор_главного,
         проверка=проверить_ответ(state, profile),
     )

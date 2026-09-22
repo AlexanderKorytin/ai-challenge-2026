@@ -37,10 +37,26 @@ def echo(text: str) -> str:
     return text
 
 
+if os.environ.get("УЧЕБНЫЙ_ОТКАЗ") == "1":
+    # Только по требованию проверки: проверки дня 16 считают инструменты сервера.
+
+    @srv.tool()
+    def fail_with_env(name: str) -> str:
+        """Падает, цитируя значение переменной окружения процесса (проверка вычистки тайн)."""
+        from mcp.server.mcpserver.exceptions import ToolError
+
+        raise ToolError(f"отказ: {name}={os.environ.get(name, '')}")
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--молчать":
         with open(sys.argv[2], "w", encoding="utf-8") as f:
             f.write(str(os.getpid()))
         while True:
             time.sleep(3600)
+    if len(sys.argv) == 3 and sys.argv[1] == "--pid-файл":
+        # Обычная работа, но номер процесса — в файл: проверки моста узнают по нему, то же ли
+        # это соединение во втором обмене, и убивают процесс, чтобы проверить переоткрытие.
+        with open(sys.argv[2], "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
     srv.run()

@@ -12,7 +12,7 @@ import re
 import shlex
 from pathlib import Path
 
-from . import mcp_client, ui
+from . import mcp_client, mcp_tools, ui
 from .mcp_client import НегоднаяЗапись, ОшибкаФайла, Сервер
 from .output import append_log, replace_log, target_pane
 from .state import State
@@ -138,7 +138,7 @@ def разобрать_добавление(доводы: list[str]) -> tuple[С
     return сервер, предупреждения
 
 
-def _показ(итог: mcp_client.Итог) -> ui.Fragments:
+def _показ(итог: mcp_client.Итог, разрешения: mcp_tools.Разрешения) -> ui.Fragments:
     сервер = итог.сервер
     if isinstance(сервер, НегоднаяЗапись):
         return ui.error_fragments(f"{сервер.имя} — {итог.сбой}")
@@ -152,7 +152,10 @@ def _показ(итог: mcp_client.Итог) -> ui.Fragments:
         строки = инструмент.описание.strip().splitlines()
         первая = строки[0].strip() if строки else ""
         хвост = f" — {первая}" if первая else ""
-        части += [("class:dim", f"    {инструмент.полное_имя}{хвост}"), ("", "\n")]
+        # Пометка — по тем же правилам, по которым набор обмена предлагает инструменты модели
+        # (`mcp_tools`): иначе показ и модель разошлись бы в том, что ей доступно.
+        пометка = " ✓ модели" if разрешения.разрешён(инструмент.полное_имя) else ""
+        части += [("class:dim", f"    {инструмент.полное_имя}{пометка}{хвост}"), ("", "\n")]
     return части
 
 
@@ -172,7 +175,10 @@ async def _показать_все(state: State) -> None:
     # а итог дописывается в конец: за время опроса ниже могли лечь чужие строки, и идущий
     # обмен помнит номер своей строки ожидания — сдвиг ленты заставил бы его затирать чужое
     # (тот же приём, что `_снять_ожидание` в commands.py).
+    разрешения, жалоба = mcp_tools.прочитать_разрешения(Path.cwd())
     панель = target_pane(state, None)
+    if жалоба:
+        append_log(state, ui.error_fragments(жалоба), панель)
     ожидание = ui.system_fragments(f"подключаюсь к серверам MCP: {len(записи)}…")
     место = len(панель.log)
     append_log(state, ожидание, панель)
@@ -184,7 +190,7 @@ async def _показать_все(state: State) -> None:
     else:
         показ = []
         for итог in итоги:
-            показ += _показ(итог)
+            показ += _показ(итог, разрешения)
     finally:
         replace_log(state, панель, место, len(ожидание), [("", "")] * len(ожидание))
     append_log(state, показ, панель)
