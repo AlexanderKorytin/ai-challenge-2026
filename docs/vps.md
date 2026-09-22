@@ -1,46 +1,75 @@
 # VPS челленджа
 
-- IP: **38.180.117.69**, провайдер Inferno Solution.
-- Заход с Мака юзера: **`ssh challenge`** (алиас в `~/.ssh/config`,
-  ключ `~/.ssh/challenge_vps`, ed25519, root). Пароль-авторизация оставлена как запасной вход.
-- ICMP закрыт снаружи — `ping` не проходит, это норма.
-- OS: Ubuntu 24.04.4 LTS. Ресурсы: 1 vCPU, 961 MB RAM **+ 2 GB swap** (`/swapfile`,
-  swappiness=10), диск 20 GB (~11 GB свободно). RAM в обрез — тяжёлые сборки могут
-  упираться, swap спасает.
+С 2026-09-22 — новый сервер; прежний `38.180.117.69` (Inferno Solution) выведен из работы.
 
-### Что установлено (native, без Docker — по выбору юзера)
+- IP: **83.136.235.149**, имя **`koritin84.fvds.ru`** (выдано хостингом FirstVDS, указывает на
+  этот адрес).
+- Заход с Мака: **`ssh challenge`** (запись в `~/.ssh/config`, ключ `~/.ssh/challenge_vps`,
+  ed25519, root). **Вход только по ключу**: пароль и клавиатурный вход закрыты файлом
+  `/etc/ssh/sshd_config.d/10-challenge.conf` — он читается раньше `40-hosting.conf` хостинга, а у
+  sshd побеждает первое значение.
+- VPN на Маке (Happ) режет исходящий порт 22 у любого адреса — адрес сервера внесён в его
+  исключения (см. `docs/грабли.md`).
+- OS: Ubuntu 24.04.5 LTS. Ресурсы: 1 vCPU, 956 MB RAM + 477 MB swap, диск 15 GB.
+
+## Панель ispmanager
+
+Сервер — образ хостинга с панелью ispmanager (веб-консоль `https://83.136.235.149:1500`).
+Решение пользователя 2026-09-22 — работать через панель, а не переустанавливать чистую систему.
+Панель ведёт nginx, сетевой экран (свои цепочки iptables `ispmgr_*`; `ufw` выключен), DNS
+(`named`), MySQL и PHP; её службы занимают около 690 MB памяти из 956.
+
+**Правило**: всё, чем владеет панель, меняется только её штатными средствами — командой
+`/usr/local/mgr5/sbin/mgrctl -m ispmgr <функция>` или каталогами своих вставок. Ручная правка
+её файлов будет переписана при следующем изменении через панель.
+
+| Что | Как заведено |
+|---|---|
+| сайт `koritin84.fvds.ru` | `mgrctl -m ispmgr webdomain.edit sok=ok name=koritin84.fvds.ru owner=www-root email=… php=off php_enable=off secure=on ssl_cert=letsencrypt redirect_http=on` |
+| сертификат Let's Encrypt | `mgrctl -m ispmgr letsencrypt.generate sok=ok username=www-root domain_name=koritin84.fvds.ru domain=koritin84.fvds.ru crtname=koritin84.fvds.ru_le2 enable_cert=on email=… domain_type=web`; продлевает панель (`letsencrypt.periodic`) |
+| своя вставка nginx сайта | `/etc/nginx/vhosts-resources/koritin84.fvds.ru/*.conf` — панель подключает в оба блока сайта и не перезаписывает |
+
+Предел Let's Encrypt: `fvds.ru` не входит в список публичных суффиксов, поэтому **50
+сертификатов в неделю на всех клиентов FirstVDS** — выпуск может отказать «too many
+certificates already issued for fvds.ru»; панель сама повторяет после названного времени.
+
+Сетевой экран сейчас открыт (политика «принимать»): снаружи видны 22, 53, 80, 443, 1500, 1501.
+Службы челленджа слушают только `127.0.0.1` и выходят наружу через nginx по HTTPS. Закрыть
+лишнее — отдельная задача.
+
+## Установлено сверх образа
 
 | | |
 |---|---|
-| Python | 3.12.3 (системный) + venv + pip + pipx |
-| **uv** | 0.12.7 — в `/root/.local/bin`, в PATH через `~/.bashrc` |
-| **ruff** | через `uv tool` (глобально) |
-| Node.js | 22 LTS (NodeSource) + npm + pnpm |
-| Сборка | build-essential (gcc 13.3, make) |
-| Прочее | git, tmux, jq, htop, ncdu, net-tools, dnsutils, rsync, tree, unzip |
-| Firewall | ufw включён: **всё входящее закрыто, кроме SSH (22)** |
-| git identity | `aleksandrkorytin` / `koritin84@gmail.com` |
+| **uv** | 0.12.17 — `/root/.local/bin/uv` |
+| git, tmux, jq, rsync | из apt |
+| Python | 3.12.3 (системный); проекты служб — своим uv-окружением |
 
-**Не установлено** (ставим по факту заданий): Docker, Go, Rust, Java, nginx, БД.
+## Рабочая папка — `/opt/challenge/`
 
-### Рабочая папка на сервере — `/opt/challenge/`
-
-git-репозиторий (ветка `main`), заготовка структуры зафиксирована.
+git-репозиторий (ветка `main`), фиксации делаются на сервере.
 
 ```
-services/<name>/   один сервис/агент = папка со своим uv-проектом (pyproject.toml + .venv)
-data/              рабочие данные, дампы            (gitignored)
-logs/              логи сервисов                    (gitignored)
-bin/               вспомогательные скрипты
-.env               общие секреты, gitignored, chmod 600
-README.md          конвенции
-smoke_test.py      проверка API одним запросом: `uv run smoke_test.py`
+services/<имя>/   служба: свой uv-проект, запуск службой systemd
+data/, logs/      рабочие данные и журналы (вне git)
+.env              тайны, права 600, вне git
 ```
 
-- `.env` содержит `ANTHROPIC_API_KEY` — **заполняет юзер вручную**, в репозиторий не фиксируем.
-- Новый сервис:
-  ```
-  cd /opt/challenge/services && uv init <name> && cd <name>
-  uv add anthropic python-dotenv httpx fastapi "uvicorn[standard]"
-  uv run <entrypoint>.py
-  ```
+## Службы
+
+### `cbr-mcp` — MCP-сервер курсов ЦБ (день 17)
+
+- Код — `mcp_servers/cbr/` в репозитории `ai-challenge-2026`; доставка:
+  `rsync -a --no-owner --no-group --delete --exclude .venv --exclude __pycache__ mcp_servers/cbr/ challenge:/opt/challenge/services/cbr-mcp/`
+  (без `--no-owner` файлы на сервере достались бы uid Мака), затем на сервере
+  `uv sync --frozen` и `systemctl restart cbr-mcp`.
+- Служба systemd `cbr-mcp` (`deploy/cbr-mcp.service`), слушает **только `127.0.0.1:8770`**.
+  Работает **не от root**: временный пользователь systemd (`DynamicUser`), система только на
+  чтение; запускает Python готового `.venv` напрямую, без uv.
+- Наружу: **`https://koritin84.fvds.ru/mcp`** через nginx (`deploy/nginx-mcp.conf` →
+  `/etc/nginx/vhosts-resources/koritin84.fvds.ru/mcp.conf`).
+- Токен — строка `CBR_MCP_TOKEN=` в `/opt/challenge/.env`. На Маке не хранится; клиент берёт
+  его при запуске: `export CBR_MCP_TOKEN=$(ssh challenge "grep ^CBR_MCP_TOKEN= /opt/challenge/.env | cut -d= -f2")`.
+- Проверка: без токена `curl -X POST https://koritin84.fvds.ru/mcp` — 401. Имя
+  `www.koritin84.fvds.ru` сайт принимает, но служба отвечает 421 — пропускается только
+  `koritin84.fvds.ru`.

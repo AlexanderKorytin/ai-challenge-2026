@@ -1,0 +1,33 @@
+# Служба MCP-сервера курсов ЦБ на VPS челленджа.
+# Ставится: cp deploy/cbr-mcp.service /etc/systemd/system/ && systemctl enable --now cbr-mcp
+# Слушает только 127.0.0.1: наружу её выводит nginx панели по HTTPS (deploy/nginx-mcp.conf).
+[Unit]
+Description=MCP-сервер курсов валют ЦБ РФ
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# CBR_MCP_TOKEN — только здесь, файл root:600 вне git. systemd читает его до сброса прав,
+# поэтому самой службе доступ к файлу не нужен.
+EnvironmentFile=/opt/challenge/.env
+WorkingDirectory=/opt/challenge/services/cbr-mcp
+# Окружение собирается при доставке (`uv sync --frozen` от root); служба запускает его Python
+# напрямую — uv и его кеш в /root ей не нужны.
+ExecStart=/opt/challenge/services/cbr-mcp/.venv/bin/python server.py --host 127.0.0.1 --port 8770 --allowed-host koritin84.fvds.ru
+Restart=on-failure
+# Не root: сетевой процесс разбирает чужой XML и JSON, и уязвимость в любой из библиотек не
+# должна давать права на сервер с тайнами. Временный пользователь, система только на чтение.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
