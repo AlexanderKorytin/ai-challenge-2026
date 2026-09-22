@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cbr": {
+      "type": "http",
+      "url": "https://83.136.235.149:8443/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CBR_MCP_TOKEN}"
+      }
+    }
+  }
+}
