@@ -13,7 +13,7 @@ EnvironmentFile=/opt/challenge/.env
 WorkingDirectory=/opt/challenge/services/cbr-mcp
 # Окружение собирается при доставке (`uv sync --frozen` от root); служба запускает его Python
 # напрямую — uv и его кеш в /root ей не нужны.
-ExecStart=/opt/challenge/services/cbr-mcp/.venv/bin/python server.py --host 127.0.0.1 --port 8770 --allowed-host koritin84.fvds.ru
+ExecStart=/opt/challenge/services/cbr-mcp/.venv/bin/python server.py --host 127.0.0.1 --port 8770 --allowed-host koritin84.fvds.ru --allowed-host 83.136.235.149:8443
 Restart=on-failure
 # Не root: сетевой процесс разбирает чужой XML и JSON, и уязвимость в любой из библиотек не
 # должна давать права на сервер с тайнами. Временный пользователь, система только на чтение.

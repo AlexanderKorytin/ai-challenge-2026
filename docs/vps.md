@@ -33,7 +33,7 @@
 сертификатов в неделю на всех клиентов FirstVDS** — выпуск может отказать «too many
 certificates already issued for fvds.ru»; панель сама повторяет после названного времени.
 
-Сетевой экран сейчас открыт (политика «принимать»): снаружи видны 22, 53, 80, 443, 1500, 1501.
+Сетевой экран сейчас открыт (политика «принимать»): снаружи видны 22, 53, 80, 443, 1500, 1501, 8443.
 Службы челленджа слушают только `127.0.0.1` и выходят наружу через nginx по HTTPS. Закрыть
 лишнее — отдельная задача.
 
@@ -66,8 +66,14 @@ data/, logs/      рабочие данные и журналы (вне git)
 - Служба systemd `cbr-mcp` (`deploy/cbr-mcp.service`), слушает **только `127.0.0.1:8770`**.
   Работает **не от root**: временный пользователь systemd (`DynamicUser`), система только на
   чтение; запускает Python готового `.venv` напрямую, без uv.
-- Наружу: **`https://koritin84.fvds.ru/mcp`** через nginx (`deploy/nginx-mcp.conf` →
-  `/etc/nginx/vhosts-resources/koritin84.fvds.ru/mcp.conf`).
+- Наружу, два входа с одной пересылкой `deploy/nginx-mcp.conf` (подключается строкой `include`):
+  - **`https://83.136.235.149:8443/mcp`** — рабочий. Блок `deploy/nginx-ip.conf` →
+    `/etc/nginx/conf.d/cbr-mcp-ip.conf`; сертификат Let's Encrypt на сам IP, который панель
+    получает и продлевает своим acme.sh (живёт ~6 дней, продление каждые 3 дня,
+    `/usr/local/mgr5/etc/scripts/acmesh/83.136.235.149/`). nginx перечитывает его таймером
+    `nginx-reload.timer` раз в сутки (`deploy/nginx-reload.{service,timer}`).
+  - `https://koritin84.fvds.ru/mcp` — по имени (`/etc/nginx/vhosts-resources/koritin84.fvds.ru/mcp.conf`);
+    заработает, когда панель выпустит сертификат на имя: 2026-09-22 дважды упёрся в предел fvds.ru.
 - Токен — строка `CBR_MCP_TOKEN=` в `/opt/challenge/.env`. На Маке не хранится; клиент берёт
   его при запуске: `export CBR_MCP_TOKEN=$(ssh challenge "grep ^CBR_MCP_TOKEN= /opt/challenge/.env | cut -d= -f2")`.
 - Проверка: без токена `curl -X POST https://koritin84.fvds.ru/mcp` — 401. Имя
