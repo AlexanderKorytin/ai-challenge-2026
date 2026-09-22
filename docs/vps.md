@@ -62,11 +62,14 @@ data/, logs/      рабочие данные и журналы (вне git)
 - Код — `mcp_servers/cbr/` в репозитории `ai-challenge-2026`; доставка:
   `rsync -a --no-owner --no-group --delete --exclude .venv --exclude __pycache__ mcp_servers/cbr/ challenge:/opt/challenge/services/cbr-mcp/`
   (без `--no-owner` файлы на сервере достались бы uid Мака), затем на сервере
-  `uv sync --frozen` и `systemctl restart cbr-mcp`.
+  `uv sync --frozen`, копии файлов `deploy/` в `/etc` (`nginx-mcp.conf` → `snippets/cbr-mcp.conf`,
+  `nginx-ip.conf` → `conf.d/cbr-mcp-ip.conf`, `*.service`/`*.timer` → `systemd/system/`),
+  `nginx -t` до `systemctl reload nginx` и `systemctl restart cbr-mcp`.
 - Служба systemd `cbr-mcp` (`deploy/cbr-mcp.service`), слушает **только `127.0.0.1:8770`**.
   Работает **не от root**: временный пользователь systemd (`DynamicUser`), система только на
   чтение; запускает Python готового `.venv` напрямую, без uv.
-- Наружу, два входа с одной пересылкой `deploy/nginx-mcp.conf` (подключается строкой `include`):
+- Наружу, два входа с одной пересылкой `deploy/nginx-mcp.conf` → `/etc/nginx/snippets/cbr-mcp.conf`
+  (копия, а не ссылка в каталог доставки; подключается строкой `include`):
   - **`https://83.136.235.149:8443/mcp`** — рабочий. Блок `deploy/nginx-ip.conf` →
     `/etc/nginx/conf.d/cbr-mcp-ip.conf`; сертификат Let's Encrypt на сам IP, который панель
     получает и продлевает своим acme.sh (живёт ~6 дней, продление каждые 3 дня,
@@ -76,6 +79,6 @@ data/, logs/      рабочие данные и журналы (вне git)
     заработает, когда панель выпустит сертификат на имя: 2026-09-22 дважды упёрся в предел fvds.ru.
 - Токен — строка `CBR_MCP_TOKEN=` в `/opt/challenge/.env`. На Маке не хранится; клиент берёт
   его при запуске: `export CBR_MCP_TOKEN=$(ssh challenge "grep ^CBR_MCP_TOKEN= /opt/challenge/.env | cut -d= -f2")`.
-- Проверка: без токена `curl -X POST https://koritin84.fvds.ru/mcp` — 401. Имя
-  `www.koritin84.fvds.ru` сайт принимает, но служба отвечает 421 — пропускается только
-  `koritin84.fvds.ru`.
+- Проверка: без токена `curl -X POST https://83.136.235.149:8443/mcp` — 401; чужое имя узла —
+  421. Срок IP-сертификата (продление не оповещает о сбое):
+  `openssl x509 -enddate -noout -in /usr/local/mgr5/etc/scripts/acmesh/83.136.235.149/fullchain.cer`.

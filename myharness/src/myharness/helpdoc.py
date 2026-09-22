@@ -253,10 +253,11 @@ def _mcp() -> str:
         "/mcp remove <имя> — убрать запись.\n"
         "Токены в файл не пишутся: \"Authorization: Bearer ${GITHUB_TOKEN}\" подставляется из\n"
         "окружения при подключении. Буквальный токен в Authorization команда не примет.\n"
-        "Модели достаются только разрешённые инструменты — правила permissions.allow в\n"
-        ".claude/settings.json рабочего каталога, как у Claude Code: \"mcp__cbr\" — весь сервер,\n"
-        "\"mcp__cbr__get_rate\" — один инструмент; permissions.deny сильнее. В /mcp у\n"
-        "разрешённых стоит «✓ модели». Соединение живёт весь сеанс; предел вызова —\n"
+        "Собеседнику главного экрана достаются только разрешённые инструменты — правила\n"
+        "permissions.allow в .claude/settings.json и .claude/settings.local.json рабочего каталога,\n"
+        "как у Claude Code: \"mcp__cbr\" или \"mcp__cbr__*\" — весь сервер, \"mcp__cbr__get_rate\" —\n"
+        "один инструмент; permissions.deny сильнее. В /mcp у разрешённых стоит «✓ модели».\n"
+        "Соединение живёт весь сеанс и открывается под тем же MCP_TIMEOUT; предел вызова —\n"
         "MCP_TOOL_TIMEOUT в миллисекундах, если задан.\n"
     )
 
