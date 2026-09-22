@@ -1,0 +1,36 @@
+# Вход MCP-сервера курсов ЦБ: https://38.180.117.69/mcp. Ставится в /etc/caddy/Caddyfile.
+# Caddy сам получает сертификат Let's Encrypt на IP-адрес (профиль shortlived — другого для IP
+# Let's Encrypt не выдаёт), сам продлевает и сам подхватывает: таймеров и перезагрузок не нужно.
+# Порт 80 не слушается вовсе (disable_redirects, ufw его не открывает): токен по голому HTTP
+# не ходит. Проверка сертификата — вызовом TLS-ALPN на 443.
+{
+	# Служебный вход Caddy — файлом в его каталоге (700 caddy), а не портом 127.0.0.1:2019: порт
+	# доступен любому местному процессу, и захваченная служба могла бы перенастроить Caddy и
+	# отдать себе ключи сертификата. `caddy reload` берёт адрес отсюда же.
+	admin unix//var/lib/caddy/admin.sock
+	# Только HTTP/1.1 и HTTP/2: 443/udp закрыт, и объявлять HTTP/3 незачем.
+	servers {
+		protocols h1 h2
+	}
+	email koritin84@gmail.com
+	auto_https disable_redirects
+	cert_issuer acme {
+		profile shortlived
+		# Порт 80 закрыт нарочно — проверка владения только через TLS-ALPN на 443.
+		disable_http_challenge
+	}
+}
+
+https://38.180.117.69 {
+	# Токена здесь нет и быть не должно: его проверяет сама служба. Имя узла Caddy передаёт
+	# как прислал клиент, служба пропускает только `38.180.117.69`.
+	handle /mcp {
+		reverse_proxy 127.0.0.1:8770 {
+			# Поток ответа MCP не копится в Caddy.
+			flush_interval -1
+		}
+	}
+	handle {
+		respond 404
+	}
+}
