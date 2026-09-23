@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import sys
+import tempfile
 from contextlib import AsyncExitStack
 from pathlib import Path
 
@@ -19,8 +21,10 @@ import httpx2
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+import scheduler
 import server
 from mcp.server.mcpserver.exceptions import ToolError
+from store import Observed, Store
 
 ОБРАЗЦЫ = Path(__file__).parent / "образцы"
 ТОКЕН = "check-token-0123"
@@ -39,6 +43,9 @@ def check(имя: str, условие: bool, подробно: object = "") -> N
     ("XML_daily.asp", "01/09/2026"): "daily_2026-09-01.xml",
     ("XML_daily.asp", "20/09/2026"): "daily_2026-09-20.xml",
     ("XML_daily.asp", "05/09/2026"): "daily_2026-09-01.xml",
+    # Сбор по расписанию запрашивает завтрашнюю дату; ответ на 02.09 — образец на 01.09, как
+    # ЦБ отдаёт последний установленный курс, пока нового нет.
+    ("XML_daily.asp", "02/09/2026"): "daily_2026-09-01.xml",
     ("XML_dynamic.asp", "01/09/2026"): "dynamic_usd_2026-09-01_05.xml",
 }
 ПУСТОЙ = b'<?xml version="1.0" encoding="windows-1251"?><ValCurs Date="01.12.2099" name="x"></ValCurs>'
@@ -119,6 +126,164 @@ async def инструменты() -> None:
     check("начало позже конца — ошибка", "позже" in текст, текст)
 
 
+МОСКВА = server.МОСКВА
+
+
+def в(час: int, минута: int, секунда: int = 0) -> dt.datetime:
+    return dt.datetime(2026, 9, 1, час, минута, секунда, tzinfo=МОСКВА)
+
+
+class Часы:
+    def __init__(self, сейчас: dt.datetime) -> None:
+        self.сейчас = сейчас
+
+    def __call__(self) -> dt.datetime:
+        return self.сейчас
+
+
+def поднять(каталог: str, часы: Часы) -> tuple[Store, scheduler.Scheduler]:
+    """Хранилище во временном каталоге и планировщик на поддельных часах — как их ставит main()."""
+    хранилище = Store(Path(каталог) / "вложенный" / "cbr.sqlite3")
+    планировщик = scheduler.Scheduler(хранилище, часы, server._собрать)
+    server._хранилище, server._планировщик = хранилище, планировщик
+    server._сейчас = часы
+    return хранилище, планировщик
+
+
+async def задания() -> None:
+    server._получить = поддельный_цб
+    настоящее_сейчас = server._сейчас
+    with tempfile.TemporaryDirectory() as каталог:
+        часы = Часы(в(10, 1))
+        хранилище, планировщик = поднять(каталог, часы)
+
+        з = await server.schedule_collect(["usd", "EUR", "usd"], "*/2 * * * *")
+        check("задание: коды в верхнем регистре без повторов", з.currencies == ["USD", "EUR"], з)
+        check("задание: ближайший срок по cron — 10:02 по Москве", з.next_run == в(10, 2).isoformat(), з)
+        текст = await ошибка_ожидаемая(server.schedule_collect(["USD"], "каждые 2 минуты"))
+        check("негодный cron — ошибка с именем довода", текст.startswith("cron:"), текст)
+        for выражение in ("* * * * * *", "@hourly"):
+            текст = await ошибка_ожидаемая(server.schedule_collect(["USD"], выражение))
+            check(f"cron {выражение!r} не из пяти полей — ошибка", текст.startswith("cron:"), текст)
+        текст = await ошибка_ожидаемая(server.schedule_collect(["XXX"], "*/2 * * * *"))
+        check("неизвестная валюта — ошибка со списком известных", "нет курса XXX" in текст and "USD" in текст, текст)
+        текст = await ошибка_ожидаемая(server.schedule_collect([" "], "*/2 * * * *"))
+        check("пустой список валют — ошибка", текст.startswith("currencies:"), текст)
+        check("парная: негодные задания не записаны", len(хранилище.jobs()) == 1, хранилище.jobs())
+
+        часы.сейчас = в(10, 1, 59)
+        await планировщик.tick()
+        check("до срока задание не выполняется", хранилище.jobs()[0].runs_ok == 0, хранилище.jobs())
+        часы.сейчас = в(10, 2)
+        запросы.clear()
+        await планировщик.tick()
+        [з] = хранилище.jobs()
+        check("в срок: запуск удачен", з.runs_ok == 1 and з.last_error is None, з)
+        check("в срок: один запрос к ЦБ на завтра для всех валют", [д.get("date_req") for _, д in запросы] == ["02/09/2026"], запросы)
+        check("в срок: следующий срок — 10:04", з.next_run == в(10, 4), з)
+        usd = хранилище.summary("USD", None, None)
+        check("курс USD сохранён с датой, названной ЦБ", usd is not None and usd.count == 1 and usd.last.rate_date == dt.date(2026, 9, 1) and usd.last.unit_rate == 86.3793, usd)
+        check("курс EUR сохранён", хранилище.summary("EUR", None, None) is not None)
+        check("не заказанная валюта не сохраняется", хранилище.summary("CNY", None, None) is None)
+
+        часы.сейчас = в(10, 4)
+        await планировщик.tick()
+        [з] = хранилище.jobs()
+        check("повторный сбор того же курса: запуск удачен", з.runs_ok == 2, з)
+        check("повторный сбор того же курса: новых строк нет", хранилище.summary("USD", None, None).count == 1)
+
+        # Служба лежала: пропущены сроки 10:06, 10:08 и 10:10.
+        часы.сейчас = в(10, 11)
+        check("предусловие: пропущено больше одного срока", хранилище.jobs()[0].next_run <= в(10, 6))
+        await планировщик.tick()
+        [з] = хранилище.jobs()
+        check("пропущенные сроки — один запуск", з.runs_ok == 3, з)
+        check("пропущенные сроки — следующий срок после «сейчас»", з.next_run == в(10, 12), з)
+
+        async def цб_лежит(путь: str, доводы: dict[str, str]) -> bytes:
+            raise ToolError("нет связи с ЦБ: ConnectError")
+
+        server._получить = цб_лежит
+        часы.сейчас = в(10, 12)
+        await планировщик.tick()
+        [з] = хранилище.jobs()
+        check("сбой ЦБ — запуск с ошибкой, текст сохранён", з.runs_failed == 1 and "нет связи" in (з.last_error or ""), з)
+        check("сбой ЦБ — задание живо, срок сдвинут", з.next_run == в(10, 14), з)
+        server._получить = поддельный_цб
+        часы.сейчас = в(10, 14)
+        await планировщик.tick()
+        check("после удачного запуска последняя ошибка снята", хранилище.jobs()[0].last_error is None, хранилище.jobs())
+
+        чужое = хранилище.add_job(["USD", "ZZZ"], "*/2 * * * *", в(10, 16), в(10, 15))
+        часы.сейчас = в(10, 16)
+        await планировщик.tick()
+        з = next(з for з in хранилище.jobs() if з.id == чужое.id)
+        check("валюты нет в ответе ЦБ — ошибка с её кодом", з.runs_failed == 1 and "ZZZ" in (з.last_error or ""), з)
+        хранилище.delete_job(чужое.id)
+
+        список = await server.list_schedules()
+        check("list_schedules отдаёт задание со счётом запусков", len(список.jobs) == 1 and список.jobs[0].runs_ok == 5 and список.jobs[0].runs_failed == 1, список)
+        снято = await server.delete_schedule(з_id := список.jobs[0].id)
+        check("delete_schedule снимает задание", снято.job_id == з_id and хранилище.jobs() == [], хранилище.jobs())
+        текст = await ошибка_ожидаемая(server.delete_schedule(з_id))
+        check("снять несуществующее — ошибка", f"нет задания {з_id}" in текст, текст)
+        часы.сейчас = в(12, 0)
+        запросы.clear()
+        await планировщик.tick()
+        check("снятое задание не выполняется", запросы == [], запросы)
+        check("курсы снятого задания остались", хранилище.summary("USD", None, None) is not None)
+
+        # Долгий цикл спит без срока, пока нет заданий, и просыпается по wake().
+        цикл = asyncio.create_task(планировщик.run_forever())
+        await asyncio.sleep(0.05)
+        check("предусловие: без заданий цикл не ходил к ЦБ", запросы == [], запросы)
+        новое = await server.schedule_collect(["USD"], "0 16 * * *")
+        check("номер снятого задания не достаётся новому", новое.id > з_id and новое.runs_ok == 0, новое)
+        хранилище.set_next_run(новое.id, в(11, 0))  # срок уже прошёл
+        планировщик.wake()
+        await asyncio.sleep(0.05)
+        цикл.cancel()
+        check("wake() будит цикл, и он выполняет задание в срок", хранилище.jobs()[0].runs_ok == 1, хранилище.jobs())
+        хранилище.close()
+    server._сейчас = настоящее_сейчас
+
+
+def курс(день: int, за_единицу: float) -> Observed:
+    return Observed("USD", "Доллар США", dt.date(2026, 9, день), 1, за_единицу, за_единицу)
+
+
+async def сводка() -> None:
+    настоящее_сейчас = server._сейчас
+    with tempfile.TemporaryDirectory() as каталог:
+        хранилище, _ = поднять(каталог, Часы(в(10, 0)))
+        курсы = [курс(1, 80.0), курс(2, 90.0), курс(3, 85.0)]
+        check("три курса записаны", хранилище.add_rates(курсы, в(10, 0), 1) == 3)
+        check("повтор тех же курсов — ноль новых", хранилище.add_rates(курсы, в(11, 0), 1) == 0)
+        с = await server.get_summary("usd")
+        check(
+            "сводка: число, края, изменение",
+            (с.count, с.first.date, с.last.date, с.change) == (3, "2026-09-01", "2026-09-03", 5.0),
+            с,
+        )
+        check("сводка: изменение в процентах от первого", abs(с.change_pct - 6.25) < 1e-9, с.change_pct)
+        check(
+            "сводка: минимум, максимум с датами, среднее",
+            (с.min.date, с.min.unit_rate, с.max.date, с.max.unit_rate, с.mean) == ("2026-09-01", 80.0, "2026-09-02", 90.0, 85.0),
+            с,
+        )
+        check("сводка: время сбора — первое, повтор его не сдвинул", с.last_seen_at == в(10, 0).isoformat(), с.last_seen_at)
+        отбор = await server.get_summary("USD", "2026-09-02")
+        check("отбор с 02.09 отсекает первый курс", отбор.count == 2 and отбор.first.date == "2026-09-02" and отбор.date_from == "2026-09-02", отбор)
+        отбор = await server.get_summary("USD", None, "2026-09-02")
+        check("отбор по 02.09 отсекает последний курс", отбор.count == 2 and отбор.last.date == "2026-09-02", отбор)
+        текст = await ошибка_ожидаемая(server.get_summary("USD", "2026-10-01"))
+        check("пустой отбор — ошибка с подсказкой завести сбор", "нет собранных курсов USD с 2026-10-01" in текст and "schedule_collect" in текст, текст)
+        текст = await ошибка_ожидаемая(server.get_summary("USD", "2026-09-03", "2026-09-01"))
+        check("начало отбора позже конца — ошибка", "позже" in текст, текст)
+        хранилище.close()
+    server._сейчас = настоящее_сейчас
+
+
 async def протокол() -> None:
     server._получить = поддельный_цб
     приложение = server.приложение(ТОКЕН, ["127.0.0.1:8770"])
@@ -151,7 +316,19 @@ async def протокол() -> None:
             ответ = await сессия.initialize()
             check("согласование: сервер назвался cbr", ответ.server_info.name == "cbr", ответ.server_info)
             список = {t.name: t for t in (await сессия.list_tools()).tools}
-            check("зарегистрированы два инструмента", sorted(список) == ["get_rate", "get_rate_dynamics"], sorted(список))
+            check(
+                "зарегистрированы шесть инструментов",
+                sorted(список) == ["delete_schedule", "get_rate", "get_rate_dynamics", "get_summary", "list_schedules", "schedule_collect"],
+                sorted(список),
+            )
+            check(
+                "у каждого довода новых инструментов есть описание",
+                all(
+                    д.get("description")
+                    for имя in ("schedule_collect", "delete_schedule", "get_summary")
+                    for д in список[имя].input_schema.get("properties", {}).values()
+                ),
+            )
             доводы = список["get_rate"].input_schema.get("properties", {})
             check(
                 "у каждого довода get_rate есть описание",
@@ -171,6 +348,17 @@ async def протокол() -> None:
                 итог,
             )
             check("вызов: есть и текстовая часть", any(getattr(ч, "text", "") for ч in итог.content), итог.content)
+            with tempfile.TemporaryDirectory() as каталог:
+                настоящее_сейчас = server._сейчас
+                хранилище, _ = поднять(каталог, Часы(в(10, 1)))
+                итог = await сессия.call_tool("schedule_collect", {"currencies": ["USD"], "cron": "*/2 * * * *"})
+                check(
+                    "вызов schedule_collect: structuredContent несёт срок",
+                    not итог.is_error and (итог.structured_content or {}).get("next_run") == в(10, 2).isoformat(),
+                    итог,
+                )
+                хранилище.close()
+                server._сейчас = настоящее_сейчас
             плохой = await сессия.call_tool("get_rate", {"currency": "XXX", "date": "2026-09-01"})
             check(
                 "ошибка инструмента доходит как isError с причиной",
@@ -190,6 +378,8 @@ def без_токена() -> None:
 
 async def main() -> None:
     await инструменты()
+    await задания()
+    await сводка()
     await протокол()
     без_токена()
 
