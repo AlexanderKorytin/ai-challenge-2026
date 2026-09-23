@@ -10,7 +10,7 @@
 нет (`stateless_http`): перезапуск службы не рвёт клиента, у которого соединение живёт весь
 сеанс.
 
-Запуск: `CBR_MCP_TOKEN=… uv run python server.py --port 8770 --allowed-host 38.180.117.69`.
+Запуск: `CBR_MCP_TOKEN=… uv run python server.py --port 8770 --allowed-host 188.120.230.58`.
 Хранилище — файл по пути `CBR_MCP_DB` (не задан — `cbr.sqlite3` рядом с сервером).
 """
 

@@ -1,6 +1,6 @@
 # Служба MCP-сервера курсов ЦБ на VPS челленджа.
 # Ставится: cp deploy/cbr-mcp.service /etc/systemd/system/ && systemctl enable --now cbr-mcp
-# Слушает только 127.0.0.1: наружу её выводит nginx панели по HTTPS (deploy/nginx-*.conf).
+# Слушает только 127.0.0.1: наружу её выводит Caddy по HTTPS (deploy/Caddyfile).
 [Unit]
 Description=MCP-сервер курсов валют ЦБ РФ
 After=network-online.target
@@ -15,7 +15,7 @@ WorkingDirectory=/opt/challenge/services/cbr-mcp
 # напрямую — uv и его кеш в /root ей не нужны.
 # Процесс ровно один: в нём же живёт планировщик сбора (день 18), и второй рабочий процесс
 # uvicorn выполнял бы каждое задание дважды.
-ExecStart=/opt/challenge/services/cbr-mcp/.venv/bin/python server.py --host 127.0.0.1 --port 8770 --allowed-host koritin84.fvds.ru --allowed-host 83.136.235.149:8443
+ExecStart=/opt/challenge/services/cbr-mcp/.venv/bin/python server.py --host 127.0.0.1 --port 8770 --allowed-host 188.120.230.58
 # Хранилище заданий и собранных курсов. systemd сам создаёт каталог /var/lib/cbr-mcp и даёт
 # в него писать временному пользователю — вся прочая система остаётся только на чтение.
 StateDirectory=cbr-mcp

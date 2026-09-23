@@ -1,8 +1,0 @@
-# Перечитать сертификаты nginx: IP-сертификат панели продлевается каждые 3 дня, а nginx держит
-# прежний, пока его не перезагрузят. Мягкая перезагрузка соединений не рвёт.
-[Unit]
-Description=Перечитать сертификаты nginx
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/systemctl reload nginx
