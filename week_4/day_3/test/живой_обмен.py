@@ -8,7 +8,7 @@
 окне терминала. Между вопросами — пауза: сбор идёт на сервере сам, пока агент молчит.
 
 Запуск из этого каталога:
-    export CBR_MCP_TOKEN=$(ssh challenge-fvds "grep ^CBR_MCP_TOKEN= /opt/challenge/.env | cut -d= -f2")
+    export CBR_MCP_TOKEN=$(ssh challenge-mcp "grep ^CBR_MCP_TOKEN= /opt/challenge/.env | cut -d= -f2")
     uv run --project ~/challenge/main/myharness python живой_обмен.py --пауза 150 "вопрос 1" "вопрос 2" …
 """
 
