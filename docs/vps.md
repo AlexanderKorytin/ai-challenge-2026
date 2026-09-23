@@ -97,7 +97,10 @@ rsync, sqlite3. Рабочий каталог `/opt/challenge/` — git, сек�
   путь, что в репозитории). Доставка:
   `rsync -a --no-owner --no-group --delete --exclude .venv --exclude __pycache__ --exclude .pytest_cache myharness/ challenge-mcp:/opt/challenge/myharness/`,
   `rsync -a --no-owner --no-group --delete --exclude .venv --exclude __pycache__ agents/digest/ challenge-mcp:/opt/challenge/agents/digest/`,
-  затем на сервере из `/opt/challenge/agents/digest`: `/root/.local/bin/uv sync --frozen`,
+  затем на сервере из `/opt/challenge/agents/digest`:
+  `/root/.local/bin/uv sync --frozen --reinstall-package myharness` (без ключа uv оставит в `.venv`
+  прежнюю копию библиотеки: зависимость по пути пересобирается, только если менялся её
+  `pyproject.toml`),
   `cp deploy/cbr-digest.{service,timer} /etc/systemd/system/`, `systemctl daemon-reload`.
 - Таймер `cbr-digest.timer` (`OnCalendar=*:0/10`, `Persistent=true`) запускает разовую службу
   `cbr-digest`: агент DeepSeek читает собранное инструментами `cbr` (разрешены только чтение —
