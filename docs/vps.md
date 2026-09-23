@@ -104,8 +104,9 @@ rsync, sqlite3. Рабочий каталог `/opt/challenge/` — git, сек�
   `cp deploy/cbr-digest.{service,timer} /etc/systemd/system/`, `systemctl daemon-reload`.
 - **С 2026-09-23 таймер выключен** по решению пользователя (`systemctl disable --now
   cbr-digest.timer`): каждый запуск — платный вызов DeepSeek. Включить обратно —
-  `systemctl enable --now cbr-digest.timer`. Сбор курсов сервером `cbr-mcp` работает дальше, он
-  модели не вызывает.
+  `systemctl enable --now cbr-digest.timer`. Задание сбора №2 тоже снято (`delete_schedule`),
+  заданий сбора на сервере нет; сам сервер `cbr-mcp` работает, собранные 6 курсов и 5 сводок
+  остались в базе.
 - Таймер `cbr-digest.timer` (`OnCalendar=*:0/10`, `Persistent=true`) запускает разовую службу
   `cbr-digest`: агент DeepSeek читает собранное инструментами `cbr` (разрешены только чтение —
   `agents/digest/.claude/settings.json`), программа сохраняет текст `save_digest` в базу
