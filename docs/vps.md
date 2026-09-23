@@ -102,6 +102,10 @@ rsync, sqlite3. Рабочий каталог `/opt/challenge/` — git, сек�
   прежнюю копию библиотеки: зависимость по пути пересобирается, только если менялся её
   `pyproject.toml`),
   `cp deploy/cbr-digest.{service,timer} /etc/systemd/system/`, `systemctl daemon-reload`.
+- **С 2026-09-23 таймер выключен** по решению пользователя (`systemctl disable --now
+  cbr-digest.timer`): каждый запуск — платный вызов DeepSeek. Включить обратно —
+  `systemctl enable --now cbr-digest.timer`. Сбор курсов сервером `cbr-mcp` работает дальше, он
+  модели не вызывает.
 - Таймер `cbr-digest.timer` (`OnCalendar=*:0/10`, `Persistent=true`) запускает разовую службу
   `cbr-digest`: агент DeepSeek читает собранное инструментами `cbr` (разрешены только чтение —
   `agents/digest/.claude/settings.json`), программа сохраняет текст `save_digest` в базу
