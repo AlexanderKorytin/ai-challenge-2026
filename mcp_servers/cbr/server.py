@@ -36,7 +36,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
 import scheduler
-from store import Job, Observed, Store
+from store import Digest, Job, Observed, Store
 
 ИСТОЧНИК = "https://www.cbr.ru/scripts/"
 ПЕРЕМЕННАЯ_ТОКЕНА = "CBR_MCP_TOKEN"
@@ -116,6 +116,21 @@ class RateSummary(BaseModel):
     max: Point = Field(description="Наибольший курс за единицу; при равных — более ранний")
     mean: float = Field(description="Средний курс за единицу, руб.")
     last_seen_at: str = Field(description="Когда сервер собрал самый свежий курс, ISO 8601")
+
+
+class SavedDigest(BaseModel):
+    id: int = Field(description="Номер сохранённой сводки")
+    at: str = Field(description="Когда сохранена, ISO 8601 с поясом")
+
+
+class DigestItem(BaseModel):
+    id: int = Field(description="Номер сводки")
+    at: str = Field(description="Когда агент её написал, ISO 8601 с поясом")
+    text: str = Field(description="Текст сводки")
+
+
+class Digests(BaseModel):
+    digests: list[DigestItem] = Field(description="Сводки агента, новые первыми")
 
 
 # --- обращение к ЦБ ------------------------------------------------------------------------
@@ -450,6 +465,33 @@ async def get_summary(
         mean=с.mean,
         last_seen_at=с.last_seen_at.isoformat(),
     )
+
+
+@srv.tool()
+async def save_digest(
+    text: Annotated[str, Field(description="Текст сводки по собранным курсам")],
+) -> SavedDigest:
+    """Сохранить сводку, которую написал агент по расписанию. Её отдаёт list_digests."""
+    хранилище, _ = _задания()
+    if not text.strip():
+        raise ToolError("text: пустая сводка")
+    сводка = хранилище.add_digest(text.strip(), _сейчас())
+    return SavedDigest(id=сводка.id, at=сводка.at.isoformat())
+
+
+@srv.tool()
+async def list_digests(
+    limit: Annotated[
+        int | None, Field(description="Сколько последних сводок отдать; не задано — все", ge=1)
+    ] = None,
+) -> Digests:
+    """Сводки по курсам, которые агент на сервере пишет сам по расписанию, новые первыми."""
+    хранилище, _ = _задания()
+    return Digests(digests=[_сводка(с) for с in хранилище.digests(limit)])
+
+
+def _сводка(с: Digest) -> DigestItem:
+    return DigestItem(id=с.id, at=с.at.isoformat(), text=с.text)
 
 
 # --- приложение HTTP с замком --------------------------------------------------------------

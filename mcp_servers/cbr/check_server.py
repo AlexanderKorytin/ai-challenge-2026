@@ -284,6 +284,27 @@ async def сводка() -> None:
     server._сейчас = настоящее_сейчас
 
 
+async def сводки_агента() -> None:
+    настоящее_сейчас = server._сейчас
+    with tempfile.TemporaryDirectory() as каталог:
+        часы = Часы(в(10, 0))
+        хранилище, _ = поднять(каталог, часы)
+        check("сводок ещё нет — пустой список", (await server.list_digests()).digests == [])
+        первая = await server.save_digest("  Доллар стоит на месте.  ")
+        часы.сейчас = в(10, 10)
+        вторая = await server.save_digest("Евро подрос на 0,3%.")
+        check("номера сводок растут", вторая.id > первая.id, (первая, вторая))
+        все = (await server.list_digests()).digests
+        check("новые первыми, текст без краевых пробелов", [с.text for с in все] == ["Евро подрос на 0,3%.", "Доллар стоит на месте."], все)
+        check("время сводки — момент сохранения", все[1].at == в(10, 0).isoformat(), все[1])
+        check("limit=1 отдаёт одну, самую новую", [с.id for с in (await server.list_digests(1)).digests] == [вторая.id])
+        текст = await ошибка_ожидаемая(server.save_digest("   "))
+        check("пустая сводка — ошибка", текст.startswith("text:"), текст)
+        check("парная: пустая не сохранена", len(хранилище.digests(None)) == 2)
+        хранилище.close()
+    server._сейчас = настоящее_сейчас
+
+
 async def протокол() -> None:
     server._получить = поддельный_цб
     приложение = server.приложение(ТОКЕН, ["127.0.0.1:8770"])
@@ -317,15 +338,16 @@ async def протокол() -> None:
             check("согласование: сервер назвался cbr", ответ.server_info.name == "cbr", ответ.server_info)
             список = {t.name: t for t in (await сессия.list_tools()).tools}
             check(
-                "зарегистрированы шесть инструментов",
-                sorted(список) == ["delete_schedule", "get_rate", "get_rate_dynamics", "get_summary", "list_schedules", "schedule_collect"],
+                "зарегистрированы восемь инструментов",
+                sorted(список)
+                == ["delete_schedule", "get_rate", "get_rate_dynamics", "get_summary", "list_digests", "list_schedules", "save_digest", "schedule_collect"],
                 sorted(список),
             )
             check(
                 "у каждого довода новых инструментов есть описание",
                 all(
                     д.get("description")
-                    for имя in ("schedule_collect", "delete_schedule", "get_summary")
+                    for имя in ("schedule_collect", "delete_schedule", "get_summary", "save_digest", "list_digests")
                     for д in список[имя].input_schema.get("properties", {}).values()
                 ),
             )
@@ -380,6 +402,7 @@ async def main() -> None:
     await инструменты()
     await задания()
     await сводка()
+    await сводки_агента()
     await протокол()
     без_токена()
 

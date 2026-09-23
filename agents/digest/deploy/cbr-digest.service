@@ -1,0 +1,33 @@
+# Агент сводок: один запуск — одна сводка. Запускает таймер cbr-digest.timer.
+# Ставится: cp deploy/cbr-digest.{service,timer} /etc/systemd/system/ && systemctl enable --now cbr-digest.timer
+[Unit]
+Description=Агент сводок по курсам ЦБ (разовый запуск)
+After=network-online.target cbr-mcp.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# DEEPSEEK_API_KEY и CBR_MCP_TOKEN — только здесь, файл root:600 вне git.
+EnvironmentFile=/opt/challenge/.env
+WorkingDirectory=/opt/challenge/agents/digest
+ExecStart=/opt/challenge/agents/digest/.venv/bin/python digest.py
+# Предел одного запуска — решение пользователя 2026-09-23. Без него зависший вызов (у разовой
+# службы и у вызовов MCP предела нет) держал бы службу «activating» вечно, и таймер больше не
+# запускал бы сводки. Обычный запуск — около 20 с; убитый по пределу помечается неудачным, а
+# следующий срок таймера идёт как обычно.
+TimeoutStartSec=5min
+# Журнал прогонов агента (myharness) — в его каталоге состояния: остальная система только на чтение.
+StateDirectory=cbr-digest
+Environment=MYHARNESS_JOURNAL=/var/lib/cbr-digest/myharness-journal.jsonl
+# Не root: процесс держит ключ DeepSeek и разбирает ответы модели и сервера.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes

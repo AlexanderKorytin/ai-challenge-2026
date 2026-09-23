@@ -1,0 +1,13 @@
+[project]
+name = "cbr-digest"
+version = "0.1.0"
+description = "Агент 24/7: по расписанию пишет сводку по курсам, собранным сервером cbr"
+requires-python = ">=3.11"
+dependencies = [
+    # Агент собран из библиотеки myharness как есть: Agent, мост MCP, клиент DeepSeek.
+    "myharness",
+]
+
+[tool.uv.sources]
+# Тот же путь в репозитории и на сервере: /opt/challenge/agents/digest → /opt/challenge/myharness.
+myharness = { path = "../../myharness" }

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__cbr__list_schedules",
+      "mcp__cbr__get_summary",
+      "mcp__cbr__get_rate",
+      "mcp__cbr__get_rate_dynamics",
+      "mcp__cbr__list_digests"
+    ]
+  }
+}

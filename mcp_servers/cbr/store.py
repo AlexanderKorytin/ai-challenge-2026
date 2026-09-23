@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS rates (
     job_id INTEGER NOT NULL,
     PRIMARY KEY (code, rate_date)
 );
+CREATE TABLE IF NOT EXISTS digests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    text TEXT NOT NULL
+);
 """
 
 
@@ -69,6 +74,13 @@ class Observed:
     nominal: int
     value: float
     unit_rate: float
+
+
+@dataclass(frozen=True)
+class Digest:
+    id: int
+    at: dt.datetime
+    text: str
 
 
 @dataclass(frozen=True)
@@ -172,6 +184,21 @@ class Store:
                 ).rowcount
                 for к in rates
             )
+
+    def add_digest(self, text: str, at: dt.datetime) -> Digest:
+        with self._бд:
+            курсор = self._бд.execute(
+                "INSERT INTO digests (at, text) VALUES (?, ?)", (at.isoformat(), text)
+            )
+        return Digest(id=курсор.lastrowid, at=at, text=text)
+
+    def digests(self, limit: int | None) -> list[Digest]:
+        """Сводки агента, новые первыми; `limit=None` — все."""
+        строки = self._бд.execute(
+            "SELECT id, at, text FROM digests ORDER BY id DESC LIMIT ?",
+            (-1 if limit is None else limit,),
+        ).fetchall()
+        return [Digest(id=с[0], at=_время(с[1]), text=с[2]) for с in строки]
 
     def summary(
         self, code: str, date_from: dt.date | None, date_to: dt.date | None

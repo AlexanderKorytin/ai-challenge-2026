@@ -89,3 +89,25 @@ rsync, sqlite3. Рабочий каталог `/opt/challenge/` — git, сек�
   долгое соединение: 40 запросов `tools/list` (484 КБ) на одном соединении прошли 2026-09-23.
   Сертификат — `journalctl -u caddy | grep "certificate obtained"`; оповещения о сбое продления
   нет — сбой виден ошибкой TLS у клиента.
+
+### `cbr-digest` — агент сводок 24/7 (день 18) — на сервере `188.120.230.58`
+
+- Программа `agents/digest/digest.py` (клиент MCP на библиотеке `myharness`), на сервере
+  `/opt/challenge/agents/digest`, библиотека — `/opt/challenge/myharness` (тот же относительный
+  путь, что в репозитории). Доставка:
+  `rsync -a --no-owner --no-group --delete --exclude .venv --exclude __pycache__ --exclude .pytest_cache myharness/ challenge-mcp:/opt/challenge/myharness/`,
+  `rsync -a --no-owner --no-group --delete --exclude .venv --exclude __pycache__ agents/digest/ challenge-mcp:/opt/challenge/agents/digest/`,
+  затем на сервере из `/opt/challenge/agents/digest`: `/root/.local/bin/uv sync --frozen`,
+  `cp deploy/cbr-digest.{service,timer} /etc/systemd/system/`, `systemctl daemon-reload`.
+- Таймер `cbr-digest.timer` (`OnCalendar=*:0/10`, `Persistent=true`) запускает разовую службу
+  `cbr-digest`: агент DeepSeek читает собранное инструментами `cbr` (разрешены только чтение —
+  `agents/digest/.claude/settings.json`), программа сохраняет текст `save_digest` в базу
+  `cbr-mcp`. К серверу агент ходит напрямую `http://127.0.0.1:8770/mcp`, мимо Caddy.
+- Ключ `DEEPSEEK_API_KEY` — строка в `/opt/challenge/.env` (root 600) рядом с `CBR_MCP_TOKEN`;
+  служба не от root (`DynamicUser`), журнал прогонов агента —
+  `/var/lib/cbr-digest/myharness-journal.jsonl` (`StateDirectory`).
+- Проверка: `systemctl list-timers cbr-digest.timer` — ближайший и прошлый запуск;
+  `journalctl -u cbr-digest -o cat -n 30` — вызовы инструментов и текст последней сводки;
+  ручной запуск — `systemctl start cbr-digest` (каждый тратит деньги DeepSeek и пишет сводку в
+  рабочую базу). Предел одного запуска — `TimeoutStartSec=5min`; без инструментов или без их
+  вызовов агент сводку не сохраняет и выходит с кодом 1.
