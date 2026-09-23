@@ -1,5 +1,6 @@
 {
   "permissions": {
-    "allow": ["mcp__cbr"]
+    "allow": ["mcp__cbr"],
+    "deny": ["mcp__cbr__save_digest"]
   }
 }
