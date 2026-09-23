@@ -1,0 +1,10 @@
+# Раз в сутки: сертификат живёт ~6 дней и продлевается за 3 дня до конца — суток хватает с запасом.
+[Unit]
+Description=Ежедневно перечитать сертификаты nginx
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
