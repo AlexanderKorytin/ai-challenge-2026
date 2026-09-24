@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "pipeline": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/Users/aleksandrkorytin/challenge/main/mcp_servers/pipeline",
+        "/Users/aleksandrkorytin/challenge/main/mcp_servers/pipeline/server.py"
+      ]
+    }
+  }
+}

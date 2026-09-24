@@ -1,0 +1,5 @@
+{
+  "permissions": {
+    "allow": ["mcp__pipeline__search", "mcp__pipeline__summarize", "mcp__pipeline__saveToFile"]
+  }
+}
