@@ -72,8 +72,9 @@
 `search`, `summarize`, `saveToFile`, id на входе каждого совпадает с id из выхода
 предыдущего; `test/результаты/baikal.md` есть, его `sha256` = ответ `saveToFile`; источники файла
 = заголовки из ответа `search`. Затем тот же сценарий в окне `myharness` глазами (для видео).
-**Содержание**: `.mcp.json` — `pipeline` stdio: `uv run --directory
-/Users/aleksandrkorytin/challenge/main/mcp_servers/pipeline server.py`; `settings.json` —
+**Содержание**: `.mcp.json` — `pipeline` stdio: `uv run --project <сервер> <сервер>/server.py`, где
+`<сервер>` = `/Users/aleksandrkorytin/challenge/main/mcp_servers/pipeline` (не `--directory`: он
+меняет текущий каталог, и файл лёг бы в каталог сервера — найдено живым прогоном шага 1); `settings.json` —
 `permissions.allow`: три `mcp__pipeline__*`. `живой_обмен.py` — по образцу дня 18. README —
 постановка, устройство, как повторить.
 
