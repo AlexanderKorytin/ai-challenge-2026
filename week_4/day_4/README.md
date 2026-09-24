@@ -53,3 +53,12 @@
 
   Печатает вызовы и сверку: порядок `search → summarize → saveToFile`, id на входе каждого шага
   — из выхода предыдущего, `sha256` файла на диске, дословный текст и источники в файле.
+
+## Ссылки
+
+- Видео: https://drive.google.com/open?id=17ZuYjgijuEnoiFJRYTGn2A5jKGst0Xul — `/mcp` показывает
+  три инструмента «✓ модели»; одна просьба про Байкал — модель сама проводит `search →
+  summarize → saveToFile`; затем `cat` файла и `shasum`, совпадающий с `sha256` из ответа
+  `saveToFile`.
+- Код дня: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w4d4/week_4/day_4
+- Код сервера: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/main/mcp_servers/pipeline
