@@ -111,3 +111,8 @@ python3 след.py
 
 `след.py` проверен и на подложенных копиях записи: без `git_commit` — провал, код 1; файлы
 добавлены двумя `git_add` по одному — «ВСЁ СОШЛОСЬ»; запуск из чужого каталога — то же.
+
+## Ссылки
+
+- Видео: https://drive.google.com/open?id=18RCGPj89rtiIzZ1k9ToWbrjZ6KbDcdST
+- Код дня: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w4d5/week_4/day_5
