@@ -1,0 +1,44 @@
+{
+  "mcpServers": {
+    "cbr": {
+      "type": "http",
+      "url": "https://188.120.230.58/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CBR_MCP_TOKEN}"
+      }
+    },
+    "pipeline": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/Users/aleksandrkorytin/challenge/main/mcp_servers/pipeline",
+        "/Users/aleksandrkorytin/challenge/main/mcp_servers/pipeline/server.py"
+      ],
+      "env": {
+        "PIPELINE_OUT_DIR": "/Users/aleksandrkorytin/challenge/w4d5/week_4/day_5/test/справки/файлы/выжимки"
+      }
+    },
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem@2026.8.31",
+        "/Users/aleksandrkorytin/challenge/w4d5/week_4/day_5/test/справки/файлы"
+      ]
+    },
+    "git": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "mcp-server-git==2026.8.18",
+        "mcp-server-git",
+        "--repository",
+        "/Users/aleksandrkorytin/challenge/w4d5/week_4/day_5/test/справки"
+      ]
+    }
+  }
+}

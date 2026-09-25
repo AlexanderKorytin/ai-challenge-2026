@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__cbr__get_rate",
+      "mcp__cbr__get_rate_dynamics",
+      "mcp__pipeline__search",
+      "mcp__pipeline__summarize",
+      "mcp__pipeline__saveToFile",
+      "mcp__filesystem__write_file",
+      "mcp__filesystem__read_text_file",
+      "mcp__filesystem__list_directory",
+      "mcp__filesystem__list_allowed_directories",
+      "mcp__git__git_status",
+      "mcp__git__git_add",
+      "mcp__git__git_commit",
+      "mcp__git__git_log"
+    ],
+    "deny": [
+      "mcp__filesystem__edit_file",
+      "mcp__filesystem__move_file",
+      "mcp__git__git_reset",
+      "mcp__git__git_checkout",
+      "mcp__git__git_create_branch",
+      "mcp__git__git_diff"
+    ]
+  }
+}
