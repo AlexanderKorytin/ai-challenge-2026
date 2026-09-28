@@ -19,7 +19,7 @@
 - **Эмбеддер** — `bge-m3` (1024 числа, окно 8192 токена, хорошо знает русский) в местной
   службе Ollama на Маке, по HTTP `POST /api/embed`.
 - **Две стратегии**: `structure` режет по заголовкам Markdown уровней 1–3 (для требований —
-  «требование со всеми сценариями»), `fixed` — окном с перекрытием 20 %; размер окна равен
+  «требование со всеми сценариями»), `fixed` — окном с перекрытием 20 % (156 символов); размер окна равен
   медиане длины кусков `structure`, чтобы сравнение мерило границы, а не размер.
 - **Индекс** — один файл SQLite: куски с метаданными (`chunk_id`, `strategy`, `source`,
   `title`, `section` — цепочка заголовков, `start`/`end`) и вектором, плюс сведения о сборке
@@ -55,6 +55,6 @@
 ollama pull bge-m3                                        # один раз, ~1,2 ГБ
 uv run --project rag rag/cli.py index --strategy all      # ~3 минуты
 uv run --project rag rag/cli.py search "куда пишется ключ API"
-uv run --project rag rag/cli.py compare --out сравнение.md
+uv run --project rag rag/cli.py compare --out week_5/day_1/сравнение.md   # в ветке дня
 uv run --project rag rag/check_rag.py                     # проверки без Ollama
 ```
