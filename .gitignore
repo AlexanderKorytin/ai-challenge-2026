@@ -19,3 +19,6 @@ node_modules/
 
 # Журнал прогонов myharness — рабочие данные, не код
 myharness-journal.jsonl
+
+# Индекс документов (день 21) — собирается командой, в git не хранится
+rag/index.sqlite
