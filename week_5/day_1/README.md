@@ -58,3 +58,9 @@ uv run --project rag rag/cli.py search "куда пишется ключ API"
 uv run --project rag rag/cli.py compare --out week_5/day_1/сравнение.md   # в ветке дня
 uv run --project rag rag/check_rag.py                     # проверки без Ollama
 ```
+
+## Ссылки
+
+- Видеоотчёт: https://drive.google.com/open?id=1nGwSidfILR95QZ6LkYNvsqE2xMTq2iCH
+- Код дня: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w5d1/week_5/day_1
+- Код индекса (`rag/`, общий на неделю): https://github.com/AlexanderKorytin/ai-challenge-2026/tree/main/rag
