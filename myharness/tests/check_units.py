@@ -15981,6 +15981,152 @@ check(
 показ_без_правил = "".join(текст for _, текст in commands_mcp._показ(итог_живого, mcp_tools.Разрешения()))
 check("парная: без правил пометок нет", "✓ модели" not in показ_без_правил, показ_без_правил)
 
+
+print("\n# Режим RAG: поле профиля и найденное в хвосте запроса (день 22, шаг 2)")
+from myharness import agent as agent_rag  # noqa: E402
+
+профиль_rag, жалобы_rag = profiles._from_dict({"system": "инструкция", "rag": " rag "}, "проект-rag", tmp, None)
+check("поле rag читается, края срезаны; слепок и запись несут его",
+      профиль_rag.rag == "rag" and not жалобы_rag and профиль_rag.snapshot().get("rag") == "rag"
+      and профиль_rag.to_dict().get("rag") == "rag", f"{профиль_rag.rag!r} {жалобы_rag}")
+профиль_кривой_rag, жалобы_кривого = profiles._from_dict({"system": "инструкция", "rag": 5}, "кривой", tmp, None)
+check("парная: rag не строкой — предупреждение, режим выключен",
+      профиль_кривой_rag.rag == "" and any("«rag»" in ж for ж in жалобы_кривого)
+      and "rag" not in профиль_кривой_rag.snapshot(), str(жалобы_кривого))
+
+вопросы_поиска = []
+
+
+async def найти_подставно(вопрос):
+    вопросы_поиска.append(вопрос)
+    return "[1] a.md › Раздел (0.900)\nтекст куска"
+
+ищущий = Agent("ищущий", профиль_rag, work=lambda: "<рабочее-состояние>", поиск=найти_подставно)
+клиент_rag = StubClient()
+asyncio.run(ищущий.exchange(клиент_rag, "deepseek-v4-flash", "где настройки?"))
+последнее = клиент_rag.calls[-1]["messages"][-1]["content"]
+check("найденное стоит в хвосте перед рабочим состоянием и вопросом; поиск по вопросу, один раз",
+      последнее == f"{agent_rag.ЗАГОЛОВОК_НАЙДЕННОГО}\n\n[1] a.md › Раздел (0.900)\nтекст куска"
+      "\n\n<рабочее-состояние>\n\nгде настройки?" and вопросы_поиска == ["где настройки?"], последнее)
+check("найденное в память не оседает",
+      ищущий.history()[0]["content"] == "где настройки?" and "текст куска" not in str(ищущий.history()),
+      str(ищущий.history()))
+check("вес найденного учтён: предсказание запроса с найденным больше, чем без него",
+      ищущий.predict_tokens(ищущий.build_messages("где настройки?", найденное="x " * 500))
+      > ищущий.predict_tokens(ищущий.build_messages("где настройки?")))
+
+простой = Agent("простой", профиль_rag, work=lambda: "<рабочее-состояние>")
+клиент_простой = StubClient()
+asyncio.run(простой.exchange(клиент_простой, "deepseek-v4-flash", "где настройки?"))
+check("парная: без поставщика поиска хвост прежний",
+      клиент_простой.calls[-1]["messages"][-1]["content"] == "<рабочее-состояние>\n\nгде настройки?")
+
+
+async def упасть(вопрос):
+    raise RuntimeError("Ollama лежит")
+
+падающий = Agent("падающий", профиль_rag, поиск=упасть)
+клиент_падения = StubClient()
+ход_падения = asyncio.run(падающий.exchange(клиент_падения, "deepseek-v4-flash", "где настройки?"))
+check("поиск упал — жалоба, ответ получен, вопрос ушёл без блока",
+      ход_падения.ok and падающий.store_error and "не удалось найти в базе знаний: Ollama лежит" in падающий.store_error
+      and клиент_падения.calls[-1]["messages"][-1]["content"] == "где настройки?", str(падающий.store_error))
+
+
+print("\n# Режим RAG: поиск программы через сервер из .mcp.json (день 22, шаг 3)")
+поиск_мост = tmp / "поиск-мост"
+поиск_мост.mkdir()
+pid_поиска = поиск_мост / "pid"
+(поиск_мост / mcp_client.ИМЯ_ФАЙЛА).write_text(
+    json.dumps({"mcpServers": {"rag": {"type": "stdio", "command": sys.executable,
+                                       "args": [str(учебный), "--pid-файл", str(pid_поиска)],
+                                       "env": {"УЧЕБНЫЙ_ПОИСК": "1"}}}}),
+    encoding="utf-8",
+)
+assert not (поиск_мост / ".claude").exists(), "предусловие: правил permissions нет вовсе"
+
+
+async def сценарий_поиска():
+    поиск = mcp_tools.Поиск()
+    итог = {}
+    try:
+        итог["первый"] = await поиск.найти(поиск_мост, "rag", "где настройки?")
+        итог["pid1"] = int(pid_поиска.read_text())
+        итог["второй"] = await поиск.найти(поиск_мост, "rag", "ещё")
+        итог["pid2"] = int(pid_поиска.read_text())
+        os.kill(итог["pid2"], 9)
+        await asyncio.sleep(0.3)
+        итог["после_смерти"] = await поиск.найти(поиск_мост, "rag", "снова")
+        итог["pid3"] = int(pid_поиска.read_text())
+        try:
+            await поиск.найти(поиск_мост, "нет-такого", "x")
+        except RuntimeError as exc:
+            итог["нет_сервера"] = str(exc)
+    finally:
+        await поиск.закрыть()
+    await asyncio.sleep(0.3)
+    итог["жив_после_закрытия"] = процесс_жив(итог["pid3"])
+    return итог
+
+итог_поиска = asyncio.run(сценарий_поиска())
+check("поиск без правил permissions запускает сервер и возвращает текст search",
+      итог_поиска["первый"] == "[1] a.md › Раздел (0.900)\nнайдено по: где настройки?", str(итог_поиска))
+check("второй вызов — тот же процесс", итог_поиска["pid1"] == итог_поиска["pid2"], str(итог_поиска))
+check("процесс умер — следующий вызов открывает новый и работает",
+      итог_поиска["pid3"] != итог_поиска["pid2"] and итог_поиска["после_смерти"].endswith("снова"), str(итог_поиска))
+check("сервера нет в .mcp.json — RuntimeError с именем", "нет-такого" in итог_поиска.get("нет_сервера", ""),
+      str(итог_поиска))
+check("закрыть — процесса сервера не остаётся", not итог_поиска["жив_после_закрытия"])
+
+
+async def отмена_на_запуске():
+    pid_поиска.unlink(missing_ok=True)
+    поиск = mcp_tools.Поиск()
+    задача = asyncio.create_task(поиск.найти(поиск_мост, "rag", "x"))
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        if pid_поиска.exists() and pid_поиска.read_text():
+            break
+    assert pid_поиска.exists(), "предусловие: процесс сервера запущен до отмены"
+    задача.cancel()
+    await asyncio.gather(задача, return_exceptions=True)
+    await asyncio.sleep(0.3)
+    return int(pid_поиска.read_text())
+
+pid_отмены = asyncio.run(отмена_на_запуске())
+check("отмена посреди запуска сервера поиска не оставляет процесса", not процесс_жив(pid_отмены))
+
+профиль_наряда_rag, _ = profiles._from_dict({"system": "инструкция", "rag": "rag"}, "проект-rag", tmp, None)
+профиль_наряда_без, _ = profiles._from_dict({"system": "инструкция"}, "проект", tmp, None)
+наряд_rag = batch.Order(model="deepseek-v4-flash", concurrency=2, tasks=[
+    batch.Task(agent="q01-rag", profile="проект-rag", vars={}, ask="где настройки?", prepared=профиль_наряда_rag),
+    batch.Task(agent="q01-plain", profile="проект", vars={}, ask="где настройки?", prepared=профиль_наряда_без),
+])
+клиент_наряда = StubClient()
+строки_наряда = []
+прежний_каталог_поиска = os.getcwd()
+os.chdir(поиск_мост)
+try:
+    asyncio.run(batch.run_order(наряд_rag, клиент_наряда, on_line=строки_наряда.append))
+finally:
+    os.chdir(прежний_каталог_поиска)
+последние_наряда = sorted(вызов["messages"][-1]["content"] for вызов in клиент_наряда.calls)
+check("наряд: задание с rag ищет перед обменом, без rag — вопрос как есть",
+      последние_наряда == sorted(["где настройки?",
+                                  f"{agent_rag.ЗАГОЛОВОК_НАЙДЕННОГО}\n\n[1] a.md › Раздел (0.900)\nнайдено по: где настройки?"
+                                  "\n\nгде настройки?"]), str(последние_наряда))
+check("наряд: процесс сервера поиска закрыт по концу наряда", not процесс_жив(int(pid_поиска.read_text())))
+(поиск_мост / mcp_client.ИМЯ_ФАЙЛА).write_text('{"mcpServers": {}}', encoding="utf-8")
+строки_наряда.clear()
+os.chdir(поиск_мост)
+try:
+    asyncio.run(batch.run_order(batch.Order(model="deepseek-v4-flash", concurrency=1, tasks=наряд_rag.tasks[:1]),
+                                StubClient(), on_line=строки_наряда.append))
+finally:
+    os.chdir(прежний_каталог_поиска)
+check("наряд: сбой поиска печатается строкой задания",
+      any("не удалось найти в базе знаний" in с and "rag" in с for с in строки_наряда), str(строки_наряда))
+
 print()
 if failures:
     print(f"ПРОВАЛЕНО: {len(failures)} — " + "; ".join(failures))

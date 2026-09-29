@@ -21,6 +21,7 @@ import chunking as ч
 import cli
 import compare as ср
 import embedder as эм
+import server
 import store
 
 КОРЕНЬ = Path(__file__).resolve().parent.parent
@@ -209,11 +210,34 @@ def сравнение() -> None:
               and "| 3 | ааа | `a.md` | разрезан |" in текст and "| фрагментов набора, разрезанных нарезкой | 1 из 3 |" in текст)
 
 
+def сервер_поиска() -> None:
+    считать = lambda тексты: np.array([_вектор(т) for т in тексты])
+    with tempfile.TemporaryDirectory() as каталог:
+        индекс = Path(каталог) / "i.sqlite"
+        s = [_кусок(0, "сыр", source="x.md"), _кусок(1, "кот", source="y.md"), _кусок(2, "пёс кот", source="z.md")]
+        store.записать(индекс, "structure", s, np.array([_вектор(к.text) for к in s]), {"model": "m"})
+        текст = server.найти_текст("кот", 2, индекс, считать)
+        заголовки = [с for с in текст.splitlines() if с.startswith("[")]
+        проверить("сервер: заголовки `[n] <путь> ›` по убыванию близости, ровно k",
+                  len(заголовки) == 2 and заголовки[0].startswith("[1] y.md › A (")
+                  and заголовки[1].startswith("[2] z.md › A (")
+                  and текст.split("\n\n")[1].endswith("пёс кот"), repr(текст))
+        проверить("сервер: k=1 — один кусок (парная)", server.найти_текст("кот", 1, индекс, считать).count("\n[") == 0)
+        for доводы, ждём in (((0, индекс), ValueError), ((1, Path(каталог) / "нет.sqlite"), LookupError)):
+            try:
+                server.найти_текст("кот", *доводы, считать)
+                класс = None
+            except Exception as e:  # noqa: BLE001
+                класс = type(e)
+            проверить(f"сервер: отказ {ждём.__name__}", класс is ждём)
+
+
 def главная() -> None:
     нарезка()
     набор()
     эмбеддер_и_индекс()
     сравнение()
+    сервер_поиска()
     sys.exit(1 if провалов else 0)
 
 

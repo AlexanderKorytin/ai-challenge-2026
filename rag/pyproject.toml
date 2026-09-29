@@ -7,4 +7,6 @@ dependencies = [
     "numpy>=2,<3",
     # Тот же клиент HTTP, что у mcp_servers/pipeline: одна библиотека на весь репозиторий.
     "httpx2>=2.12,<3",
+    # Сервер поиска `server.py`; та же граница, что у клиента myharness и сервера pipeline.
+    "mcp>=2.2,<3",
 ]

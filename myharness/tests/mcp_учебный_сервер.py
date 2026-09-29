@@ -48,6 +48,15 @@ if os.environ.get("УЧЕБНЫЙ_ОТКАЗ") == "1":
         raise ToolError(f"отказ: {name}={os.environ.get(name, '')}")
 
 
+if os.environ.get("УЧЕБНЫЙ_ПОИСК") == "1":
+    # Только по требованию проверки режима RAG: остальные проверки считают инструменты сервера.
+
+    @srv.tool()
+    def search(query: str, k: int = 5) -> str:
+        """Подставной поиск: один кусок, в тексте которого повторён запрос."""
+        return f"[1] a.md › Раздел (0.900)\nнайдено по: {query}"
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--молчать":
         with open(sys.argv[2], "w", encoding="utf-8") as f:

@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from . import api, config, context_strategy, profiles
+from . import api, config, context_strategy, mcp_tools, profiles
 from .agent import Agent, Turn, usage_tokens
 from .profiles import Profile, Substitution
 
@@ -224,12 +224,19 @@ async def run_order(order: Order, client, *, on_line) -> list[Turn]:
     # отказами по превышению частоты — то есть наряд «выполнился» бы вхолостую.
     gate = asyncio.Semaphore(max(1, order.concurrency))
     total = len(order.tasks)
+    # Соединение с сервером поиска режима RAG — одно на наряд: задания с полем `rag` ищут по нему
+    # одновременно, закрывается по концу наряда.
+    поиск = mcp_tools.Поиск()
 
     async def one(position: int, task: Task) -> Turn:
         async with gate:
             on_line(f"[{position}/{total}] {task.agent} → {order.model}: {task.ask}")
             profile = task.prepared if task.prepared is not None else profiles.builtin_default()
-            agent = Agent(task.agent, profile)
+            agent = Agent(
+                task.agent,
+                profile,
+                поиск=(lambda вопрос: поиск.найти(Path.cwd(), profile.rag, вопрос)) if profile.rag else None,
+            )
             turn = await agent.exchange(client, order.model, task.ask, agent=task.agent, run_id=run_id)
             if turn.ok:
                 on_line(f"[{position}/{total}] {task.agent}: готово за {turn.elapsed_ms / 1000:.1f} с")
@@ -237,6 +244,8 @@ async def run_order(order: Order, client, *, on_line) -> list[Turn]:
                 on_line(f"[{position}/{total}] {task.agent}: СБОЙ — {turn.error or turn.status}")
             if turn.journal_error:
                 on_line(f"[{position}/{total}] {task.agent}: {turn.journal_error}")
+            if turn.store_error:
+                on_line(f"[{position}/{total}] {task.agent}: {turn.store_error}")
             return turn
 
     # `return_exceptions=True` — не украшение: без него первое же исключение отменило бы все
@@ -244,10 +253,14 @@ async def run_order(order: Order, client, *, on_line) -> list[Turn]:
     # сетевые ошибки уже ловит и возвращает `Turn` со статусом «error»; сюда исключение
     # долетит только из нашего собственного кода, и тогда мы всё равно обязаны досчитать
     # наряд, а не оборвать его.
-    results = await asyncio.gather(
-        *(one(position, task) for position, task in enumerate(order.tasks, start=1)),
-        return_exceptions=True,
-    )
+    try:
+        results = await asyncio.gather(
+            *(one(position, task) for position, task in enumerate(order.tasks, start=1)),
+            return_exceptions=True,
+        )
+    finally:
+        # Процесс местного сервера поиска не должен пережить наряд.
+        await поиск.закрыть()
     turns: list[Turn] = []
     for result in results:
         if isinstance(result, BaseException):

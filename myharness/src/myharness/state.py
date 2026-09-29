@@ -204,6 +204,9 @@ class State:
     # Соединения с серверами MCP на весь сеанс: переживают смену профиля и `/clear` — это
     # соединения с внешними программами, а не часть разговора. Закрываются при выходе (`cli`).
     mcp: mcp_tools.Соединения = field(default_factory=mcp_tools.Соединения)
+    # Соединения с серверами поиска режима RAG (поле профиля `rag`) — тот же срок жизни, что у
+    # `mcp`, но свои: их зовёт программа, а не модель, и правила `permissions` их не касаются.
+    поиск: mcp_tools.Поиск = field(default_factory=mcp_tools.Поиск)
 
     @property
     def main(self) -> screens_mod.Screen:
@@ -584,4 +587,5 @@ def главный_агент(state: State, profile: Profile) -> Agent:
         инварианты=lambda: invariants_block(state, profile),
         инструменты=набор_главного,
         проверка=проверить_ответ(state, profile),
+        поиск=(lambda вопрос: state.поиск.найти(Path.cwd(), profile.rag, вопрос)) if profile.rag else None,
     )

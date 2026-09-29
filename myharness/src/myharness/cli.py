@@ -95,6 +95,7 @@ async def repl(state: State) -> None:
         # Соединения MCP — до выхода из цикла событий: процесс местного сервера, не снятый
         # здесь, пережил бы терминал.
         await state.mcp.закрыть()
+        await state.поиск.закрыть()
         if state.client:
             await state.client.aclose()
 

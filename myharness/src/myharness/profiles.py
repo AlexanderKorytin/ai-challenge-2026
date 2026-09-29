@@ -138,6 +138,9 @@ class Profile:
     overrides: list[str] = field(default_factory=list)
     # Карта стадий автомата задачи; `None` — профиль задачу стадиями не ведёт.
     стадии: machine.Карта | None = None
+    # Режим RAG: имя сервера из `.mcp.json`, чей инструмент `search` агент зовёт перед каждым
+    # обменом; найденное уходит в хвост запроса. Пусто — режим выключен.
+    rag: str = ""
     vars: dict[str, Any] = field(default_factory=dict)
     params: dict[str, Any] = field(default_factory=dict)
     source: Path | None = None
@@ -172,6 +175,8 @@ class Profile:
             snapshot["overrides"] = list(self.overrides)
         if self.стадии is not None:
             snapshot["stages"] = machine.в_список(self.стадии)
+        if self.rag:
+            snapshot["rag"] = self.rag
         return snapshot
 
     def to_dict(self) -> dict[str, Any]:
@@ -213,6 +218,8 @@ class Profile:
             data["overrides"] = list(self.overrides)
         if self.стадии is not None:
             data["stages"] = machine.в_список(self.стадии)
+        if self.rag:
+            data["rag"] = self.rag
         if self.vars:
             data["vars"] = self.vars
         data.update(self.params)
@@ -295,6 +302,17 @@ def _prefills(value: Any, warnings: list[str]) -> list[str]:
         else:
             warnings.append(f"в prefills пропущен элемент, который не текст: {элемент!r}")
     return очередь
+
+
+def _rag(raw: Any, warnings: list[str]) -> str:
+    """Имя сервера поиска для режима RAG. Не строка — предупреждение, режим выключен: молча
+    принятое `"rag": true` выглядело бы включённым режимом, который ничего не ищет."""
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        warnings.append(f"поле «rag»: {raw!r} — ожидалось имя сервера из .mcp.json, режим RAG выключен")
+        return ""
+    return raw.strip()
 
 
 def _overrides(raw: Any, warnings: list[str]) -> list[str]:
@@ -585,6 +603,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         "result",
         "overrides",
         "stages",
+        "rag",
         "vars",
     }
 
@@ -687,6 +706,7 @@ def _from_dict(data: dict[str, Any], name: str, base_dir: Path, source: Path | N
         result=result_names,
         overrides=_overrides(data.get("overrides"), warnings),
         стадии=стадии,
+        rag=_rag(data.get("rag"), warnings),
         vars=dict(variables),
         params=collected,
         source=source,

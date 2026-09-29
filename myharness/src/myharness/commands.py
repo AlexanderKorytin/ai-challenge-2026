@@ -99,6 +99,12 @@ async def handle_command(text: str, state: State) -> bool:
                 state,
                 ui.request_text_fragments(state.main_agent.system_text(), хвост),
             )
+            if state.main_agent.profile.rag:
+                # Найденное зависит от вопроса и собирается только внутри обмена — показать его
+                # заранее нечем; отправленный блок лежит в журнале.
+                append_log(state, ui.system_fragments(
+                    f"режим RAG: сервер {state.main_agent.profile.rag}, найденное подставляется по вопросу"
+                ))
         else:
             append_log(
                 state,
