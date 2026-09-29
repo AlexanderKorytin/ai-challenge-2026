@@ -1,0 +1,1 @@
+{"name": "проект-rag", "description": "ответы о проекте по базе знаний (RAG)", "system_file": "проект-rag.md", "rag": "rag", "keep_history": false, "temperature": 0, "thinking": {"type": "disabled"}}

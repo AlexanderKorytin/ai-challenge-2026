@@ -1,0 +1,1 @@
+{"mcpServers": {"rag": {"type": "stdio", "command": "uv", "args": ["run", "--project", "/Users/aleksandrkorytin/challenge/main/rag", "/Users/aleksandrkorytin/challenge/main/rag/server.py"]}}}
