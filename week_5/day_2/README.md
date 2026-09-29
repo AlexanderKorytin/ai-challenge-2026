@@ -1,6 +1,6 @@
 # День 22. Первый RAG-запрос
 
-**Стадия: Executing** (ход стадий — `docs/состояние-первый-rag-запрос.md` в `main`).
+**Стадия: Report** (ход стадий — `docs/состояние-первый-rag-запрос.md` в `main`).
 
 ## Постановка
 
@@ -81,3 +81,8 @@ uv run --project ~/challenge/main/rag ~/challenge/main/rag/eval.py \
 ```
 
 Для живого разговора: `myharness` из `test/`, `/profile проект-rag` против `/profile проект`.
+
+## Ссылки
+
+- Видеоотчёт: https://drive.google.com/open?id=1KAq2xmTBgb_bt-kh_vhqeSVZ6ZHzHRvw
+- Код дня: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w5d2/week_5/day_2
