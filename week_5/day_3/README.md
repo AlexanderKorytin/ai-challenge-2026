@@ -119,3 +119,8 @@ uv run --project ~/challenge/main/rag ~/challenge/main/rag/eval.py \
 ```
 
 Для живого разговора: `myharness` из `test/`, `/profile rag-heuristic+rw` против `/profile rag-base`.
+
+## Ссылки
+
+- Видеоотчёт: https://drive.google.com/open?id=14o55gZcGZdDN97x8pxIJne-gwc6xtyTQ
+- Код дня: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w5d3/week_5/day_3
