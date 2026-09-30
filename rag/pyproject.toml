@@ -9,4 +9,9 @@ dependencies = [
     "httpx2>=2.12,<3",
     # Сервер поиска `server.py`; та же граница, что у клиента myharness и сервера pipeline.
     "mcp>=2.2,<3",
+    # Второй этап поиска (`rerank.py`): перекрёстный кодировщик BAAI/bge-reranker-v2-m3 на
+    # видеоядре Мака — в Ollama 0.34.4 точки повторного упорядочивания нет.
+    "sentence-transformers>=5,<6",
+    # Основы слов для BM25 режима heuristic: русский и английский.
+    "snowballstemmer>=3,<4",
 ]
