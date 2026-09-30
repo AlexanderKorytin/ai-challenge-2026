@@ -21,7 +21,7 @@
 «поиск не состоялся» и в меры режима не идёт: ответ без базы, засчитанный режиму с поиском, врал
 бы в его пользу или против.
 
-Запуск: `uv run --project rag rag/eval.py --journal <журнал> --run <run_id> --out <файл.md>`.
+Запуск: `uv run --project rag rag/eval.py --journal <журнал> --run <run_id> [--run <повтор>] --out <файл.md>`.
 """
 
 from __future__ import annotations
@@ -81,8 +81,12 @@ def назван(ответ: str, источники: list[str], найдено:
     return any(1 <= н <= len(найдено) and найдено[н - 1] in источники for н in номера)
 
 
-def загрузить(журнал: Path, run_id: str) -> tuple[dict[tuple[str, int, str], dict], list[str]]:
-    """Записи наряда по ключу (набор `q`|`n`, номер, режим) и режимы в порядке первой встречи."""
+def загрузить(журнал: Path, run_ids: list[str]) -> tuple[dict[tuple[str, int, str], dict], list[str]]:
+    """Записи нарядов по ключу (набор `q`|`n`, номер, режим) и режимы в порядке первой встречи.
+
+    Задание со сбоем (`status` не `ok`) ответом не считается. Нарядов несколько, когда упавшие
+    задания повторены отдельно: у задания берётся запись наряда, названного в `run_ids` позже.
+    """
     записи: dict[tuple[str, int, str], dict] = {}
     режимы: list[str] = []
     for строка in журнал.read_text("utf-8").splitlines():
@@ -90,11 +94,14 @@ def загрузить(журнал: Path, run_id: str) -> tuple[dict[tuple[str,
             continue
         запись = json.loads(строка)
         совпало = re.fullmatch(r"([qn])(\d+)-([\w+]+)", запись.get("agent") or "")
-        if запись.get("run_id") != run_id or not совпало:
+        if запись.get("run_id") not in run_ids or not совпало or запись.get("status") != "ok":
             continue
         if совпало[3] not in режимы:
             режимы.append(совпало[3])
-        записи[(совпало[1], int(совпало[2]), совпало[3])] = запись
+        ключ = (совпало[1], int(совпало[2]), совпало[3])
+        прежняя = записи.get(ключ)
+        if прежняя is None or run_ids.index(запись["run_id"]) >= run_ids.index(прежняя["run_id"]):
+            записи[ключ] = запись
     return записи, режимы
 
 
@@ -223,18 +230,19 @@ def _читать(путь: Path) -> list[dict]:
 def главная(argv: list[str] | None = None) -> None:
     разбор = argparse.ArgumentParser(prog="eval", description="Сравнение ответов по режимам поиска по журналу наряда")
     разбор.add_argument("--journal", type=Path, required=True)
-    разбор.add_argument("--run", required=True, help="run_id наряда")
+    разбор.add_argument("--run", required=True, action="append",
+                        help="run_id наряда; повтор упавших заданий — ещё один --run, он старше прежнего")
     разбор.add_argument("--answers", type=Path, default=НАБОР)
     разбор.add_argument("--negative", type=Path, default=ОТРИЦАТЕЛЬНЫЕ)
     разбор.add_argument("--out", type=Path)
     доводы = разбор.parse_args(argv)
     записи, режимы = загрузить(доводы.journal, доводы.run)
     if not записи:
-        sys.exit(f"eval: в {доводы.journal} нет записей наряда {доводы.run} с именами q<NN>-<режим>|n<NN>-<режим>")
+        sys.exit(f"eval: в {доводы.journal} нет удачных записей нарядов {', '.join(доводы.run)} с именами q<NN>-<режим>|n<NN>-<режим>")
     обычные = оценить("q", _читать(доводы.answers), записи, режимы)
     # Отрицательные — только те, что были в наряде: в наряд идёт одна часть набора.
     отрицательные = [с for с in оценить("n", _читать(доводы.negative), записи, режимы) if any(с["режимы"].values())]
-    текст = отчёт(обычные, отрицательные, режимы, доводы.run)
+    текст = отчёт(обычные, отрицательные, режимы, ", ".join(доводы.run))
     if доводы.out:
         доводы.out.write_text(текст, "utf-8")
         print(f"записано: {доводы.out}")
