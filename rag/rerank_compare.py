@@ -91,7 +91,9 @@ def переписанные(вопросы: list[Вопрос], путь: Path,
             continue
         print(f"\rпереписывание: {номер}/{len(вопросы)}", end="", file=sys.stderr, flush=True)
         готовые[вопрос.метка] = {"вопрос": вопрос.текст, "запрос": переписать(вопрос.текст)}
-        путь.write_text(json.dumps(готовые, ensure_ascii=False, indent=1) + "\n", "utf-8")
+        временный = путь.with_name(путь.name + ".tmp")  # обрыв посреди записи не портит файл
+        временный.write_text(json.dumps(готовые, ensure_ascii=False, indent=1) + "\n", "utf-8")
+        временный.replace(путь)
     print(file=sys.stderr)
     return {в.метка: готовые[в.метка]["запрос"] for в in вопросы}
 
