@@ -1,0 +1,1 @@
+{"name": "rag-model+rw", "description": "ответы о проекте по базе знаний, поиск model+rw", "system_file": "проект-rag.md", "rag": "rag-model-rw", "keep_history": false, "temperature": 0, "thinking": {"type": "disabled"}}

@@ -1,0 +1,606 @@
+{
+ "model": "deepseek-v4-flash",
+ "concurrency": 4,
+ "tasks": [
+  {
+   "agent": "q01-base",
+   "profile": "rag-base",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-base",
+   "profile": "rag-base",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-base",
+   "profile": "rag-base",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-base",
+   "profile": "rag-base",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-base",
+   "profile": "rag-base",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-base",
+   "profile": "rag-base",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-base",
+   "profile": "rag-base",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-base",
+   "profile": "rag-base",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-base",
+   "profile": "rag-base",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-base",
+   "profile": "rag-base",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  },
+  {
+   "agent": "n06-base",
+   "profile": "rag-base",
+   "ask": "Сколько реплик сервера MCP курсов ЦБ запущено в Kubernetes?"
+  },
+  {
+   "agent": "n07-base",
+   "profile": "rag-base",
+   "ask": "Как устроен двухфакторный вход в myharness?"
+  },
+  {
+   "agent": "n08-base",
+   "profile": "rag-base",
+   "ask": "Куда Sentry отправляет ошибки myharness и кто получает оповещения?"
+  },
+  {
+   "agent": "n09-base",
+   "profile": "rag-base",
+   "ask": "Какие поля отдаёт сервер rag через GraphQL?"
+  },
+  {
+   "agent": "n10-base",
+   "profile": "rag-base",
+   "ask": "Каким модулем Terraform заводится VPS челленджа?"
+  },
+  {
+   "agent": "q01-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  },
+  {
+   "agent": "n06-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Сколько реплик сервера MCP курсов ЦБ запущено в Kubernetes?"
+  },
+  {
+   "agent": "n07-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Как устроен двухфакторный вход в myharness?"
+  },
+  {
+   "agent": "n08-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Куда Sentry отправляет ошибки myharness и кто получает оповещения?"
+  },
+  {
+   "agent": "n09-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Какие поля отдаёт сервер rag через GraphQL?"
+  },
+  {
+   "agent": "n10-base+rw",
+   "profile": "rag-base+rw",
+   "ask": "Каким модулем Terraform заводится VPS челленджа?"
+  },
+  {
+   "agent": "q01-threshold",
+   "profile": "rag-threshold",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-threshold",
+   "profile": "rag-threshold",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-threshold",
+   "profile": "rag-threshold",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-threshold",
+   "profile": "rag-threshold",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-threshold",
+   "profile": "rag-threshold",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-threshold",
+   "profile": "rag-threshold",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-threshold",
+   "profile": "rag-threshold",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-threshold",
+   "profile": "rag-threshold",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-threshold",
+   "profile": "rag-threshold",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-threshold",
+   "profile": "rag-threshold",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  },
+  {
+   "agent": "n06-threshold",
+   "profile": "rag-threshold",
+   "ask": "Сколько реплик сервера MCP курсов ЦБ запущено в Kubernetes?"
+  },
+  {
+   "agent": "n07-threshold",
+   "profile": "rag-threshold",
+   "ask": "Как устроен двухфакторный вход в myharness?"
+  },
+  {
+   "agent": "n08-threshold",
+   "profile": "rag-threshold",
+   "ask": "Куда Sentry отправляет ошибки myharness и кто получает оповещения?"
+  },
+  {
+   "agent": "n09-threshold",
+   "profile": "rag-threshold",
+   "ask": "Какие поля отдаёт сервер rag через GraphQL?"
+  },
+  {
+   "agent": "n10-threshold",
+   "profile": "rag-threshold",
+   "ask": "Каким модулем Terraform заводится VPS челленджа?"
+  },
+  {
+   "agent": "q01-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  },
+  {
+   "agent": "n06-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Сколько реплик сервера MCP курсов ЦБ запущено в Kubernetes?"
+  },
+  {
+   "agent": "n07-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Как устроен двухфакторный вход в myharness?"
+  },
+  {
+   "agent": "n08-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Куда Sentry отправляет ошибки myharness и кто получает оповещения?"
+  },
+  {
+   "agent": "n09-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Какие поля отдаёт сервер rag через GraphQL?"
+  },
+  {
+   "agent": "n10-threshold+rw",
+   "profile": "rag-threshold+rw",
+   "ask": "Каким модулем Terraform заводится VPS челленджа?"
+  },
+  {
+   "agent": "q01-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  },
+  {
+   "agent": "n06-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Сколько реплик сервера MCP курсов ЦБ запущено в Kubernetes?"
+  },
+  {
+   "agent": "n07-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Как устроен двухфакторный вход в myharness?"
+  },
+  {
+   "agent": "n08-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Куда Sentry отправляет ошибки myharness и кто получает оповещения?"
+  },
+  {
+   "agent": "n09-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Какие поля отдаёт сервер rag через GraphQL?"
+  },
+  {
+   "agent": "n10-heuristic",
+   "profile": "rag-heuristic",
+   "ask": "Каким модулем Terraform заводится VPS челленджа?"
+  },
+  {
+   "agent": "q01-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  },
+  {
+   "agent": "n06-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Сколько реплик сервера MCP курсов ЦБ запущено в Kubernetes?"
+  },
+  {
+   "agent": "n07-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Как устроен двухфакторный вход в myharness?"
+  },
+  {
+   "agent": "n08-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Куда Sentry отправляет ошибки myharness и кто получает оповещения?"
+  },
+  {
+   "agent": "n09-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Какие поля отдаёт сервер rag через GraphQL?"
+  },
+  {
+   "agent": "n10-heuristic+rw",
+   "profile": "rag-heuristic+rw",
+   "ask": "Каким модулем Terraform заводится VPS челленджа?"
+  },
+  {
+   "agent": "q01-model",
+   "profile": "rag-model",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-model",
+   "profile": "rag-model",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-model",
+   "profile": "rag-model",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-model",
+   "profile": "rag-model",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-model",
+   "profile": "rag-model",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-model",
+   "profile": "rag-model",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-model",
+   "profile": "rag-model",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-model",
+   "profile": "rag-model",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-model",
+   "profile": "rag-model",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-model",
+   "profile": "rag-model",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  },
+  {
+   "agent": "n06-model",
+   "profile": "rag-model",
+   "ask": "Сколько реплик сервера MCP курсов ЦБ запущено в Kubernetes?"
+  },
+  {
+   "agent": "n07-model",
+   "profile": "rag-model",
+   "ask": "Как устроен двухфакторный вход в myharness?"
+  },
+  {
+   "agent": "n08-model",
+   "profile": "rag-model",
+   "ask": "Куда Sentry отправляет ошибки myharness и кто получает оповещения?"
+  },
+  {
+   "agent": "n09-model",
+   "profile": "rag-model",
+   "ask": "Какие поля отдаёт сервер rag через GraphQL?"
+  },
+  {
+   "agent": "n10-model",
+   "profile": "rag-model",
+   "ask": "Каким модулем Terraform заводится VPS челленджа?"
+  },
+  {
+   "agent": "q01-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  },
+  {
+   "agent": "n06-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Сколько реплик сервера MCP курсов ЦБ запущено в Kubernetes?"
+  },
+  {
+   "agent": "n07-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Как устроен двухфакторный вход в myharness?"
+  },
+  {
+   "agent": "n08-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Куда Sentry отправляет ошибки myharness и кто получает оповещения?"
+  },
+  {
+   "agent": "n09-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Какие поля отдаёт сервер rag через GraphQL?"
+  },
+  {
+   "agent": "n10-model+rw",
+   "profile": "rag-model+rw",
+   "ask": "Каким модулем Terraform заводится VPS челленджа?"
+  }
+ ]
+}

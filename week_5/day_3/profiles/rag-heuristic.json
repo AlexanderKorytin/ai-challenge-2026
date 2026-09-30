@@ -1,0 +1,1 @@
+{"name": "rag-heuristic", "description": "ответы о проекте по базе знаний, поиск heuristic", "system_file": "проект-rag.md", "rag": "rag-heuristic", "keep_history": false, "temperature": 0, "thinking": {"type": "disabled"}}

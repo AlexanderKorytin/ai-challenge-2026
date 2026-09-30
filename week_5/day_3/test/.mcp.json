@@ -1,0 +1,136 @@
+{
+ "mcpServers": {
+  "rag-base": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_MODE": "base",
+    "RAG_REWRITE": "0",
+    "RAG_K2": "5"
+   }
+  },
+  "rag-base-rw": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_MODE": "base",
+    "RAG_REWRITE": "1",
+    "RAG_K2": "5"
+   }
+  },
+  "rag-threshold": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_MODE": "threshold",
+    "RAG_REWRITE": "0",
+    "RAG_K2": "5",
+    "RAG_K1": "30",
+    "RAG_THRESHOLD": "0.54"
+   }
+  },
+  "rag-threshold-rw": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_MODE": "threshold",
+    "RAG_REWRITE": "1",
+    "RAG_K2": "5",
+    "RAG_K1": "30",
+    "RAG_THRESHOLD": "0.54"
+   }
+  },
+  "rag-heuristic": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_MODE": "heuristic",
+    "RAG_REWRITE": "0",
+    "RAG_K2": "5",
+    "RAG_K1": "30",
+    "RAG_THRESHOLD": "0.54"
+   }
+  },
+  "rag-heuristic-rw": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_MODE": "heuristic",
+    "RAG_REWRITE": "1",
+    "RAG_K2": "5",
+    "RAG_K1": "30",
+    "RAG_THRESHOLD": "0.54"
+   }
+  },
+  "rag-model": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_MODE": "model",
+    "RAG_REWRITE": "0",
+    "RAG_K2": "5",
+    "RAG_K1": "30",
+    "RAG_THRESHOLD": "0.35"
+   }
+  },
+  "rag-model-rw": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_MODE": "model",
+    "RAG_REWRITE": "1",
+    "RAG_K2": "5",
+    "RAG_K1": "30",
+    "RAG_THRESHOLD": "0.35"
+   }
+  }
+ }
+}

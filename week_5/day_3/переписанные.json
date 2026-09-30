@@ -1,0 +1,202 @@
+{
+ "c01": {
+  "вопрос": "Почему заготовку выжимки нельзя применить, если отпечаток разговора не совпал?",
+  "запрос": "заготовка выжимки summary template нельзя применить ошибка отпечаток разговора conversation fingerprint hash не совпал mismatch почему причина"
+ },
+ "c02": {
+  "вопрос": "Вызовы инструментов в потоке приходят кусочками или одним событием?",
+  "запрос": "tool calls streaming chunked vs single event tool_call delta partial arguments stream events"
+ },
+ "c03": {
+  "вопрос": "Что будет со списком моделей, если сервер его не отдал?",
+  "запрос": "список моделей models list model list сервер не отдал недоступен ошибка загрузки моделей server did not return model list failed to fetch models models endpoint unavailable"
+ },
+ "c04": {
+  "вопрос": "Может ли пакетный прогон остановиться и спросить человека?",
+  "запрос": "batch run batch execution пакетный прогон пакетное выполнение остановка pause остановиться приостановка suspend interactive интерактивный запрос prompt спросить человека user prompt human interaction подтверждение confirmation manual intervention ручное вмешательство"
+ },
+ "c05": {
+  "вопрос": "Совпадают ли области опроса мастера профиля с разделами профиля?",
+  "запрос": "области опроса мастера профиля разделы профиля соответствие profile wizard survey areas profile sections mapping совпадают ли области опроса мастера профиля с разделами профиля"
+ },
+ "c06": {
+  "вопрос": "Что ответит повторная команда паузы, если задача уже стоит?",
+  "запрос": "повторная команда паузы pause повторный вызов команды паузы если задача уже на паузе уже приостановлена уже стоит на паузе ответ результат поведение идемпотентность повторная пауза pause command repeated pause command task already paused already on pause already suspended response result behavior idempotency"
+ },
+ "c07": {
+  "вопрос": "Какие права доступа выставляются файлу настроек?",
+  "запрос": "права доступа файла настроек конфигурации permissions access mode chmod file permissions config settings configuration file права доступа выставляются устанавливаются назначаются"
+ },
+ "c08": {
+  "вопрос": "Сколько пар отправляет стратегия скользящего окна?",
+  "запрос": "стратегия скользящего окна sliding window strategy количество пар pairs count сколько пар отправляет"
+ },
+ "c09": {
+  "вопрос": "Зачем подпись полоски контекста называет, чем она ограничена?",
+  "запрос": "подпись полоски контекста context bar label ограничение контекста context limit ограниченный контекст bounded context зачем подпись полоски контекста называет чем она ограничена why does context bar label name what it is limited by"
+ },
+ "c10": {
+  "вопрос": "Почему историю разговора перестала хранить панель?",
+  "запрос": "панель история разговора перестала хранить почему panel conversation history storage stopped working перестала сохранять историю чата диалога conversation history chat history panel storage persistence bug issue"
+ },
+ "c11": {
+  "вопрос": "Когда вердикт судьи не ставит задачу на паузу?",
+  "запрос": "вердикт судьи judge verdict не ставит задачу на паузу не приостанавливает задачу pause task suspension когда вердикт судьи не приводит к паузе задачи judge verdict does not pause task when judge verdict does not suspend task условия паузы задачи task pause conditions judge verdict pause task behavior"
+ },
+ "c12": {
+  "вопрос": "Какой запрос хранит журнал, если в обмене было несколько кругов вызовов?",
+  "запрос": "журнал обмена несколько кругов вызовов запрос хранение журнала exchange log multiple rounds of calls request history"
+ },
+ "c13": {
+  "вопрос": "Как в журнале отличить ответы одного запуска группы от ответов разных запусков?",
+  "запрос": "журнал log ответы одного запуска группы vs ответы разных запусков group run batch execution session correlation identifier run_id batch_id group_id trace_id request_id как отличить разделить группировать записи журнала по запуску"
+ },
+ "c14": {
+  "вопрос": "Как проверяется, живо ли уже открытое соединение с сервером MCP?",
+  "запрос": "проверка активности открытого соединения с сервером MCP (Model Context Protocol) keepalive ping heartbeat health check liveness detection connection alive status проверка живости соединения MCP сервер ping timeout reconnect"
+ },
+ "c15": {
+  "вопрос": "Как понять, что карточку папки после машинной записи правил человек?",
+  "запрос": "карточка папки folder card после машинной записи правил machine rule writing автоматическое заполнение auto-fill как определить что карточку редактировал человек human edit manual edit отличие ручного редактирования от автоматического различие machine-written vs human-written folder card правила rules"
+ },
+ "c16": {
+  "вопрос": "Почему из цепочки способов наверх уходят ответы всех шагов, а не последнего?",
+  "запрос": "цепочка способов chain of methods ответы всех шагов all steps responses последний шаг last step уходят наверх propagate upward возврат результата return value агрегация результатов result aggregation pipeline цепочка вызовов call chain"
+ },
+ "c17": {
+  "вопрос": "Какие значения допустимы для max_tokens при ручном вводе?",
+  "запрос": "max_tokens допустимые значения ограничения лимит ручной ввод manual input allowed values range maximum tokens параметр parameter настройка setting конфигурация configuration"
+ },
+ "c18": {
+  "вопрос": "Считаются ли описания инструментов параметром генерации?",
+  "запрос": "описания инструментов tool descriptions параметр генерации generation parameter настройки генерации generation settings конфигурация инструментов tool configuration промпт prompt"
+ },
+ "c19": {
+  "вопрос": "Может ли новый профиль затереть одноимённый, написанный человеком?",
+  "запрос": "profile overwrite conflict human-authored profile same name новый профиль затереть перезаписать одноимённый профиль созданный человеком ручной профиль profile collision name conflict overwrite behavior profile file naming"
+ },
+ "c20": {
+  "вопрос": "Как не дать участнику консилиума закрыть обёртку своим текстом?",
+  "запрос": "консилиум участник закрыть обёртку своим текстом wrapper overlay participant close text consilium council review обёртка wrapper overlay закрытие close dismiss участник participant member текст text content"
+ },
+ "c21": {
+  "вопрос": "Открывает ли консилиум тот же экран, что и группа агентов профиля?",
+  "запрос": "консилиум экран интерфейс UI группа агентов профиля profile agents group screen consilium открывает ли тот же экран"
+ },
+ "c22": {
+  "вопрос": "Почему агенты группы спрашивают модель одновременно, а не по очереди?",
+  "запрос": "агенты группы одновременный параллельный опрос модели vs последовательный по очереди запрос; group agents concurrent parallel model request vs sequential queue; agent group polling model simultaneously; параллельные запросы агентов к LLM; concurrency agents group model query; очередь запросов агентов; batch request agents; fan-out fan-in agents; синхронизация агентов группы; agent orchestration parallel execution; почему агенты группы спрашивают модель одновременно"
+ },
+ "c23": {
+  "вопрос": "Сколько токенов сервер добавляет обёрткой вокруг описаний инструментов?",
+  "запрос": "сколько токенов добавляет сервер обёрткой вокруг описаний инструментов tool descriptions wrapper overhead tokens server adds around tool descriptions"
+ },
+ "c24": {
+  "вопрос": "Входит ли расход прошлых запусков в итог текущего сеанса?",
+  "запрос": "расход прошлых запусков в итог текущего сеанса; включается ли предыдущий расход в суммарный расход текущей сессии; накопленный расход предыдущих запусков в итог текущего сеанса; past runs cost included in current session total; previous usage included in current session total; cumulative cost previous runs current session total; session total cost includes prior runs usage"
+ },
+ "c25": {
+  "вопрос": "Пропадёт ли набранный черновик, если перейти на другую панель?",
+  "запрос": "черновик draft набранный текст сохранится потеряется пропадёт при переходе смене другой панели вкладки panel tab переключение навигация потеря данных unsaved draft text lost switching panel tab navigation"
+ },
+ "c26": {
+  "вопрос": "Во что обошлись десять кругов просмотра на дне 15?",
+  "запрос": "стоимость десяти кругов просмотра на дне 15, цена 10 циклов просмотра день 15, cost of ten view cycles on day 15, price of 10 viewing rounds day 15, expense ten review loops day 15"
+ },
+ "c27": {
+  "вопрос": "Почему инструмент перенесли из папки первого дня в корень репозитория?",
+  "запрос": "инструмент перенесли из папки первого дня в корень репозитория причина перенос tool moved from day one folder to repository root reason directory structure refactoring"
+ },
+ "c28": {
+  "вопрос": "Почему сервер курсов ЦБ переехал на отдельную машину?",
+  "запрос": "сервер курсов ЦБ отдельная машина причины перенос миграция выделенный сервер курсов валют ЦБ РФ архитектура развёртывание deployment CBR exchange rates server separate machine migration reasons"
+ },
+ "c29": {
+  "вопрос": "Почему виртуальное окружение нельзя держать в облачной папке?",
+  "запрос": "virtual environment venv virtualenv нельзя держать хранить в облачной папке cloud folder Dropbox Google Drive OneDrive синхронизация sync конфликты блокировка файлов file locking символические ссылки symlinks абсолютные пути absolute paths производительность performance"
+ },
+ "c30": {
+  "вопрос": "Почему выжимку в сервере цепочки делают не через просьбу к модели клиента?",
+  "запрос": "суммаризация summary выжимка сервер server цепочка chain pipeline запрос к модели LLM client model request почему не через клиентскую модель client-side model summarization server-side summarization архитектура"
+ },
+ "q01": {
+  "вопрос": "Где myharness хранит настройки и какие права ставит файлу?",
+  "запрос": "myharness настройки конфигурация config settings файл file путь path расположение location права доступа permissions mode chmod права на файл file permissions"
+ },
+ "q02": {
+  "вопрос": "Каких параметров генерации нельзя заводить в myharness и почему?",
+  "запрос": "myharness параметры генерации запрещённые параметры ограничения generation parameters forbidden parameters not allowed myharness config configuration настройки генерации ограничения валидация validation"
+ },
+ "q03": {
+  "вопрос": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?",
+  "запрос": "MCP-сервер таймаут ожидания ответа по умолчанию default timeout MCP server request response timeout значение настройка конфигурация параметр timeout_ms request_timeout MCP_TIMEOUT переменная окружения environment variable config file настройки сервера"
+ },
+ "q04": {
+  "вопрос": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?",
+  "запрос": "инструмент смены стадии автомата задачи workflow state machine transition tool кто открывает ворота gate opener gatekeeper approval кто переводит стадию задачи task stage transition state change tool gate opening approval workflow"
+ },
+ "q05": {
+  "вопрос": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?",
+  "запрос": "задача судья вердикт правило уровня A что происходит статус задачи обработка результата judge verdict rule level A task status outcome processing"
+ },
+ "q06": {
+  "вопрос": "Почему в дне 19 отказались от MCP sampling?",
+  "запрос": "день 19 отказ от MCP sampling причины решение day 19 MCP sampling rejection rationale Model Context Protocol sampling отказ архитектурное решение"
+ },
+ "q07": {
+  "вопрос": "Почему Ollama поставлена не через Homebrew?",
+  "запрос": "Ollama установка не через Homebrew причина почему Ollama установлена не через Homebrew Ollama installation not via Homebrew why Ollama installed manually brew install ollama Homebrew formula cask package manager macOS Linux"
+ },
+ "q08": {
+  "вопрос": "Во что обошёлся день 15 и сколько было кругов просмотра?",
+  "запрос": "стоимость дня 15 / затраты за день 15 / расходы 15-го дня / day 15 cost / expenses day 15; количество кругов просмотра / число циклов просмотра / сколько раз просматривали / review rounds count / number of review cycles / просмотры / review iterations"
+ },
+ "q09": {
+  "вопрос": "Куда myharness пишет журнал прогонов и чем меняется это место?",
+  "запрос": "myharness журнал прогонов run log путь расположение директория logs output directory настройка конфигурация параметр option flag переменная окружения environment variable CLI аргумент --log-dir --output-dir config file конфиг файл"
+ },
+ "q10": {
+  "вопрос": "Какой эмбеддер считает векторы индекса документов и где он работает?",
+  "запрос": "эмбеддер векторов индекса документов embedding model document index vectors где работает расположение компонент architecture embedding service indexer document embeddings vectorization модель эмбеддингов индексация документов"
+ },
+ "n01": {
+  "вопрос": "Какой брокер сообщений RabbitMQ держит очередь заданий агента digest?",
+  "запрос": "RabbitMQ брокер сообщений очередь заданий агента digest agent task queue message broker RabbitMQ queue agent digest"
+ },
+ "n02": {
+  "вопрос": "Как журнал прогонов myharness выгружается в Prometheus и какие панели для него настроены в Grafana?",
+  "запрос": "журнал прогонов myharness выгрузка экспорт в Prometheus run log export push gateway exporter metrics; панели дашборды Grafana dashboards panels visualization myharness run log"
+ },
+ "n03": {
+  "вопрос": "В каком бакете S3 лежат копии индекса RAG?",
+  "запрос": "S3 bucket бакет хранилище копии индекса RAG retrieval-augmented generation vector index backup snapshot bucket name S3 bucket name индекс RAG резервная копия бэкап"
+ },
+ "n04": {
+  "вопрос": "Какой сценарий GitHub Actions прогоняет проверки myharness при каждой отправке в main?",
+  "запрос": "GitHub Actions workflow сценарий CI pipeline проверки myharness при push в ветку main master continuous integration checks workflow file .github/workflows myharness"
+ },
+ "n05": {
+  "вопрос": "Как в myharness включить тёмную тему оформления?",
+  "запрос": "myharness тёмная тема оформления включить настройка dark theme enable configuration параметр команда файл конфигурации settings appearance theme dark mode"
+ },
+ "n06": {
+  "вопрос": "Сколько реплик сервера MCP курсов ЦБ запущено в Kubernetes?",
+  "запрос": "MCP server курсов ЦБ РФ запущено реплик в Kubernetes: количество реплик deployment replicas MCP server CBR exchange rates в Kubernetes cluster; сколько pod'ов MCP сервера курсов Центрального банка запущено"
+ },
+ "n07": {
+  "вопрос": "Как устроен двухфакторный вход в myharness?",
+  "запрос": "двухфакторная аутентификация two-factor authentication 2FA MFA myharness вход login аутентификация устройство устройства настройка конфигурация параметры команды файлы"
+ },
+ "n08": {
+  "вопрос": "Куда Sentry отправляет ошибки myharness и кто получает оповещения?",
+  "запрос": "Sentry DSN настройки отправка ошибок myharness error reporting куда отправляются ошибки кто получает оповещения alerts notifications recipients Sentry project DSN error events issue alerts notification recipients myharness"
+ },
+ "n09": {
+  "вопрос": "Какие поля отдаёт сервер rag через GraphQL?",
+  "запрос": "GraphQL schema RAG server поля fields response query types rag сервер отдаёт возвращает поля GraphQL API"
+ },
+ "n10": {
+  "вопрос": "Каким модулем Terraform заводится VPS челленджа?",
+  "запрос": "Terraform модуль VPS челленджа challenge VPS module terraform module virtual private server challenge infrastructure"
+ }
+}
