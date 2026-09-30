@@ -1,4 +1,4 @@
-"""Командная строка индекса: `index`, `search`, `compare`.
+"""Командная строка индекса: `index`, `search`, `compare`, `rerank-compare`.
 
 Запуск из корня репозитория: `uv run --project rag rag/cli.py <команда>`.
 """
@@ -18,11 +18,16 @@ import numpy as np
 import chunking as ч
 import compare as ср
 import embedder as эм
+import rerank as рр
+import rerank_compare as срр
+import rewrite as пер
 import store
 
 КОРЕНЬ = Path(__file__).resolve().parent.parent
 ИНДЕКС = КОРЕНЬ / "rag" / "index.sqlite"
 НАБОР = КОРЕНЬ / "rag" / "control.jsonl"
+ОТВЕТЫ = КОРЕНЬ / "rag" / "answers.jsonl"
+ОТРИЦАТЕЛЬНЫЕ = КОРЕНЬ / "rag" / "negative.jsonl"
 ПУТИ_КОРПУСА = ["CLAUDE.md", "openspec/specs", "docs"]
 
 
@@ -119,6 +124,29 @@ def команда_compare(доводы) -> None:
         print(текст)
 
 
+def команда_rerank_compare(доводы) -> None:
+    if (доводы.k1 is None) != (доводы.k2 is None):
+        raise ValueError("--k1 и --k2 задаются вместе")
+    if (доводы.tau is None) != (доводы.theta is None) or (доводы.tau is not None and доводы.k1 is None):
+        raise ValueError("--tau и --theta задаются вместе и только с --k1 и --k2")
+    вопросы = срр.загрузить(НАБОР, ОТВЕТЫ, ОТРИЦАТЕЛЬНЫЕ)
+    переписанные = срр.переписанные(вопросы, доводы.rewrites, пер.переписать)
+    # Кодировщик грузится при первой паре, а не при создании: сетка без model его не трогает.
+    кодировщик = None
+
+    def оценить(вопрос: str, тексты: list[str]) -> list[float]:
+        nonlocal кодировщик
+        кодировщик = кодировщик or рр.кодировщик()
+        return кодировщик(вопрос, тексты)
+
+    поиск = рр.Поиск(доводы.index, считать=срр.с_памятью_векторов(эм.эмбеддинги),
+                     оценщик=срр.с_памятью_оценок(оценить))
+    текст = срр.отчёт(срр.Замер(поиск, вопросы, переписанные), доводы.k1, доводы.k2, доводы.tau, доводы.theta,
+                      доводы.reason)
+    доводы.out.write_text(текст, "utf-8")
+    print(f"записано: {доводы.out}")
+
+
 def главная(argv: list[str] | None = None) -> None:
     разбор = argparse.ArgumentParser(prog="rag", description="Индекс документов проекта")
     разбор.add_argument("--index", type=Path, default=ИНДЕКС, help=f"файл индекса (по умолчанию {ИНДЕКС})")
@@ -134,10 +162,20 @@ def главная(argv: list[str] | None = None) -> None:
     с = команды.add_parser("compare", help="сравнить стратегии на контрольном наборе")
     с.add_argument("--out", type=Path)
     с.set_defaults(действие=команда_compare)
+    р = команды.add_parser("rerank-compare", help="сравнить режимы второго этапа поиска")
+    р.add_argument("--out", type=Path, required=True)
+    р.add_argument("--rewrites", type=Path, required=True,
+                   help="файл переписанных запросов: читается, недостающие дописываются")
+    р.add_argument("--k1", type=int, help="кандидатов до второго этапа; с --k2 — кривые порогов")
+    р.add_argument("--k2", type=int, help="кусков после второго этапа")
+    р.add_argument("--tau", type=float, help="порог косинуса threshold/heuristic; с --theta — итог и разбор")
+    р.add_argument("--theta", type=float, help="порог вероятности model")
+    р.add_argument("--reason", default="", help="почему выбраны эти числа — строкой в отчёт")
+    р.set_defaults(действие=команда_rerank_compare)
     доводы = разбор.parse_args(argv)
     try:
         доводы.действие(доводы)
-    except (эм.ОшибкаЭмбеддера, LookupError, ValueError) as e:
+    except (эм.ОшибкаЭмбеддера, пер.ОшибкаПереписывания, LookupError, ValueError) as e:
         sys.exit(f"rag: {e}")
 
 
