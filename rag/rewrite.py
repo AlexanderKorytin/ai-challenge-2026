@@ -54,11 +54,12 @@ def _ключ() -> str:
     return ключ.strip()
 
 
-def переписать(вопрос: str, *, клиент: httpx2.Client | None = None) -> str:
-    """Поисковый запрос одной строкой."""
+def спросить(тело: dict, *, клиент: httpx2.Client | None = None) -> str:
+    """Один запрос к DeepSeek: текст ответа модели как есть (пустой ответ — пустая строка).
+
+    Общий вызов для переписывания и судьи смысла (`cite_eval.py`): ключ, пределы ожидания и
+    разбор сбоев живут в одном месте."""
     ключ = _ключ()
-    тело = {"model": МОДЕЛЬ, "temperature": 0, "thinking": {"type": "disabled"},
-            "messages": [{"role": "system", "content": ИНСТРУКЦИЯ}, {"role": "user", "content": вопрос}]}
     свой = клиент is None
     клиент = клиент or httpx2.Client(timeout=ОЖИДАНИЕ)
     try:
@@ -75,9 +76,16 @@ def переписать(вопрос: str, *, клиент: httpx2.Client | Non
         текст = " ".join(ответ.text.split()).replace(ключ, "***")
         raise ОшибкаПереписывания(f"DeepSeek ответил HTTP {ответ.status_code}: {текст}")
     try:
-        запрос = " ".join((ответ.json()["choices"][0]["message"]["content"] or "").split())
+        return ответ.json()["choices"][0]["message"]["content"] or ""
     except (ValueError, KeyError, IndexError, TypeError):
         raise ОшибкаПереписывания("DeepSeek вернул ответ непонятного вида") from None
+
+
+def переписать(вопрос: str, *, клиент: httpx2.Client | None = None) -> str:
+    """Поисковый запрос одной строкой."""
+    тело = {"model": МОДЕЛЬ, "temperature": 0, "thinking": {"type": "disabled"},
+            "messages": [{"role": "system", "content": ИНСТРУКЦИЯ}, {"role": "user", "content": вопрос}]}
+    запрос = " ".join(спросить(тело, клиент=клиент).split())
     if not запрос:
         raise ОшибкаПереписывания("DeepSeek вернул пустой запрос")
     return запрос
