@@ -1,0 +1,106 @@
+{
+ "model": "deepseek-v4-flash",
+ "concurrency": 1,
+ "tasks": [
+  {
+   "agent": "q01-cite",
+   "profile": "rag-cite",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-cite",
+   "profile": "rag-cite",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-cite",
+   "profile": "rag-cite",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-cite",
+   "profile": "rag-cite",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-cite",
+   "profile": "rag-cite",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-cite",
+   "profile": "rag-cite",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-cite",
+   "profile": "rag-cite",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-cite",
+   "profile": "rag-cite",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-cite",
+   "profile": "rag-cite",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-cite",
+   "profile": "rag-cite",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  },
+  {
+   "agent": "n06-cite",
+   "profile": "rag-cite",
+   "ask": "Сколько реплик сервера MCP курсов ЦБ запущено в Kubernetes?"
+  },
+  {
+   "agent": "n07-cite",
+   "profile": "rag-cite",
+   "ask": "Как устроен двухфакторный вход в myharness?"
+  },
+  {
+   "agent": "n08-cite",
+   "profile": "rag-cite",
+   "ask": "Куда Sentry отправляет ошибки myharness и кто получает оповещения?"
+  },
+  {
+   "agent": "n09-cite",
+   "profile": "rag-cite",
+   "ask": "Какие поля отдаёт сервер rag через GraphQL?"
+  },
+  {
+   "agent": "n10-cite",
+   "profile": "rag-cite",
+   "ask": "Каким модулем Terraform заводится VPS челленджа?"
+  },
+  {
+   "agent": "f01-cite",
+   "profile": "rag-cite",
+   "ask": "Как сварить борщ: какие продукты нужны и в каком порядке их закладывать?"
+  },
+  {
+   "agent": "f02-cite",
+   "profile": "rag-cite",
+   "ask": "Какая погода будет завтра в Москве?"
+  },
+  {
+   "agent": "f03-cite",
+   "profile": "rag-cite",
+   "ask": "Какой город — столица Австралии?"
+  },
+  {
+   "agent": "f04-cite",
+   "profile": "rag-cite",
+   "ask": "По каким правилам делается рокировка в шахматах?"
+  },
+  {
+   "agent": "f05-cite",
+   "profile": "rag-cite",
+   "ask": "Как вырастить помидоры на балконе?"
+  }
+ ]
+}

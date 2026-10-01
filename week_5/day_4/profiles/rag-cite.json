@@ -1,0 +1,1 @@
+{"name": "rag-cite", "description": "ответы о проекте с источниками и цитатами", "system_file": "проект-цитаты.md", "rag": "rag", "keep_history": false, "temperature": 0, "thinking": {"type": "disabled"}}
