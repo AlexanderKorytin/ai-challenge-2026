@@ -19,6 +19,10 @@
       "tasks": [ { "agent": "физик", "profile": "expert",
                    "vars": {"область": "физика"}, "ask": "вопрос" } ] }
 
+Вместо вопроса `ask` задание может нести список реплик `asks` — разговор с одним собеседником:
+реплики идут по порядку, что он помнит из прежних, решает профиль (`keep_history`, стратегия,
+окно). На диск разговор не пишется; неудавшаяся реплика останавливает своё задание.
+
 Один профиль-заготовка с `$переменными` плюс свои `vars` у каждого задания дают сто разных
 собеседников двадцатью строками наряда. Механизм подстановки — тот же самый, что у профилей
 (`profiles.Substitution`), третьего заводить нельзя: два разных правила подстановки в одном
@@ -60,12 +64,19 @@ class Task:
     agent: str  # имя задания: попадает в журнал и в сводку
     profile: str  # имя профиля-заготовки
     vars: dict  # подстановки поверх профиля
-    ask: str  # вопрос
+    # Реплики задания по порядку: одна — обычное задание с вопросом (поле наряда `ask`),
+    # несколько — разговор с одним собеседником (поле наряда `asks`).
+    asks: tuple[str, ...]
     # Готовый профиль задания — заготовка с уже подставленными `vars`. Кладётся при разборе
     # наряда, там же, где профиль проверяется на существование. Грузить его повторно в
     # `run_order` значило бы читать те же файлы второй раз и рисковать разойтись с тем, что
     # уже проверено разбором.
     prepared: Profile | None = field(default=None, repr=False)
+
+    @property
+    def ask(self) -> str:
+        """Первая реплика: у задания с одним вопросом — он и есть."""
+        return self.asks[0]
 
 
 @dataclass
@@ -130,10 +141,28 @@ def _task_from_dict(raw: Any, position: int, warnings: list[str]) -> Task | None
     name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else ""
     метка = f"задание №{position}" + (f" «{name}»" if name else "")
 
-    ask = raw.get("ask")
-    if not isinstance(ask, str) or not ask.strip():
-        warnings.append(f"{метка}: нет поля «ask» с вопросом — пропущено")
+    # `null` — то же, что отсутствие поля: `{"ask": "вопрос", "asks": null}` несёт один вопрос.
+    raw = {key: value for key, value in raw.items() if key not in ("ask", "asks") or value is not None}
+    if "ask" in raw and "asks" in raw:
+        # Что из двух считать работой задания, наряд не говорит — угадывать нельзя.
+        warnings.append(f"{метка}: заданы и «ask», и «asks» — пропущено")
         return None
+    if "asks" in raw:
+        raw_asks = raw["asks"]
+        if (
+            not isinstance(raw_asks, list)
+            or not raw_asks
+            or not all(isinstance(реплика, str) and реплика.strip() for реплика in raw_asks)
+        ):
+            warnings.append(f"{метка}: поле «asks» — ожидался непустой список реплик — пропущено")
+            return None
+        asks = tuple(реплика.strip() for реплика in raw_asks)
+    else:
+        ask = raw.get("ask")
+        if not isinstance(ask, str) or not ask.strip():
+            warnings.append(f"{метка}: нет поля «ask» с вопросом — пропущено")
+            return None
+        asks = (ask.strip(),)
 
     if not name:
         # Имя — только метка в журнале и в сводке, ради неё работу не выбрасываем. Но и
@@ -167,7 +196,7 @@ def _task_from_dict(raw: Any, position: int, warnings: list[str]) -> Task | None
         agent=name,
         profile=profile_name,
         vars=dict(task_vars),
-        ask=ask.strip(),
+        asks=asks,
         prepared=_prepare(profile, task_vars),
     )
 
@@ -230,23 +259,62 @@ async def run_order(order: Order, client, *, on_line) -> list[Turn]:
 
     async def one(position: int, task: Task) -> Turn:
         async with gate:
-            on_line(f"[{position}/{total}] {task.agent} → {order.model}: {task.ask}")
             profile = task.prepared if task.prepared is not None else profiles.builtin_default()
             agent = Agent(
                 task.agent,
                 profile,
                 поиск=(lambda вопрос, контекст: поиск.найти(Path.cwd(), profile.rag, вопрос, контекст)) if profile.rag else None,
             )
-            turn = await agent.exchange(client, order.model, task.ask, agent=task.agent, run_id=run_id)
-            if turn.ok:
-                on_line(f"[{position}/{total}] {task.agent}: готово за {turn.elapsed_ms / 1000:.1f} с")
-            else:
-                on_line(f"[{position}/{total}] {task.agent}: СБОЙ — {turn.error or turn.status}")
-            if turn.journal_error:
-                on_line(f"[{position}/{total}] {task.agent}: {turn.journal_error}")
-            if turn.store_error:
-                on_line(f"[{position}/{total}] {task.agent}: {turn.store_error}")
-            return turn
+            # Реплики идут одному собеседнику: что он помнит, решает профиль (`keep_history`,
+            # стратегия, окно) — хранилища у него нет, разговор живёт в памяти процесса.
+            реплик = len(task.asks)
+            время = 0
+            расход_неполон = False
+            turn: Turn | None = None
+            for номер, реплика in enumerate(task.asks, start=1):
+                счёт = f" [{номер}/{реплик}]" if реплик > 1 else ""
+                try:
+                    on_line(f"[{position}/{total}] {task.agent} → {order.model}{счёт}: {реплика}")
+                    turn = await agent.exchange(client, order.model, реплика, agent=task.agent, run_id=run_id)
+                    время += turn.elapsed_ms
+                    # Sticky Facts оплачивает два запроса на реплику. Нет хоть одного серверного
+                    # `usage` хоть у одной реплики — накопитель собеседника неполон, и выдавать
+                    # его за расход задания нельзя.
+                    if turn.context_strategy == context_strategy.CONTEXT_FACTS and (
+                        not turn.usage or turn.facts_usage is None
+                    ):
+                        расход_неполон = True
+                    if turn.ok:
+                        on_line(f"[{position}/{total}] {task.agent}{счёт}: готово за {turn.elapsed_ms / 1000:.1f} с")
+                    else:
+                        on_line(f"[{position}/{total}] {task.agent}{счёт}: СБОЙ — {turn.error or turn.status}")
+                    if turn.journal_error:
+                        on_line(f"[{position}/{total}] {task.agent}{счёт}: {turn.journal_error}")
+                    if turn.store_error:
+                        on_line(f"[{position}/{total}] {task.agent}{счёт}: {turn.store_error}")
+                except Exception as exc:  # noqa: BLE001 — сбой нашего кода вокруг обмена
+                    # Сорвался наш код — строка хода до обмена либо после него (закрытый вывод).
+                    # Пока ни одного обмена не было, исключение уходит наверх прежним путём
+                    # (`gather` сделает из него запись сбоя). Дальше — нельзя: запись сбоя без
+                    # счёта стёрла бы из сводки реплики, уже отвеченные, оплаченные и лежащие в
+                    # журнале. Удавшийся обмен в `turn` — этой реплики либо предыдущей — значит,
+                    # отвечено `turn.index` реплик; сводка считает отвеченные у записи сбоя как
+                    # `index - 1`, поэтому счёт в ней на единицу больше. Неудавшийся обмен уже
+                    # несёт и свой сбой, и верный счёт.
+                    if turn is None:
+                        raise
+                    if turn.ok:
+                        turn = replace(turn, status="error", error=str(exc), index=turn.index + 1)
+                    break
+                if not turn.ok:
+                    # Следующая реплика опиралась бы на ответ, которого не было.
+                    break
+            if реплик == 1:
+                return turn
+            # Сводке — последний обмен задания со временем всех отправленных реплик. Запись
+            # журнала каждой реплики уже сделана агентом и несёт своё время. `facts_usage`
+            # снимается при неполном расходе: по нему сводка пишет «расход неизвестен».
+            return replace(turn, elapsed_ms=время, **({"facts_usage": None} if расход_неполон else {}))
 
     # `return_exceptions=True` — не украшение: без него первое же исключение отменило бы все
     # остальные задания наряда, и сбой одного собеседника стоил бы всей работы. Сам обмен
@@ -296,7 +364,13 @@ def summary_lines(order: Order, turns: list[Turn]) -> list[str]:
         tokens_known = not facts or (
             bool(turn.usage) and turn.facts_usage is not None
         )
-        tokens = turn.agent_session_tokens if facts else usage_tokens(turn.usage)
+        реплик = len(task.asks)
+        # У задания из нескольких реплик расход — накопитель собеседника за все обмены: `usage`
+        # последнего обмена был бы расходом одной реплики, выданным за расход задания.
+        tokens = turn.agent_session_tokens if facts or реплик > 1 else usage_tokens(turn.usage)
+        # `index` — счёт обменов собеседника: на последнем обмене он равен номеру реплики.
+        отвечено = turn.index if turn.ok else max(turn.index - 1, 0)
+        хвост_реплик = f"  реплик {отвечено} из {реплик}" if реплик > 1 else ""
         tokens_total += tokens
         tokens_total_known = tokens_total_known and tokens_known
         tokens_text = (
@@ -305,11 +379,11 @@ def summary_lines(order: Order, turns: list[Turn]) -> list[str]:
         if turn.ok:
             ok_count += 1
             state = "ок"
-            tail = f"{turn.elapsed_ms / 1000:6.1f} с  {tokens_text}"
+            tail = f"{turn.elapsed_ms / 1000:6.1f} с  {tokens_text}{хвост_реплик}"
         else:
             state = "сбой"
             tail = (
-                f"{turn.elapsed_ms / 1000:6.1f} с  {tokens_text}"
+                f"{turn.elapsed_ms / 1000:6.1f} с  {tokens_text}{хвост_реплик}"
                 f"  — {turn.error or turn.status}"
             )
         lines.append(f"  {task.agent.ljust(width)}  {state:4}  {tail}")

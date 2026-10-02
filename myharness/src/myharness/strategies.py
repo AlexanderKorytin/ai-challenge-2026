@@ -22,7 +22,7 @@ from .config import save as save_config
 from .conversation import restore_conversation
 from .panes import active_profile, apply_prefill, drop_agent_screens, switch_screen
 from .profiles import Profile
-from .state import State, profile_for_strategy, главный_агент
+from .state import State, profile_for_strategy, главный_агент, поставщик_поиска
 
 # Человеческие названия режимов — ими подписаны вкладки, панель выбора и подсказки команд.
 STRATEGY_TITLES = {
@@ -36,8 +36,13 @@ STRATEGY_TITLES = {
 def _linear_strategy_agent(
     profile: Profile,
     pane_key: str,
+    поиск=None,
 ) -> tuple[Agent, memory.SessionStore, memory.Restored | None, list[str]]:
-    """Завести линейного собеседника и поднять полную запись его стратегии."""
+    """Завести линейного собеседника и поднять полную запись его стратегии.
+
+    `поиск` — поставщик режима RAG (`state.поставщик_поиска`): экраны `sliding` и `facts` ищут в
+    базе знаний, как главный экран; экрану `standard` (рабочие экраны) вызывающий его не даёт. Слоёв памяти (карточка, задача, записи о человеке) у них
+    по-прежнему нет."""
 
     path = memory.latest_session(Path.cwd(), profile.name, profile.context_strategy)
     store = memory.SessionStore(
@@ -53,6 +58,7 @@ def _linear_strategy_agent(
         profile,
         store=store,
         facts_store=facts_store,
+        поиск=поиск,
     )
     if path is None:
         return agent, store, None, [agent.store_error] if agent.store_error else []
@@ -108,7 +114,14 @@ def create_strategy_screen(
 
     profile = profile_for_strategy(source, strategy)
     if strategy != context_strategy.CONTEXT_BRANCHING:
-        agent, store, restored, warnings = _linear_strategy_agent(profile, key)
+        # Поиск — только экранам `sliding` и `facts` (способность `agent`): рабочие экраны
+        # идут сюда же со стратегией `standard`, и режима RAG у них нет.
+        поиск = (
+            поставщик_поиска(state, profile)
+            if strategy in (context_strategy.CONTEXT_SLIDING, context_strategy.CONTEXT_FACTS)
+            else None
+        )
+        agent, store, restored, warnings = _linear_strategy_agent(profile, key, поиск)
         pane = screens_mod.Pane(
             key=key,
             title=title,

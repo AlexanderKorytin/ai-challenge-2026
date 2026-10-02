@@ -2507,7 +2507,7 @@ class ПакетныйКлиентСтратегии:
             agent="пакетные-facts",
             profile="пакетные-facts",
             vars={},
-            ask="Запомни пакетный режим.",
+            asks=("Запомни пакетный режим.",),
             prepared=пакетный_профиль_стратегии,
         )
     ],
@@ -16104,8 +16104,8 @@ check("отмена посреди запуска сервера поиска н
 профиль_наряда_rag, _ = profiles._from_dict({"system": "инструкция", "rag": "rag"}, "проект-rag", tmp, None)
 профиль_наряда_без, _ = profiles._from_dict({"system": "инструкция"}, "проект", tmp, None)
 наряд_rag = batch.Order(model="deepseek-v4-flash", concurrency=2, tasks=[
-    batch.Task(agent="q01-rag", profile="проект-rag", vars={}, ask="где настройки?", prepared=профиль_наряда_rag),
-    batch.Task(agent="q01-plain", profile="проект", vars={}, ask="где настройки?", prepared=профиль_наряда_без),
+    batch.Task(agent="q01-rag", profile="проект-rag", vars={}, asks=("где настройки?",), prepared=профиль_наряда_rag),
+    batch.Task(agent="q01-plain", profile="проект", vars={}, asks=("где настройки?",), prepared=профиль_наряда_без),
 ])
 клиент_наряда = StubClient()
 строки_наряда = []
@@ -16218,6 +16218,260 @@ check("парная: сервер с context в схеме получает ко
       итог_контекста["с_контекстом"].endswith("найдено по: а он?\nконтекст: Человек: про кота"), str(итог_контекста))
 check("парная: пустой контекст доводом не уходит", итог_контекста["пустой_контекст"].endswith("контекст: None"),
       str(итог_контекста))
+
+print("\n# Экраны стратегий ищут в базе знаний (день 25, шаг 3)")
+
+
+async def экраны_и_поиск():
+    итог = {}
+    for имя, профиль_экрана in (("с rag", профиль_facts_rag), ("без rag", profiles.Profile(name="чат-без-rag"))):
+        состояние = state_mod.State(config=Config(), client=None, model="deepseek-v4-flash", profile=профиль_экрана)
+        try:
+            for стратегия in (context_strategy.CONTEXT_SLIDING, context_strategy.CONTEXT_FACTS,
+                              context_strategy.CONTEXT_BRANCHING, context_strategy.CONTEXT_STANDARD):
+                экран = strategies_mod.create_strategy_screen(
+                    состояние, профиль_экрана, стратегия, key=f"день25-{имя}-{стратегия}", title=стратегия)
+                агенты = [п.agent for п in экран.panes if п.agent is not None]
+                итог[(имя, стратегия)] = [а._поиск is not None for а in агенты]
+                if имя == "с rag" and стратегия == context_strategy.CONTEXT_SLIDING:
+                    состояние.поиск.найти = lambda каталог, сервер, вопрос, контекст: найти_подставно(вопрос, контекст)
+                    клиент_экрана = StubClient()
+                    await агенты[0].exchange(клиент_экрана, "deepseek-v4-flash", "где настройки?")
+                    итог["хвост"] = клиент_экрана.calls[-1]["messages"][-1]["content"]
+                    итог["слои"] = (агенты[0]._work, агенты[0]._project, агенты[0]._facts)
+        finally:
+            await состояние.mcp.закрыть()
+            await состояние.поиск.закрыть()
+    return итог
+
+прежний_каталог = Path.cwd()
+os.chdir(мост_контекста)
+try:
+    итог_экранов = asyncio.run(экраны_и_поиск())
+finally:
+    os.chdir(прежний_каталог)
+check("экраны sliding и facts профиля с rag получают поставщика поиска",
+      итог_экранов[("с rag", "sliding")] == [True] and итог_экранов[("с rag", "facts")] == [True], str(итог_экранов))
+check("парная: экран Branching и экран standard (рабочие экраны) поставщика не получают, профиль без rag — тоже",
+      bool(итог_экранов[("с rag", "branching")]) and not any(итог_экранов[("с rag", "branching")])
+      and итог_экранов[("с rag", "standard")] == [False]
+      and итог_экранов[("без rag", "sliding")] == [False] and итог_экранов[("без rag", "facts")] == [False],
+      str(итог_экранов))
+check("обмен экрана стратегии несёт блок найденного, слоёв памяти у экрана нет",
+      итог_экранов["хвост"].startswith(agent_rag.ЗАГОЛОВОК_НАЙДЕННОГО) and итог_экранов["слои"] == (None, None, None),
+      str(итог_экранов.get("хвост")))
+
+
+print("\n# Наряд: задание из нескольких реплик (день 25, шаг 4)")
+реплики, предупреждения_реплик = batch.load_order(наряд({"tasks": [
+    {"agent": "годное", "profile": "expert", "vars": {"область": "физика"}, "asks": [" раз ", "два", "три"]},
+    {"agent": "оба", "profile": "expert", "ask": "вопрос", "asks": ["раз"]},
+    {"agent": "пустой", "profile": "expert", "asks": []},
+    {"agent": "не-список", "profile": "expert", "asks": "раз"},
+    {"agent": "с-дырой", "profile": "expert", "asks": ["раз", " "]},
+    {"agent": "с-числом", "profile": "expert", "asks": [1]},
+    {"agent": "обычное", "profile": "expert", "vars": {"область": "химия"}, "ask": "вопрос", "asks": None},
+    {"agent": "реплики-и-null", "profile": "expert", "vars": {"область": "химия"}, "ask": None, "asks": ["раз"]},
+]}, "asks.json"))
+check("наряд: asks читается списком реплик, ask — одной репликой; первая реплика — ask",
+      [(з.agent, з.asks) for з in реплики.tasks]
+      == [("годное", ("раз", "два", "три")), ("обычное", ("вопрос",)), ("реплики-и-null", ("раз",))]
+      and реплики.tasks[0].ask == "раз", str(реплики.tasks))
+check("наряд: ask вместе с asks, пустой asks, не список, пустая реплика и число — пропущены с причиной; null — отсутствие поля",
+      sum("заданы и «ask», и «asks»" in п for п in предупреждения_реплик) == 1
+      and sum("поле «asks» — ожидался непустой список реплик" in п for п in предупреждения_реплик) == 4,
+      str(предупреждения_реплик))
+
+состояние_до_реплик = файлы_состояния()
+журнал_до_реплик = len(journal_lines())
+клиент_реплик = StubClient()
+строки_реплик = []
+итоги_реплик = asyncio.run(batch.run_order(
+    batch.Order(model="deepseek-v4-flash", concurrency=1, tasks=реплики.tasks[:1]), клиент_реплик, on_line=строки_реплик.append))
+записи_реплик = [json.loads(с) for с in journal_lines()[журнал_до_реплик:]]
+check("три реплики — три обмена одному собеседнику: вторая видит первую пару, третья — две",
+      [len(в["messages"]) for в in клиент_реплик.calls] == [2, 4, 6]
+      and [в["messages"][-1]["content"] for в in клиент_реплик.calls] == ["раз", "два", "три"]
+      and клиент_реплик.calls[1]["messages"][1:3] == [{"role": "user", "content": "раз"}, {"role": "assistant", "content": "щука"}],
+      str([в["messages"] for в in клиент_реплик.calls]))
+check("журнал: запись на реплику с именем задания, общим run_id и номерами обмена 1, 2, 3",
+      [(з.get("agent"), з.get("index"), з.get("query")) for з in записи_реплик]
+      == [("годное", 1, "раз"), ("годное", 2, "два"), ("годное", 3, "три")]
+      and len({з.get("run_id") for з in записи_реплик}) == 1, str([(з.get("agent"), з.get("index")) for з in записи_реплик]))
+check("наряд из реплик не пишет в каталог состояния", файлы_состояния() == состояние_до_реплик)
+сводка_реплик = batch.summary_lines(batch.Order(model="m", concurrency=1, tasks=реплики.tasks[:1]), итоги_реплик)
+check("сводка задания из реплик: ок, реплик 3 из 3, время — сумма трёх обменов, расход собеседника целиком",
+      "ок" in сводка_реплик[1] and "реплик 3 из 3" in сводка_реплик[1]
+      and итоги_реплик[0].elapsed_ms == sum(з["elapsed_ms"] for з in записи_реплик)
+      and f"{итоги_реплик[0].agent_session_tokens:6d} токенов" in сводка_реплик[1]
+      and итоги_реплик[0].agent_session_tokens == 45, сводка_реплик[1])
+check("строки хода несут номер реплики", any("[2/3]: два" in с for с in строки_реплик), str(строки_реплик))
+check("парная: у задания с одним вопросом строки хода и сводки прежние",
+      "реплик" not in "\n".join(batch.summary_lines(сбойный, итоги)))
+
+падение_реплик, _ = batch.load_order(наряд({"concurrency": 1, "tasks": [
+    {"agent": "рвётся", "profile": "expert", "vars": {"область": "физика"}, "asks": ["раз", "вопрос падать", "три"]},
+    {"agent": "сосед", "profile": "expert", "vars": {"область": "химия"}, "asks": ["раз", "два"]},
+]}, "asks-failure.json"))
+клиент_падения_реплик = Считающий(падать_на="падать")
+итоги_падения = asyncio.run(batch.run_order(падение_реплик, клиент_падения_реплик, on_line=lambda _: None))
+сводка_падения = batch.summary_lines(падение_реплик, итоги_падения)
+check("сбой второй реплики: третья не отправлена, сводка «сбой … реплик 1 из 3», сосед отвечен целиком",
+      клиент_падения_реплик.всего == 4 and [и.ok for и in итоги_падения] == [False, True]
+      and "сбой" in сводка_падения[1] and "реплик 1 из 3" in сводка_падения[1] and "реплик 2 из 2" in сводка_падения[2]
+      and "ответили 1 из 2" in сводка_падения[-1], "\n".join(сводка_падения))
+
+профиль_немой_наряд, _ = profiles._from_dict({"system": "инструкция", "keep_history": False}, "немой-наряд", tmp, None)
+клиент_немой = StubClient()
+asyncio.run(batch.run_order(batch.Order(model="m", concurrency=1, tasks=[
+    batch.Task(agent="немой", profile="немой-наряд", vars={}, asks=("раз", "два"), prepared=профиль_немой_наряд)]),
+    клиент_немой, on_line=lambda _: None))
+check("парная: при keep_history ложь вторая реплика первой пары не видит — память решает профиль",
+      [len(в["messages"]) for в in клиент_немой.calls] == [2, 2], str([в["messages"] for в in клиент_немой.calls]))
+
+
+class РвущийХод:
+    """`on_line`, срывающийся на строке хода заданной реплики, — сбой нашего кода вокруг обмена."""
+
+    def __init__(self, метка):
+        self.метка = метка
+
+    def __call__(self, строка):
+        if self.метка in строка:
+            raise OSError("вывод закрыт")
+
+
+итоги_срыва = asyncio.run(batch.run_order(
+    batch.Order(model="m", concurrency=1, tasks=реплики.tasks[:1]), StubClient(), on_line=РвущийХод("[3/3]: три")))
+сводка_срыва = batch.summary_lines(batch.Order(model="m", concurrency=1, tasks=реплики.tasks[:1]), итоги_срыва)
+check("исключение нашего кода на третьей реплике: сбой, но две отвеченные, их время и расход в сводке",
+      not итоги_срыва[0].ok and "реплик 2 из 3" in сводка_срыва[1] and "вывод закрыт" in сводка_срыва[1]
+      and итоги_срыва[0].agent_session_tokens == 30 and "    30 токенов" in сводка_срыва[1], сводка_срыва[1])
+итоги_срыва_после = asyncio.run(batch.run_order(
+    batch.Order(model="m", concurrency=1, tasks=реплики.tasks[:1]), StubClient(), on_line=РвущийХод("[2/3]: готово")))
+сводка_срыва_после = batch.summary_lines(batch.Order(model="m", concurrency=1, tasks=реплики.tasks[:1]), итоги_срыва_после)
+check("срыв строки «готово» второй реплики: она отвечена и оплачена — сбой, реплик 2 из 3, расход двух обменов",
+      not итоги_срыва_после[0].ok and "реплик 2 из 3" in сводка_срыва_после[1] and "    30 токенов" in сводка_срыва_после[1],
+      сводка_срыва_после[1])
+итоги_срыва_первой = asyncio.run(batch.run_order(
+    batch.Order(model="m", concurrency=1, tasks=реплики.tasks[:1]), StubClient(), on_line=РвущийХод("[1/3]: готово")))
+check("парная: срыв строки «готово» первой реплики — реплик 1 из 3, а не пустая запись",
+      "реплик 1 из 3" in batch.summary_lines(
+          batch.Order(model="m", concurrency=1, tasks=реплики.tasks[:1]), итоги_срыва_первой)[1])
+итоги_срыва_сразу = asyncio.run(batch.run_order(
+    batch.Order(model="m", concurrency=1, tasks=реплики.tasks[:1]), StubClient(), on_line=РвущийХод("[1/3]: раз")))
+check("парная: исключение на первой реплике — прежняя запись сбоя, реплик 0 из 3",
+      not итоги_срыва_сразу[0].ok and "реплик 0 из 3" in batch.summary_lines(
+          batch.Order(model="m", concurrency=1, tasks=реплики.tasks[:1]), итоги_срыва_сразу)[1])
+
+
+class КлиентФактов:
+    """Основной обмен отвечает с расходом; извлекатель фактов падает на реплике с заданным словом."""
+
+    def __init__(self, падать_на=""):
+        self.падать_на = падать_на
+
+    async def stream_chat(self, model, messages, params=None):
+        извлекатель = messages[0]["content"].startswith("Ты обновляешь словарь фактов")
+        if извлекатель and self.падать_на and self.падать_на in messages[-1]["content"]:
+            raise RuntimeError("сеть упала")
+        yield api.StreamEvent("content", '{"set": {}, "forget": []}' if извлекатель else "ответ")
+        yield api.StreamEvent("meta", finish_reason="stop", usage={"total_tokens": 7})
+
+
+профиль_фактов_наряд, _ = profiles._from_dict(
+    {"system": "инструкция", "context_strategy": "facts", "compact_at": 0}, "факты-наряд", tmp, None)
+задание_фактов = batch.Order(model="m", concurrency=1, tasks=[
+    batch.Task(agent="факты", profile="факты-наряд", vars={}, asks=("раз", "два", "три"), prepared=профиль_фактов_наряд)])
+сводка_полная = batch.summary_lines(задание_фактов, asyncio.run(batch.run_order(задание_фактов, КлиентФактов(), on_line=lambda _: None)))
+сводка_неполная = batch.summary_lines(
+    задание_фактов, asyncio.run(batch.run_order(задание_фактов, КлиентФактов(падать_на="раз"), on_line=lambda _: None)))
+check("facts из трёх реплик: расход — шесть запросов собеседника целиком",
+      "    42 токенов" in сводка_полная[1] and "реплик 3 из 3" in сводка_полная[1], сводка_полная[1])
+check("парная: извлекатель упал на первой реплике — «расход неизвестен», а не частичная сумма",
+      "расход неизвестен" in сводка_неполная[1] and "реплик 3 из 3" in сводка_неполная[1]
+      and "расход неизвестен" in сводка_неполная[-1], "\n".join(сводка_неполная))
+
+
+print("\n# Извлекатель: цель, термины и приставки ключей (день 25, шаг 5)")
+from myharness import sticky_facts as sticky_facts_mod  # noqa: E402
+
+# Пробелы свёрнуты: перенос строки посреди оборота — не отсутствие оборота.
+инструкция_извлекателя = " ".join(sticky_facts_mod.EXTRACTOR_INSTRUCTION.split())
+check("инструкция извлекателя называет цель, термины и четыре приставки ключа без пробелов",
+      all(слово in инструкция_извлекателя for слово in
+          ("цель разговора", "определения терминов", "`цель`", "`термин:<слово>`", "`ограничение:<о_чём>`",
+           "`уточнение:<о_чём>`", "без пробелов")), инструкция_извлекателя)
+check("разбор принимает ключи с приставкой и ключ без неё (прежний словарь, ручная запись)",
+      sticky_facts_mod.parse_changes('{"set": {"термин:ворота": "остановка", "cancel_notice": "12 часов"}, "forget": ["ограничение:источники"]}')
+      == sticky_facts_mod.FactChanges({"термин:ворота": "остановка", "cancel_notice": "12 часов"}, ("ограничение:источники",)))
+фактовый_rag.set_conversation_fact("термин:ворота", "остановка стадии")
+фактовый_rag.set_conversation_fact("термин:ворота", "остановка до команды человека")
+check("ключ с приставкой без пробела исправляется той же записью, второго ключа не заводится",
+      фактовый_rag.conversation_facts()[0] == {"цель": "памятка новичку", "термин:ворота": "остановка до команды человека"},
+      str(фактовый_rag.conversation_facts()[0]))
+
+print("\n# Клиент DeepSeek повторяет установку соединения (день 25)")
+клиент_повторов = api.DeepSeekClient("sk-test")
+# Число повторов лежит во внутреннем поле пула соединений библиотеки: другого способа увидеть
+# его без настоящей оборванной сети нет.
+транспорт_повторов = клиент_повторов._client._client._transport
+check("клиент DeepSeek повторяет установку соединения 10 раз",
+      транспорт_повторов._pool._retries == 10 == api.CONNECT_RETRIES, repr(транспорт_повторов._pool._retries))
+check("парная: пределы ожидания и повторы самой библиотеки остались прежними",
+      клиент_повторов._client.timeout == api.REQUEST_TIMEOUT and клиент_повторов._client._client.timeout == api.REQUEST_TIMEOUT
+      and клиент_повторов._client.max_retries == 2, f"{клиент_повторов._client.timeout} {клиент_повторов._client.max_retries}")
+
+
+# Настоящий запрос через весь клиент к местному серверу: число повторов в поле транспорта не
+# доказывает, что транспорт вообще рабочий, — транспорт чужой библиотеки (`httpx` вместо
+# `httpx2`) клиент принимает молча и падает на первом запросе.
+async def запрос_к_местному():
+    async def ответить(читатель, писатель):
+        await читатель.readuntil(b"\r\n\r\n")
+        тело = b'{"object": "list", "data": [{"id": "deepseek-v4-flash", "object": "model"}]}'
+        писатель.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                       + str(len(тело)).encode() + b"\r\nConnection: close\r\n\r\n" + тело)
+        await писатель.drain()
+        писатель.close()
+
+    сервер = await asyncio.start_server(ответить, "127.0.0.1", 0)
+    порт = сервер.sockets[0].getsockname()[1]
+    прежний_адрес = api.BASE_URL
+    api.BASE_URL = f"http://127.0.0.1:{порт}"
+    try:
+        return await api.DeepSeekClient("sk-test").list_models()
+    finally:
+        api.BASE_URL = прежний_адрес
+        сервер.close()
+        await сервер.wait_closed()
+
+check("клиент с повтором соединения выполняет настоящий запрос (транспорт той же библиотеки, что клиент)",
+      asyncio.run(запрос_к_местному()) == ["deepseek-v4-flash"])
+
+check("свой транспорт сохраняет пределы пула библиотеки: 1000 соединений, 100 удерживаемых",
+      (транспорт_повторов._pool._max_connections, транспорт_повторов._pool._max_keepalive_connections) == (1000, 100),
+      str((транспорт_повторов._pool._max_connections, транспорт_повторов._pool._max_keepalive_connections)))
+прежнее_окружение = {имя: os.environ.pop(имя, None)
+                     for имя in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")}
+try:
+    os.environ["HTTPS_PROXY"] = "http://127.0.0.1:3128"
+    через_посредника = api.environment_proxy(api.BASE_URL)
+    пул_посредника = type(api._transport(api.BASE_URL)._pool).__name__
+    os.environ["NO_PROXY"] = "api.deepseek.com"
+    мимо_по_исключению = api.environment_proxy(api.BASE_URL)
+    del os.environ["HTTPS_PROXY"], os.environ["NO_PROXY"]
+    os.environ["ALL_PROXY"] = "127.0.0.1:3128"
+    общий_посредник = api.environment_proxy(api.BASE_URL)
+finally:
+    for имя, значение in прежнее_окружение.items():
+        os.environ.pop(имя, None)
+        if значение is not None:
+            os.environ[имя] = значение
+check("посредник из HTTPS_PROXY доходит до транспорта клиента, ALL_PROXY без схемы получает http://",
+      через_посредника == "http://127.0.0.1:3128" and "Proxy" in пул_посредника
+      and общий_посредник == "http://127.0.0.1:3128", f"{через_посредника} {пул_посредника} {общий_посредник}")
+check("парная: адрес DeepSeek в NO_PROXY — напрямую", мимо_по_исключению is None, str(мимо_по_исключению))
 
 print()
 if failures:

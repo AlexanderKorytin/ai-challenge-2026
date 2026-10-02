@@ -7,7 +7,17 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from openai import AsyncOpenAI, AuthenticationError, Timeout
+import urllib.request
+from urllib.parse import urlsplit
+
+import httpx2
+from openai import (
+    DEFAULT_CONNECTION_LIMITS,
+    AsyncOpenAI,
+    AuthenticationError,
+    DefaultAsyncHttpxClient,
+    Timeout,
+)
 
 BASE_URL = "https://api.deepseek.com"
 
@@ -20,6 +30,16 @@ BASE_URL = "https://api.deepseek.com"
 # то есть отправлял бы человека чинить сеть вместо того, чтобы уменьшить запрос. Прочие
 # пределы оставлены прежними: они про установление связи, а не про размышление модели.
 REQUEST_TIMEOUT = Timeout(connect=20.0, read=600.0, write=20.0, pool=20.0)
+# Сколько раз повторять НЕУДАВШУЮСЯ УСТАНОВКУ СОЕДИНЕНИЯ: запрос при этом ещё не ушёл, так что
+# повтор ничего не оплачивает дважды. Число — как у Claude Code, решение пользователя 2026-10-02
+# по замеру (8 из 20 новых соединений с DeepSeek не вставали). Пауза между попытками — у
+# библиотеки: 0, 0,5, 1, 2, 4 с и далее вдвое.
+#
+# ЦЕНА, названная целиком: библиотека OpenAI сама повторяет запрос при ошибке связи дважды
+# (её умолчание), и каждый её заход заново проходит все попытки транспорта — до 3 × 11 = 33
+# попыток соединения. При сети, где соединение не встаёт вовсе, один запрос ждёт до ~24 минут
+# (11 × 20 с и паузы 255,5 с на заход), прежде чем сообщить о сбое; прежде было 3 × 20 с.
+CONNECT_RETRIES = 10
 
 # Резервный список — используется, если GET /models недоступен.
 FALLBACK_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
@@ -86,9 +106,49 @@ def _собрать_вызовы(вызовы: dict[int, dict[str, str]]) -> lis
     ]
 
 
+def environment_proxy(url: str) -> str | None:
+    """Посредник из окружения (и настроек системы) для этого адреса; `None` — идти напрямую.
+
+    Клиент со СВОИМ транспортом посредника из окружения сам не читает: библиотека делает это
+    только пока строит транспорт сама. Без этой функции запросы с ключом пошли бы мимо
+    `HTTPS_PROXY` молча."""
+    host = urlsplit(url).hostname or ""
+    if urllib.request.proxy_bypass(host):
+        return None
+    proxies = urllib.request.getproxies()
+    proxy = proxies.get(urlsplit(url).scheme) or proxies.get("all")
+    if not proxy:
+        return None
+    return proxy if "://" in proxy else f"http://{proxy}"
+
+
+def _transport(url: str) -> httpx2.AsyncHTTPTransport:
+    """Транспорт клиента: повтор неудавшейся установки соединения, остальное — как было.
+
+    Транспорт — из `httpx2`: на нём работает библиотека OpenAI, и транспорт другой библиотеки
+    (`httpx`) она принимает молча, а падает на первом же запросе. `retries` повторяет только
+    установку соединения, а не ушедший запрос; повторы самой библиотеки (ошибки связи, 429,
+    5xx) остаются её умолчанием. Пределы пула и посредник заданы явно: со своим транспортом
+    клиент их уже не подставляет.
+
+    Оговорка: при посреднике повтор установки соединения НЕ действует — библиотека `httpx2`
+    число повторов в пул посредника не передаёт. Запросы идут через посредника, как и
+    положено, но без повтора: остаются только повторы самой библиотеки OpenAI."""
+    return httpx2.AsyncHTTPTransport(
+        retries=CONNECT_RETRIES,
+        limits=DEFAULT_CONNECTION_LIMITS,
+        proxy=environment_proxy(url),
+    )
+
+
 class DeepSeekClient:
     def __init__(self, api_key: str) -> None:
-        self._client = AsyncOpenAI(api_key=api_key, base_url=BASE_URL, timeout=REQUEST_TIMEOUT)
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=BASE_URL,
+            timeout=REQUEST_TIMEOUT,
+            http_client=DefaultAsyncHttpxClient(timeout=REQUEST_TIMEOUT, transport=_transport(BASE_URL)),
+        )
 
     async def validate(self) -> bool:
         """False — ключ отклонён сервером (401). Прочие сбои (сеть и т.п.) пробрасываются вызывающему."""

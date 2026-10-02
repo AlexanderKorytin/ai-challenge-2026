@@ -445,6 +445,31 @@ def переписывание() -> None:
             except пер.ОшибкаПереписывания as e:
                 текст = str(e)
             проверить("разворот: пустой ответ — ошибка, а не пустой вопрос", "пустой вопрос" in текст, текст)
+            свой = пер.новый_клиент()
+            try:
+                # Число повторов лежит во внутреннем поле пула соединений библиотеки: другого
+                # способа увидеть его без настоящей оборванной сети нет.
+                проверить("rewrite: свой клиент повторяет установку соединения 10 раз и держит пределы ожидания",
+                          свой._transport._pool._retries == 10 == пер.ПОВТОРОВ_СОЕДИНЕНИЯ and свой.timeout == пер.ОЖИДАНИЕ,
+                          repr(свой._transport._pool._retries))
+            finally:
+                свой.close()
+            прежнее = {имя: os.environ.pop(имя, None) for имя in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")}
+            try:
+                os.environ["HTTPS_PROXY"] = "http://127.0.0.1:3128"
+                через = пер.посредник_из_окружения(пер.АДРЕС_DEEPSEEK)
+                с_посредником = пер.новый_клиент()
+                пул = type(с_посредником._transport._pool).__name__
+                с_посредником.close()
+                os.environ["NO_PROXY"] = "api.deepseek.com"
+                мимо = пер.посредник_из_окружения(пер.АДРЕС_DEEPSEEK)
+            finally:
+                for имя, значение in прежнее.items():
+                    os.environ.pop(имя, None)
+                    if значение is not None:
+                        os.environ[имя] = значение
+            проверить("rewrite: посредник из HTTPS_PROXY доходит до своего клиента; адрес в NO_PROXY — напрямую (парная)",
+                      через == "http://127.0.0.1:3128" and "Proxy" in пул and мимо is None, f"{через} {пул} {мимо}")
         finally:
             if прежний is None:
                 os.environ.pop("MYHARNESS_CONFIG_DIR", None)
