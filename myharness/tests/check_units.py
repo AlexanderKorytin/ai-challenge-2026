@@ -16410,6 +16410,16 @@ check("разбор принимает ключи с приставкой и к�
 check("ключ с приставкой без пробела исправляется той же записью, второго ключа не заводится",
       фактовый_rag.conversation_facts()[0] == {"цель": "памятка новичку", "термин:ворота": "остановка до команды человека"},
       str(фактовый_rag.conversation_facts()[0]))
+check("ответ извлекателя с одним set — пустое forget, а не отказ: сказанное человеком не теряется",
+      sticky_facts_mod.parse_changes('{"set": {"цель": "объяснить ворота"}}')
+      == sticky_facts_mod.FactChanges({"цель": "объяснить ворота"}, ()))
+check("ответ извлекателя с одним forget и пустой объект — тоже годные операции",
+      sticky_facts_mod.parse_changes('{"forget": ["ограничение:длина"]}') == sticky_facts_mod.FactChanges({}, ("ограничение:длина",))
+      and sticky_facts_mod.parse_changes("{}") == sticky_facts_mod.FactChanges({}, ()))
+check("парная: значение не того вида при отсутствующем втором ключе отвергается — null не отсутствие",
+      raises(sticky_facts_mod.parse_changes, '{"set": null}') and raises(sticky_facts_mod.parse_changes, '{"forget": "цель"}'))
+check("парная: чужой ключ рядом с set по-прежнему отвергается",
+      raises(sticky_facts_mod.parse_changes, '{"set": {"цель": "x"}, "extra": true}'))
 
 print("\n# Клиент DeepSeek повторяет установку соединения (день 25)")
 клиент_повторов = api.DeepSeekClient("sk-test")

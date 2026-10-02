@@ -87,7 +87,8 @@ def _clean_text(value: object, subject: str) -> str:
 
 
 def parse_changes(raw: str) -> FactChanges:
-    """Строго разбирает ответ; непригодный ответ отличается от пустой операции."""
+    """Разбирает ответ строго к чужим ключам и видам значений; непригодный ответ отличается от
+    пустой операции, а отсутствующий `set` или `forget` — пустая операция."""
 
     try:
         parsed = json.loads(raw)
@@ -95,11 +96,15 @@ def parse_changes(raw: str) -> FactChanges:
         raise ValueError("ответ извлекателя не является JSON") from exc
     if not isinstance(parsed, dict):
         raise ValueError("ответ извлекателя должен быть объектом")
-    if set(parsed) != {"set", "forget"}:
+    # Чужой ключ — ответ не того вида, и он отвергается. А ОТСУТСТВУЮЩИЙ ключ — пустая операция:
+    # модель, которой нечего забывать, присылает один `set`, и отвергать такой ответ целиком
+    # значило бы молча потерять сказанное человеком. Так на контрольном прогоне дня 25 пропала
+    # цель разговора: ответ `{"set": {"цель": …}}` без `forget` был выброшен.
+    if set(parsed) - {"set", "forget"}:
         raise ValueError("ответ извлекателя должен содержать только set и forget")
 
-    raw_set = parsed["set"]
-    raw_forget = parsed["forget"]
+    raw_set = parsed.get("set", {})
+    raw_forget = parsed.get("forget", [])
     if not isinstance(raw_set, dict):
         raise ValueError("set должен быть объектом")
     if not isinstance(raw_forget, list):
