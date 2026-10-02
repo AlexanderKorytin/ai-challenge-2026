@@ -22,3 +22,6 @@ myharness-journal.jsonl
 
 # Индекс документов (день 21) — собирается командой, в git не хранится
 rag/index.sqlite
+
+# День 25: состояние живого чата из песочницы
+week_5/day_5/test/state/
