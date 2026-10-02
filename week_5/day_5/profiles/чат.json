@@ -1,0 +1,1 @@
+{"name": "чат", "description": "чат по базе знаний проекта с памятью задачи", "system_file": "чат.md", "rag": "rag", "context_strategy": "facts", "keep_history": true, "temperature": 0, "thinking": {"type": "disabled"}, "compact_at": 0}
