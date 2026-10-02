@@ -523,6 +523,7 @@ name = "myharness"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "httpx2" },
     { name = "mcp" },
     { name = "openai" },
     { name = "prompt-toolkit" },
@@ -531,8 +532,9 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx2", specifier = ">=2.12" },
     { name = "mcp", specifier = ">=2.2,<3" },
-    { name = "openai", specifier = ">=1.50" },
+    { name = "openai", specifier = ">=3.6" },
     { name = "prompt-toolkit", specifier = ">=3.0.47" },
     { name = "tokenizers", specifier = ">=0.20" },
 ]
