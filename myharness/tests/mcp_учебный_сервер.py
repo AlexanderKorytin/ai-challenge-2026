@@ -57,6 +57,15 @@ if os.environ.get("УЧЕБНЫЙ_ПОИСК") == "1":
         return f"[1] a.md › Раздел (0.900)\nнайдено по: {query}"
 
 
+if os.environ.get("УЧЕБНЫЙ_ПОИСК") == "контекст":
+    # Поиск, объявивший довод `context` (день 25): в ответе видно, дошёл ли контекст поиска.
+
+    @srv.tool()
+    def search(query: str, k: int = 5, context: str | None = None) -> str:  # noqa: F811
+        """Подставной поиск с контекстом разговора: один кусок, в тексте — запрос и контекст."""
+        return f"[1] a.md › Раздел (0.900)\nнайдено по: {query}\nконтекст: {context}"
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--молчать":
         with open(sys.argv[2], "w", encoding="utf-8") as f:

@@ -552,6 +552,16 @@ def _остановить_задачу(
     забыть_счёт_занятости(state)
 
 
+def поставщик_поиска(state: State, profile: Profile):
+    """Поставщик поиска режима RAG для собеседника с этим профилем; `None` — профиль без `rag`.
+
+    Одно место на главный экран и экраны стратегий: соединение с сервером поиска одно на сеанс
+    (`state.поиск`), и вид вызова у всех получателей обязан быть один."""
+    if not profile.rag:
+        return None
+    return lambda вопрос, контекст: state.поиск.найти(Path.cwd(), profile.rag, вопрос, контекст)
+
+
 def главный_агент(state: State, profile: Profile) -> Agent:
     """Собеседник главного экрана со всеми тремя слоями памяти.
 
@@ -587,5 +597,5 @@ def главный_агент(state: State, profile: Profile) -> Agent:
         инварианты=lambda: invariants_block(state, profile),
         инструменты=набор_главного,
         проверка=проверить_ответ(state, profile),
-        поиск=(lambda вопрос: state.поиск.найти(Path.cwd(), profile.rag, вопрос)) if profile.rag else None,
+        поиск=поставщик_поиска(state, profile),
     )

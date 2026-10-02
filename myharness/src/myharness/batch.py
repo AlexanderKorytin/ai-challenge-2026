@@ -235,7 +235,7 @@ async def run_order(order: Order, client, *, on_line) -> list[Turn]:
             agent = Agent(
                 task.agent,
                 profile,
-                поиск=(lambda вопрос: поиск.найти(Path.cwd(), profile.rag, вопрос)) if profile.rag else None,
+                поиск=(lambda вопрос, контекст: поиск.найти(Path.cwd(), profile.rag, вопрос, контекст)) if profile.rag else None,
             )
             turn = await agent.exchange(client, order.model, task.ask, agent=task.agent, run_id=run_id)
             if turn.ok:
