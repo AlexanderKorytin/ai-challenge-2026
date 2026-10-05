@@ -1,5 +1,5 @@
 {
- "model": "ollama/qwen9-day26",
+ "model": "ollama/qwen3.5:9b-q4_K_M-32k",
  "concurrency": 1,
  "tasks": [
   {"agent": "простой", "profile": "местная",

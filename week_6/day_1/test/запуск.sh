@@ -11,6 +11,6 @@ export MYHARNESS_PROFILE=местная
 export MYHARNESS_JOURNAL="$ROOT/myharness-journal.jsonl"
 cd "$ROOT"
 if [ "$#" -eq 0 ]; then
-  exec uv run --project "$HOME/challenge/main/myharness" myharness --model ollama/qwen9-day26
+  exec uv run --project "$HOME/challenge/main/myharness" myharness --model ollama/qwen3.5:9b-q4_K_M-32k
 fi
 exec uv run --project "$HOME/challenge/main/myharness" myharness "$@"
