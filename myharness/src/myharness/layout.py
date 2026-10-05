@@ -42,7 +42,7 @@ from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
-from . import archivist, compact, context_strategy, helpdoc, profiles, ui
+from . import archivist, compact, context_strategy, helpdoc, profiles, providers, ui
 from . import params as params_mod
 from . import picker as picker_mod
 from . import screens as screens_mod
@@ -123,7 +123,7 @@ class HarnessCompleter(Completer):
         elif command == "/model" and len(parts) == 2:
             for name in self.state.known_models:
                 if name.startswith(word):
-                    yield Completion(name, start_position=-len(word), display=name, display_meta="модель DeepSeek")
+                    yield Completion(name, start_position=-len(word), display=name, display_meta="местная модель" if providers.is_local(name) else "модель DeepSeek")
         else:
             # Команды памяти подсказывают и вторым уровнем, и третьим: после «/task » — слова
             # команды, после «/task забыть » — разделы, после «/task забыть план » — номера

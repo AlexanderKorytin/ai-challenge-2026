@@ -13,6 +13,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from . import providers
+
 UNSET = object()  # «не задавать параметр» — сервер применит своё умолчание
 
 
@@ -159,9 +161,12 @@ def thinking_enabled(params: dict[str, Any]) -> bool:
     return True
 
 
-def inapplicable_reason(name: str, params: dict[str, Any]) -> str | None:
-    """Почему параметр сейчас ни на что не влияет (None — влияет)."""
-    if name in ("temperature", "top_p") and thinking_enabled(params):
+def inapplicable_reason(name: str, params: dict[str, Any], model: str = "") -> str | None:
+    """Почему параметр сейчас ни на что не влияет (None — влияет).
+
+    Пометка о `temperature` и `top_p` — свойство DeepSeek: при рассуждениях он их не
+    применяет. Ollama применяет, и у местной модели пометка была бы ложью."""
+    if name in ("temperature", "top_p") and thinking_enabled(params) and not providers.is_local(model):
         return "игнорируется API, пока включены рассуждения (thinking)"
     if name == "reasoning_effort" and not thinking_enabled(params):
         return "имеет смысл только при включённых рассуждениях (thinking)"

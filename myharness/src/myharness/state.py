@@ -43,7 +43,7 @@ from . import (
 )
 from . import screens as screens_mod
 from .agent import Agent, Инструменты, Проверка, соединить
-from .api import DeepSeekClient
+from .api import Clients
 from .config import Config
 from .profiles import Profile
 
@@ -100,7 +100,7 @@ class Request:
 
 class State:
     config: Config
-    client: DeepSeekClient | None
+    client: Clients | None
     model: str
     profile: Profile
     app: Application | None = None

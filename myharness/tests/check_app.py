@@ -81,6 +81,9 @@ class FakeClient:
     async def list_models(self):
         return ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]
 
+    async def local_models(self):
+        return ["ollama/qwen3.5:9b"]
+
     async def aclose(self):
         self.closed = True
 
@@ -343,8 +346,14 @@ async def main():
 
         print("\n3. Списки — панель выбора, а не текст в логе")
         await send("/model" + ENTER, pause=0.25)
-        check("/model открыл панель", state.picker is not None and len(state.picker.items) == 3, str(state.picker))
+        # Три модели DeepSeek и одна местная.
+        check("/model открыл панель", state.picker is not None and len(state.picker.items) == 4, str(state.picker))
         check("текущая модель помечена", state.picker.marked == 0)
+        местная_строка = state.picker.items[-1]
+        check("/model показывает и местную модель, с пометкой",
+              местная_строка.label == "ollama/qwen3.5:9b" and "местная" in местная_строка.hint
+              and state.picker.items[0].hint == "текущая",
+              f"{местная_строка.label} «{местная_строка.hint}»")
         await send(DOWN + ENTER)
         check("модель выбрана стрелкой", state.model == "deepseek-v4-pro", state.model)
 

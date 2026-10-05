@@ -23,7 +23,7 @@ from prompt_toolkit.filters import Condition
 from . import archivist, background, keys
 from . import layout as layout_mod
 from . import profiles, ui
-from .api import DeepSeekClient
+from .api import Clients
 from .config import load as load_config
 from .conversation import restore_conversation, поднять_слои
 from .output import append_log
@@ -134,7 +134,12 @@ async def _main(args: argparse.Namespace) -> None:
     profile, warnings = profiles.load(profile_name)
     if args.model:
         cfg.model = args.model
-    client = DeepSeekClient(cfg.api_key) if cfg.is_authorized else None
+    client = Clients(cfg.api_key) if cfg.is_authorized else None
+    if client is not None:
+        # Окно местной модели нужно уже первому счёту: полоске занятости и подъёму разговора.
+        # Здесь — только быстрый путь, окно из файла модели. Загрузку модели ради окна запуск
+        # не ждёт: это минута пустого экрана. Её сделает первый обмен.
+        await client.prepare(cfg.model, load=False)
     state = State(config=cfg, client=client, model=cfg.model, profile=profile)
     greet(state)
     for warning in warnings:

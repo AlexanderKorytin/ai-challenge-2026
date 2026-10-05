@@ -443,7 +443,7 @@ async def main(args) -> int:
         )
         return 1
 
-    client = api.DeepSeekClient(settings.api_key)
+    client = api.Clients(settings.api_key)
     try:
         turns = await run_order(order, client, on_line=lambda line: print(line, flush=True))
     finally:

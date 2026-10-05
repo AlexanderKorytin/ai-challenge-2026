@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import providers
+
 # Замерено 2026-09-09 на четырёх запросах к deepseek-v4-pro: пустой запрос из одной реплики
 # сервер оценил в 83 токена — это обёртка разговора, которую модель добавляет сама.
 BASE_OVERHEAD = 83
@@ -254,6 +256,24 @@ MAX_OUTPUT = 393_216  # предел max_tokens, подтверждён отка
 
 UNKNOWN_PRICE = "тариф неизвестен"
 
+# Окна местных моделей: у каждой своё, его называет Ollama, а кладёт сюда клиент (`api`).
+# Словарь, а не запрос: окно читают места без права ждать — отрисовка и счёт до отправки.
+_LOCAL_WINDOWS: dict[str, int] = {}
+
+
+def remember_window(model: str, size: int) -> None:
+    _LOCAL_WINDOWS[model] = size
+
+
+def window(model: str) -> int | None:
+    """Окно модели в токенах. `None` — местная модель, про которую Ollama ещё не ответила.
+
+    В сеть не ходит и не ждёт. Неизвестное окно длится, пока служба молчит или модели нет;
+    обмен в таком положении не проходит, поэтому у состоявшегося обмена окно известно."""
+    if providers.is_local(model):
+        return _LOCAL_WINDOWS.get(model)
+    return CONTEXT_WINDOW
+
 
 def peak(moment: datetime) -> bool:
     """Попадает ли момент в дорогие часы: будний день и час внутри одного из окон.
@@ -274,6 +294,10 @@ def price(usage: dict, model: str, moment: datetime | None = None) -> float | No
 
     Именно None, а не ноль: ноль на экране читается как «бесплатно», и пользователь
     узнает правду только из счёта. Показ обязан сказать «тариф неизвестен»."""
+    if providers.is_local(model):
+        # Местная модель считает на этой машине: тариф известен, и он нулевой. «Тариф
+        # неизвестен» остаётся незнакомой модели поставщика, который берёт деньги.
+        return 0.0
     tariff = TARIFFS.get(model)
     if tariff is None:
         return None

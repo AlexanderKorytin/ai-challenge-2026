@@ -3181,15 +3181,15 @@ class НарядныйКлиент:
 def выполнить_наряд(путь, *, model=None, concurrency=None):
     """Точка входа целиком, с подставным клиентом. Возвращает код возврата и напечатанное."""
     вывод = io.StringIO()
-    настоящий = batch.api.DeepSeekClient
-    batch.api.DeepSeekClient = НарядныйКлиент
+    настоящий = batch.api.Clients
+    batch.api.Clients = НарядныйКлиент
     try:
         with contextlib.redirect_stdout(вывод):
             код = asyncio.run(
                 batch.main(argparse.Namespace(batch=str(путь), model=model, concurrency=concurrency))
             )
     finally:
-        batch.api.DeepSeekClient = настоящий
+        batch.api.Clients = настоящий
     return код, вывод.getvalue()
 
 
@@ -16482,6 +16482,232 @@ check("посредник из HTTPS_PROXY доходит до транспор�
       через_посредника == "http://127.0.0.1:3128" and "Proxy" in пул_посредника
       and общий_посредник == "http://127.0.0.1:3128", f"{через_посредника} {пул_посредника} {общий_посредник}")
 check("парная: адрес DeepSeek в NO_PROXY — напрямую", мимо_по_исключению is None, str(мимо_по_исключению))
+
+# --- Местная модель: поставщика называет имя модели (docs/план-местная-модель.md) -------------
+# Сети и службы Ollama здесь нет: оба клиента получают подменный транспорт, который запоминает
+# запрос и отдаёт заготовленный ответ.
+import httpx2  # noqa: E402
+from myharness import providers  # noqa: E402
+
+check("приставка ollama/ отличает местную модель, имя для службы — без приставки",
+      providers.is_local("ollama/qwen3.5:9b") and not providers.is_local("deepseek-v4-flash")
+      and providers.local_name("ollama/qwen3.5:9b") == "qwen3.5:9b")
+прежний_адрес_ollama = os.environ.pop("OLLAMA_HOST", None)
+try:
+    адрес_умолчания = providers.ollama_root()
+    os.environ["OLLAMA_HOST"] = "10.0.0.5:11434"
+    адрес_без_схемы = providers.ollama_root()
+finally:
+    os.environ.pop("OLLAMA_HOST", None)
+    if прежний_адрес_ollama is not None:
+        os.environ["OLLAMA_HOST"] = прежний_адрес_ollama
+check("адрес Ollama: умолчание и OLLAMA_HOST без схемы",
+      (адрес_умолчания, адрес_без_схемы) == ("http://127.0.0.1:11434", "http://10.0.0.5:11434"),
+      f"{адрес_умолчания} {адрес_без_схемы}")
+
+ПОТОК_OLLAMA = (
+    'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,'
+    '"delta":{"role":"assistant","content":"","reasoning":"думаю"},"finish_reason":null}]}\n\n'
+    'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,'
+    '"delta":{"content":"четыре"},"finish_reason":"stop"}]}\n\n'
+    'data: {"id":"1","object":"chat.completion.chunk","created":1,"model":"m","choices":[],'
+    '"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}\n\n'
+    "data: [DONE]\n\n"
+)
+ПОКАЗ_МОДЕЛЕЙ = {
+    "qwen9-day26:latest": {"capabilities": ["completion", "tools"], "parameters": 'stop "<|im_end|>"\nnum_ctx                        16384'},
+    "qwen3.5:9b": {"capabilities": ["completion"], "parameters": 'stop "<|im_end|>"'},
+    "bge-m3:latest": {"capabilities": ["embedding"], "parameters": ""},
+}
+
+
+class СлужбаOllama:
+    """Подменная служба: отвечает на `/v1` и на родные адреса, запоминает запросы."""
+
+    def __init__(self, загружено=None, отказ=False):
+        self.запросы = []
+        self.загружено = загружено or {}
+        self.отказ = отказ
+
+    def __call__(self, запрос: httpx2.Request) -> httpx2.Response:
+        if self.отказ:
+            raise httpx2.ConnectError("отказ", request=запрос)
+        тело = json.loads(запрос.content) if запрос.content else {}
+        self.запросы.append((запрос.url.path, тело, запрос.headers.get("authorization", ""), str(запрос.url)))
+        путь = запрос.url.path
+        if путь == "/v1/chat/completions":
+            return httpx2.Response(200, content=ПОТОК_OLLAMA.encode(), headers={"content-type": "text/event-stream"})
+        if путь == "/api/tags":
+            return httpx2.Response(200, json={"models": [{"name": имя} for имя in ПОКАЗ_МОДЕЛЕЙ]})
+        if путь == "/api/show":
+            # Настоящая служба принимает имя и без метки `:latest`.
+            имя = тело["model"]
+            return httpx2.Response(200, json=ПОКАЗ_МОДЕЛЕЙ.get(имя) or ПОКАЗ_МОДЕЛЕЙ.get(f"{имя}:latest", {}))
+        if путь == "/api/generate":
+            return httpx2.Response(200, json={"done": True})
+        if путь == "/api/ps":
+            return httpx2.Response(200, json={"models": [{"name": имя, "context_length": окно} for имя, окно in self.загружено.items()]})
+        return httpx2.Response(404)
+
+
+class ПодставнойDeepSeek:
+    def __init__(self):
+        self.calls = []
+        self.закрыт = False
+
+    async def stream_chat(self, model, messages, params=None, tools=None):
+        self.calls.append(model)
+        yield api.StreamEvent("meta", finish_reason="stop", usage={})
+
+    async def list_models(self):
+        return ["deepseek-v4-flash"]
+
+    async def aclose(self):
+        self.закрыт = True
+
+
+async def обмен_через_распределитель(служба, model, params=None):
+    облако = ПодставнойDeepSeek()
+    клиенты = api.Clients("sk-настоящий", deepseek=облако, ollama=api.OllamaClient(httpx2.MockTransport(служба)))
+    try:
+        события = [событие async for событие in клиенты.stream_chat(model, [{"role": "user", "content": "2+2"}], params)]
+        местные = await клиенты.local_models()
+    finally:
+        await клиенты.aclose()
+    return события, облако, местные
+
+
+tokens_mod._LOCAL_WINDOWS.clear()
+служба = СлужбаOllama()
+события, облако, местные = asyncio.run(
+    обмен_через_распределитель(служба, "ollama/qwen9-day26", {"thinking": {"type": "disabled"}, "temperature": 0.2})
+)
+запрос_чата = next(запись for запись in служба.запросы if запись[0] == "/v1/chat/completions")
+check("местная модель ушла в Ollama под именем без приставки, DeepSeek не тронут",
+      запрос_чата[1]["model"] == "qwen9-day26" and облако.calls == [], f"{запрос_чата[1]['model']} {облако.calls}")
+check("ключ DeepSeek в Ollama не ушёл: в заголовке заглушка",
+      запрос_чата[2] == "Bearer ollama" and all("sk-настоящий" not in запись[2] for запись in служба.запросы),
+      str({запись[2] for запись in служба.запросы}))
+check("выключенные рассуждения переведены: reasoning_effort none, поля thinking нет, температура на месте",
+      запрос_чата[1].get("reasoning_effort") == "none" and "thinking" not in запрос_чата[1]
+      and запрос_чата[1].get("temperature") == 0.2, str(запрос_чата[1]))
+check("парная: запрос DeepSeek несёт thinking как прежде",
+      api.split_params({"thinking": {"type": "disabled"}}) == ({}, {"thinking": {"type": "disabled"}}))
+check("парная: при включённых рассуждениях reasoning_effort местной модели не навязан",
+      api.split_local_params({"thinking": {"type": "enabled"}, "reasoning_effort": "high"}) == ({}, {"reasoning_effort": "high"})
+      and api.split_local_params({}) == ({}, {}))
+check("рассуждения Ollama из поля reasoning приходят событием reasoning",
+      [(событие.kind, событие.text) for событие in события[:2]] == [("reasoning", "думаю"), ("content", "четыре")]
+      and события[-1].usage.get("total_tokens") == 10, str([(с.kind, с.text) for с in события]))
+check("окно местной модели взято из num_ctx файла модели до обмена",
+      tokens_mod.window("ollama/qwen9-day26") == 16384, str(tokens_mod.window("ollama/qwen9-day26")))
+check("список местных моделей: с приставкой, без модели векторных представлений",
+      местные == ["ollama/qwen3.5:9b", "ollama/qwen9-day26:latest"], str(местные))
+
+tokens_mod._LOCAL_WINDOWS.clear()
+служба_без_окна = СлужбаOllama(загружено={"qwen3.5:9b": 4096})
+asyncio.run(обмен_через_распределитель(служба_без_окна, "ollama/qwen3.5:9b"))
+пути = [запись[0] for запись in служба_без_окна.запросы]
+check("num_ctx не задан: модель загружена и окно прочитано у загруженной",
+      tokens_mod.window("ollama/qwen3.5:9b") == 4096
+      and пути.index("/api/generate") < пути.index("/api/ps") < пути.index("/v1/chat/completions"), str(пути))
+
+служба = СлужбаOllama()
+_, облако, _ = asyncio.run(обмен_через_распределитель(служба, "deepseek-v4-flash"))
+check("парная: модель без приставки ушла в DeepSeek, чат Ollama не вызван",
+      облако.calls == ["deepseek-v4-flash"] and облако.закрыт
+      and not any(запись[0] == "/v1/chat/completions" for запись in служба.запросы), str(облако.calls))
+
+tokens_mod._LOCAL_WINDOWS.clear()
+try:
+    asyncio.run(обмен_через_распределитель(СлужбаOllama(отказ=True), "ollama/qwen3.5:9b"))
+    сбой_службы = ""
+except api.OllamaUnavailable as исключение:
+    сбой_службы = str(исключение)
+check("служба не слушает: сообщение называет Ollama и адрес, окно осталось неизвестным",
+      "Ollama не отвечает по адресу http://127.0.0.1:11434" in сбой_службы
+      and tokens_mod.window("ollama/qwen3.5:9b") is None, сбой_службы)
+
+
+async def местные_при_молчащей_службе():
+    клиенты = api.Clients("sk", deepseek=ПодставнойDeepSeek(), ollama=api.OllamaClient(httpx2.MockTransport(СлужбаOllama(отказ=True))))
+    try:
+        return await клиенты.local_models()
+    finally:
+        await клиенты.aclose()
+
+check("служба не слушает: местный список пуст, сбоя нет", asyncio.run(местные_при_молчащей_службе()) == [])
+
+прежнее_окружение = {имя: os.environ.pop(имя, None) for имя in ("ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")}
+try:
+    os.environ["ALL_PROXY"] = "http://10.1.1.1:3128"
+    посредник_петли = [api.environment_proxy(адрес) for адрес in ("http://127.0.0.1:11434", "http://localhost:11434", "http://[::1]:11434")]
+    посредник_чужого = api.environment_proxy("http://10.0.0.5:11434")
+finally:
+    for имя, значение in прежнее_окружение.items():
+        os.environ.pop(имя, None)
+        if значение is not None:
+            os.environ[имя] = значение
+check("петлевой адрес идёт мимо посредника из окружения", посредник_петли == [None, None, None], str(посредник_петли))
+check("парная: чужой адрес идёт через посредника", посредник_чужого == "http://10.1.1.1:3128", str(посредник_чужого))
+
+check("градация max переведена в high: у Ollama градации max нет",
+      api.split_local_params({"reasoning_effort": "max"}) == ({}, {"reasoning_effort": "high"})
+      and api.split_local_params({"reasoning_effort": "low"}) == ({}, {"reasoning_effort": "low"}))
+os.environ["OLLAMA_HOST"] = "myhost"
+адрес_без_порта = providers.ollama_root()
+os.environ["OLLAMA_HOST"] = "https://[::1]"
+адрес_шестой = providers.ollama_root()
+os.environ.pop("OLLAMA_HOST")
+if прежний_адрес_ollama is not None:
+    os.environ["OLLAMA_HOST"] = прежний_адрес_ollama
+check("OLLAMA_HOST без порта получает порт Ollama",
+      (адрес_без_порта, адрес_шестой) == ("http://myhost:11434", "https://[::1]:11434"), f"{адрес_без_порта} {адрес_шестой}")
+
+
+async def окно_без_загрузки(служба, имя, load):
+    клиент = api.OllamaClient(httpx2.MockTransport(служба))
+    try:
+        return await клиент.window(имя, load=load)
+    finally:
+        await клиент.aclose()
+
+служба_запуска = СлужбаOllama(загружено={"qwen3.5:9b": 4096})
+check("запуск окно спрашивает без загрузки модели: num_ctx не задан — неизвестно, /api/generate не вызван",
+      asyncio.run(окно_без_загрузки(служба_запуска, "qwen3.5:9b", False)) is None
+      and "/api/generate" not in [запись[0] for запись in служба_запуска.запросы], str(служба_запуска.запросы))
+check("парная: с загрузкой окно прочитано у загруженной, имя сверено без учёта регистра",
+      asyncio.run(окно_без_загрузки(СлужбаOllama(загружено={"qwen3.5:9b": 4096}), "Qwen3.5:9B", True)) == 4096)
+
+# Окно и цена — свойства модели.
+расход_проверки = {"prompt_tokens": 1000, "completion_tokens": 500}
+check("цена местной модели — ноль, а не «тариф неизвестен»", tokens_mod.price(расход_проверки, "ollama/qwen3.5:9b") == 0.0)
+check("парная: незнакомая модель без приставки по-прежнему без тарифа, DeepSeek — с ценой",
+      tokens_mod.price(расход_проверки, "неведомая") is None
+      and (tokens_mod.price(расход_проверки, "deepseek-v4-flash") or 0) > 0)
+tokens_mod._LOCAL_WINDOWS.clear()
+check("окно: DeepSeek — константа, местная без ответа службы — неизвестно",
+      tokens_mod.window("deepseek-v4-flash") == tokens_mod.CONTEXT_WINDOW and tokens_mod.window("ollama/м") is None)
+половинный = Agent("половинный местный", profiles.Profile(name="половина", compact_at=0.5))
+check("порог сжатия при неизвестном окне — ноль", половинный.порог_сжатия("ollama/м") == 0)
+tokens_mod.remember_window("ollama/м", 8192)
+check("порог сжатия местной модели — доля ЕЁ окна, порог DeepSeek прежний",
+      половинный.порог_сжатия("ollama/м") == 4096
+      and половинный.порог_сжатия("deepseek-v4-flash") == int(0.5 * tokens_mod.CONTEXT_WINDOW)
+      and половинный.порог_сжатия() == int(0.5 * tokens_mod.CONTEXT_WINDOW), str(половинный.порог_сжатия("ollama/м")))
+порог_местный = next(о for о in половинный.ограничители("", facts="", model="ollama/м") if о.имя == "порог сжатия") if any(
+    о.имя == "порог сжатия" for о in половинный.ограничители("", facts="", model="ollama/м")) else None
+check("подпись порога называет долю окна местной модели",
+      порог_местный is not None and "50,00 % окна модели" in ui._числа_ограничителя(порог_местный),
+      "" if порог_местный is None else ui._числа_ограничителя(порог_местный))
+check("пометка temperature при рассуждениях: у DeepSeek есть, у местной модели нет",
+      params_mod.inapplicable_reason("temperature", {}, "deepseek-v4-flash") is not None
+      and params_mod.inapplicable_reason("temperature", {}) is not None
+      and params_mod.inapplicable_reason("temperature", {}, "ollama/м") is None)
+check("приветствие называет поставщика текущей модели",
+      "Ollama" in "".join(текст for _, текст in ui.banner_fragments("ollama/м", True, "default"))
+      and "DeepSeek API" in "".join(текст for _, текст in ui.banner_fragments("deepseek-v4-flash", True, "default")))
+tokens_mod._LOCAL_WINDOWS.clear()
 
 print()
 if failures:

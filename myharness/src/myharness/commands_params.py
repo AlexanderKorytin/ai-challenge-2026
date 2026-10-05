@@ -18,7 +18,7 @@ from .state import State
 
 def cmd_params(state: State) -> None:
     """Показываем значения и сразу даём их менять: список в логе выбирать нечем."""
-    append_log(state, ui.params_fragments(state.profile.name, state.profile.params, state.profile.system))
+    append_log(state, ui.params_fragments(state.profile.name, state.profile.params, state.profile.system, state.model))
     if state.profile_dirty:
         append_log(state, ui.hint_fragments("изменения не сохранены — /profile save <имя>"))
     open_param_picker(state)
@@ -33,7 +33,7 @@ def set_param(state: State, name: str, value: Any) -> None:
         state.profile.params[name] = value
         append_log(state, ui.system_fragments(f"{spec.title} = {params_mod.format_value(value)}"))
     state.profile_dirty = True
-    reason = params_mod.inapplicable_reason(name, state.profile.params)
+    reason = params_mod.inapplicable_reason(name, state.profile.params, state.model)
     if reason and value is not params_mod.UNSET:
         append_log(state, ui.hint_fragments(f"{spec.title} сейчас {reason}"))
     append_log(state, ui.hint_fragments("сохранить в профиль: /profile save <имя>"))
@@ -53,7 +53,7 @@ def open_value_picker(state: State, name: str) -> None:
         items.append(picker_mod.Item(label="ввести своё значение…", hint=spec.custom_hint, payload="__custom__"))
 
     description = spec.description
-    reason = params_mod.inapplicable_reason(name, state.profile.params)
+    reason = params_mod.inapplicable_reason(name, state.profile.params, state.model)
     if reason:
         description += f" — {reason}"
 

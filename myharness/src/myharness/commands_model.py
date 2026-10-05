@@ -13,9 +13,9 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from . import context_strategy, helpdoc, profiles, ui
+from . import context_strategy, helpdoc, profiles, providers, ui
 from . import picker as picker_mod
-from .api import DeepSeekClient
+from .api import Clients
 from . import interview, memory, profile_maker
 from .config import save as save_config
 from .output import append_log, refresh
@@ -36,7 +36,7 @@ async def do_auth(raw_key: str, state: State) -> None:
         append_log(state, ui.hint_fragments("ключ не введён, отменено"))
         return
     append_log(state, ui.system_fragments("проверяю ключ…"))
-    candidate = DeepSeekClient(key)
+    candidate = Clients(key)
     try:
         ok = await candidate.validate()
     except Exception as exc:
@@ -59,7 +59,21 @@ def set_model(state: State, name: str) -> None:
     state.model = name
     state.config.model = name
     save_config(state.config)
-    append_log(state, ui.system_fragments(f"модель установлена: {name}"))
+    append_log(state, ui.system_fragments(f"модель установлена: {name} ({ui.supplier_title(name)})"))
+    if state.client is not None and providers.is_local(name):
+        # Окно местной модели узнаём сразу, а не на первом вопросе: полоска занятости и счёт до
+        # отправки читают его раньше обмена. Выбор из панели приходит без права ждать, поэтому
+        # задача фоновая; опоздает — окно узнает сам обмен.
+        track_submission(state, asyncio.create_task(_узнать_окно(state, name)))
+
+
+async def _узнать_окно(state: State, name: str) -> None:
+    assert state.client is not None
+    await state.client.prepare(name)
+    # Полоска занятости помнит прежний счёт; окно изменилось — пересчитать.
+    if state.занятость is not None:
+        state.занятость.сбросить()
+    refresh(state)
 
 
 async def cmd_model(state: State, arg: str) -> None:
@@ -70,10 +84,14 @@ async def cmd_model(state: State, arg: str) -> None:
     if state.client:
         try:
             models = await state.client.list_models()
-            state.known_models = models
         except Exception as exc:
             append_log(state, ui.error_fragments(f"не удалось получить список моделей: {exc}"))
             append_log(state, ui.system_fragments("показан статический список"))
+            models = [name for name in models if not providers.is_local(name)]
+        # Местные модели спрашиваются отдельно: без сети список DeepSeek не отдаётся, а местная
+        # модель нужна как раз тогда.
+        models = [*models, *await state.client.local_models()]
+        state.known_models = models
     items: list[picker_mod.Item] = []
     marked: int | None = None
     for name in models:
@@ -82,7 +100,11 @@ async def cmd_model(state: State, arg: str) -> None:
         items.append(
             picker_mod.Item(
                 label=name,
-                hint="текущая" if name == state.model else "",
+                hint=" · ".join(
+                    слово
+                    for слово in ("местная" if providers.is_local(name) else "", "текущая" if name == state.model else "")
+                    if слово
+                ),
                 payload=name,
             )
         )
@@ -92,7 +114,7 @@ async def cmd_model(state: State, arg: str) -> None:
         set_model(state, str(payload))
 
     state.picker = picker_mod.Picker(
-        title="/model — модель DeepSeek",
+        title="/model — модель",
         description="какой моделью отвечать",
         items=items,
         on_choose=choose,

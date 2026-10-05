@@ -503,7 +503,9 @@ def _finish_reasoning_head(
     marks["head_len"] = len(заголовок)
 
 
-def _warn_if_over_window(state: State, pane: screens_mod.Pane, agent_obj: Agent, предсказание: int) -> None:
+def _warn_if_over_window(
+    state: State, pane: screens_mod.Pane, agent_obj: Agent, предсказание: int, model: str
+) -> None:
     """Сказать заранее, что запрос не влезет в окно модели, — до отправки, а не после отказа.
 
     Ради этого и заведён собственный счёт токенов. Проверено живьём 2026-09-09: на третьем
@@ -520,13 +522,17 @@ def _warn_if_over_window(state: State, pane: screens_mod.Pane, agent_obj: Agent,
     """
     всего = agent_obj.с_местом_под_ответ(предсказание)
     место_под_ответ = всего - предсказание
-    if всего <= tokens.CONTEXT_WINDOW:
+    окно = tokens.window(model)
+    # Окно местной модели неизвестно, пока Ollama про неё не ответила: сравнивать не с чем, и
+    # предупреждение молчит. Отказ службы при переполнении явный (живой замер 2026-10-05,
+    # Ollama 0.34.4: ошибка 400 `exceed_context_size_error`), молчаливой потери нет.
+    if окно is None or всего <= окно:
         return
     append_log(
         state,
         ui.hint_fragments(
             f"запрос не влезет в окно модели: {ui.format_exact(всего)} из "
-            f"{ui.format_exact(tokens.CONTEXT_WINDOW)} (включая {ui.format_exact(место_под_ответ)} "
+            f"{ui.format_exact(окно)} (включая {ui.format_exact(место_под_ответ)} "
             "на ответ) — очистите историю командой /clear или задайте вопрос короче"
         ),
         pane,
@@ -607,7 +613,7 @@ async def run_turn(
     # Предупреждение печатаем ДО того, как заведена строка ожидания, и отметку строки берём
     # после него: иначе оно встаёт в ленте ниже строки, к которой относится, и читается как
     # сказанное после отправки.
-    _warn_if_over_window(state, pane, agent_obj, marks["outgoing"])
+    _warn_if_over_window(state, pane, agent_obj, marks["outgoing"], state.model)
     marks["wait_at"] = len(pane.log)
     _show_wait(state, pane, marks, mark=marks["frame"])
     spinner_task = asyncio.create_task(_spin(state, pane, marks))
@@ -643,13 +649,13 @@ async def run_turn(
         pane.status = screens_mod.DONE if (turn is not None and turn.ok) else screens_mod.ERROR
         if turn is not None and not turn.ok and turn.error:
             # `Turn.error` бывает и не сетевой: агент кладёт сюда сбой отрисовки, но только
-            # при удавшемся обмене. Поэтому про DeepSeek говорим лишь когда обмен не удался —
+            # при удавшемся обмене. Поэтому про запрос к модели говорим лишь когда обмен не удался —
             # иначе пользователь пойдёт чинить связь, которая исправна.
             if turn.error.startswith(agent_mod.ОЧИЩЕН_ПОСРЕДИ_КРУГА):
                 # Очистку заказал человек — сеть тут ни при чём, и чинить связь незачем.
                 append_log(state, ui.error_fragments(turn.error), pane)
             else:
-                append_log(state, ui.error_fragments(f"ошибка запроса к DeepSeek: {turn.error}"), pane)
+                append_log(state, ui.error_fragments(f"ошибка запроса к модели: {turn.error}"), pane)
         if marks.get("reasoning") or marks.get("answer"):
             append_log(state, [("", "\n")], pane)
         if turn is not None and turn.проверка is not None:

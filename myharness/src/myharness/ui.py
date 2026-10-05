@@ -18,6 +18,7 @@ from pathlib import Path
 
 from . import project_card, workspace
 from . import params as params_mod
+from . import providers
 from . import screens as screens_mod
 from . import tokens as tokens_mod
 
@@ -99,7 +100,7 @@ Fragments = list[tuple[str, str]]
 COMMANDS: tuple[tuple[str, str, str, bool], ...] = (
     ("/auth", "", "авторизация по API-ключу DeepSeek", False),
     ("/help", "[слово]", "справка по разделам: команды, память, клавиши…", False),
-    ("/model", "", "выбрать модель — список со стрелками", True),
+    ("/model", "", "выбрать модель — список со стрелками; местные модели Ollama идут с приставкой ollama/", True),
     ("/profile", "", "выбрать профиль; new <описание> — завести по описанию, отмена — прервать", True),
     ("/params", "", "параметры профиля: показать и изменить", True),
     ("/set", "temperature", "пример изменения параметра", True),
@@ -467,12 +468,17 @@ def _box(lines: list[Fragments]) -> Fragments:
     return out
 
 
+def supplier_title(model: str) -> str:
+    """Кто отвечает этой моделью — словами для человека."""
+    return "Ollama, местная модель" if providers.is_local(model) else "DeepSeek API"
+
+
 def banner_fragments(model: str, authorized: bool, profile: str) -> Fragments:
     auth_line: Fragments = (
         [("class:ok", "● авторизован")] if authorized else [("class:bad", "○ не авторизован — /auth")]
     )
     lines = [
-        [("class:title", "myharness"), ("", "  ·  DeepSeek API")],
+        [("class:title", "myharness"), ("", f"  ·  {supplier_title(model)}")],
         [("", "модель: "), ("class:model", model), ("", "   ")] + auth_line,
         [("", "профиль: "), ("class:model", profile)],
         [("class:dim", "введите / — появится список команд")],
@@ -1322,7 +1328,9 @@ def context_turn_fragments(
     return out
 
 
-def params_fragments(profile_name: str, values: dict[str, Any], system: str | None) -> Fragments:
+def params_fragments(
+    profile_name: str, values: dict[str, Any], system: str | None, model: str = ""
+) -> Fragments:
     out: Fragments = [("class:system", f"· параметры профиля «{profile_name}»"), ("", "\n")]
     for name in params_mod.ORDER:
         spec = params_mod.SPECS[name]
@@ -1330,7 +1338,7 @@ def params_fragments(profile_name: str, values: dict[str, Any], system: str | No
         shown = params_mod.format_value(value)
         out.append(("", f"  {spec.title:<22} "))
         out.append(("class:model" if value is not None else "class:dim", shown))
-        reason = params_mod.inapplicable_reason(name, values)
+        reason = params_mod.inapplicable_reason(name, values, model)
         if reason and value is not None:
             out.append(("class:hint", f"   ← {reason}"))
         out.append(("", "\n"))
@@ -1421,10 +1429,16 @@ def tokens_report_fragments(
     пар_истории = _plural(pairs, "паре", "парах", "парах")
     # Строки собираем в переменные, а не прямо во фрагментах: там пропущенная запятая
     # склеила бы соседние куски в одну строку молча, и подпись стиля уехала бы на строку ниже.
-    окно = (
-        f"· окно «{model}»: {format_exact(tokens_mod.CONTEXT_WINDOW)}, "
-        f"следующий запрос займёт {format_exact(занято)} ({_percent(занято, tokens_mod.CONTEXT_WINDOW)})"
-    )
+    размер_окна = tokens_mod.window(model)
+    if размер_окна is None:
+        # Местная модель, про которую Ollama ещё не ответила: числа окна нет, и доля от него
+        # была бы выдумкой.
+        окно = f"· окно «{model}»: окно неизвестно, следующий запрос займёт {format_exact(занято)}"
+    else:
+        окно = (
+            f"· окно «{model}»: {format_exact(размер_окна)}, "
+            f"следующий запрос займёт {format_exact(занято)} ({_percent(занято, размер_окна)})"
+        )
     out: Fragments = [
         ("class:system", окно),
         ("", "\n"),
@@ -1572,7 +1586,7 @@ def _числа_ограничителя(ограничитель: Any) -> str:
     У предела веса окна нет: предел человек задал сам командой `/budget`, объяснять его
     происхождение нечем."""
     if ограничитель.имя == agent_mod.ПОРОГ_СЖАТИЯ:
-        доля_окна = ограничитель.порог / tokens_mod.CONTEXT_WINDOW * 100
+        доля_окна = ограничитель.порог / (ограничитель.окно or tokens_mod.CONTEXT_WINDOW) * 100
         return (
             f"{format_exact(ограничитель.текущее)} из {format_exact(ограничитель.порог)} токенов"
             f" ({доля_окна:.2f} % окна модели)".replace(".", ",")

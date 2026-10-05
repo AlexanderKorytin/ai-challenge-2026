@@ -18,6 +18,13 @@ from .output import append_log
 from .panes import active_input_pane, pane_profile
 from .state import State
 
+# Порог сжатия — доля окна, а окно местной модели называет Ollama. Пока она не ответила, порога
+# нет, и причина здесь не поле профиля: сказать «сжатие выключено compact_at» было бы ложью.
+ОКНО_НЕИЗВЕСТНО = (
+    "окно местной модели неизвестно: Ollama про неё не ответила — сжатие считать не от чего. "
+    "Проверьте, что служба запущена и модель есть (`ollama list`)"
+)
+
 
 def cmd_tokens(state: State) -> None:
     """`/tokens` — следующий запрос активной панели, её расход и общий расход сеанса.
@@ -166,7 +173,9 @@ def cmd_context(state: State) -> None:
     агент = state.main_agent
     выжимка = агент.выжимка()
     if выжимка is None:
-        if агент.порог_сжатия() <= 0:
+        if tokens.window(state.model) is None:
+            append_log(state, ui.system_fragments(ОКНО_НЕИЗВЕСТНО))
+        elif агент.порог_сжатия(state.model) <= 0:
             append_log(state, ui.system_fragments("выжимки нет: сжатие выключено полем профиля compact_at"))
         else:
             append_log(state, ui.system_fragments("выжимки нет — разговор ещё не сжимали"))
@@ -208,7 +217,10 @@ def cmd_compact(state: State) -> None:
             ui.error_fragments("этот профиль не хранит историю — сжимать нечего"),
         )
         return
-    if агент.порог_сжатия() <= 0:
+    if tokens.window(state.model) is None:
+        append_log(state, ui.error_fragments(ОКНО_НЕИЗВЕСТНО))
+        return
+    if агент.порог_сжатия(state.model) <= 0:
         append_log(
             state,
             ui.error_fragments("сжатие выключено полем профиля compact_at — включить: /set compact_at"),
