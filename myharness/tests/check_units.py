@@ -16704,6 +16704,21 @@ check("пометка temperature при рассуждениях: у DeepSeek �
       params_mod.inapplicable_reason("temperature", {}, "deepseek-v4-flash") is not None
       and params_mod.inapplicable_reason("temperature", {}) is not None
       and params_mod.inapplicable_reason("temperature", {}, "ollama/м") is None)
+check("счёт местной модели помечен приблизительным и при словаре; счёт DeepSeek — как прежде",
+      tokens_mod.exact("ollama/м") is False and tokens_mod.exact("deepseek-v4-flash") == tokens_mod.exact())
+снимок_местной = "".join(текст for _, текст in ui.tokens_report_fragments(
+    "ollama/м", history=0, pairs=0, overhead=0, system=0, restored=0, runs=0, usage={}, budget=0, cost="0"))
+check("/tokens местной модели называет причину оценки — чужой словарь, а не его отсутствие",
+      "словарём DeepSeek" in снимок_местной and "словаря нет" not in снимок_местной, снимок_местной)
+счёт_полоски = ui.СчётЗанятости()
+парный = Agent("полоска", profiles.Profile(name="полоска", history_window=10, compact_at=0.5))
+tokens_mod._LOCAL_WINDOWS.pop("ollama/н", None)
+check("при неизвестном окне местной модели полоски нет, хотя окно по парам действует",
+      счёт_полоски.ближайший(парный, "", model="ollama/н") is None)
+tokens_mod.remember_window("ollama/н", 8192)
+счёт_полоски.сбросить()
+check("парная: окно названо — полоска есть",
+      счёт_полоски.ближайший(парный, "", model="ollama/н") is not None)
 check("приветствие называет поставщика текущей модели",
       "Ollama" in "".join(текст for _, текст in ui.banner_fragments("ollama/м", True, "default"))
       and "DeepSeek API" in "".join(текст for _, текст in ui.banner_fragments("deepseek-v4-flash", True, "default")))

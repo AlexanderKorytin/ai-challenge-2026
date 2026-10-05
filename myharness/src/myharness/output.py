@@ -605,7 +605,7 @@ async def run_turn(
         "session": _session_before(state, pane, agent_obj),
         # Точен ли счёт входа: со словарём токенизатора — да, по знакам — нет, и тогда
         # строка честно ставит «~».
-        "exact": tokens.exact(),
+        "exact": tokens.exact(state.model),
         "frame": ui.SPINNER_FRAMES[0],
         "wait_at": len(pane.log),
         "wait_len": 0,
