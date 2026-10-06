@@ -1,6 +1,11 @@
 # День 27. Местная языковая модель в приложении
 
-**Стадия: Validation** — 2026-10-06.
+**Стадия: Report** — 2026-10-06, результат подтверждён пользователем.
+
+## Ссылки
+
+- Видео: https://drive.google.com/open?id=1bTyPCQxzkpMcgkU0XTQZDLm0yqJivcSN
+- Код дня: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w6d2/week_6/day_2
 
 ## Постановка
 
