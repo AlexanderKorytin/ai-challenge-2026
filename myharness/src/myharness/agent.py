@@ -57,6 +57,15 @@ WINDOW_SLACK_PAIRS = 5
 ИСТОЧНИК_РАССУЖДЕНИЙ = "reasoning_tokens_source"
 
 
+def _сумма_кругов(круги: list[dict[str, Any]]) -> dict[str, Any]:
+    """Расход обмена из нескольких кругов. Сумма строится по числовым полям и признак
+    посчитанных рассуждений теряет — он возвращается, если был хоть у одного круга."""
+    итог: dict[str, Any] = tokens.total_usage(круги)
+    if any(круг.get(ИСТОЧНИК_РАССУЖДЕНИЙ) for круг in круги):
+        итог = {**итог, ИСТОЧНИК_РАССУЖДЕНИЙ: "program"}
+    return итог
+
+
 def _с_рассуждениями(usage: dict[str, Any], рассуждения: str, model: str) -> dict[str, Any]:
     """Расход круга с числом рассуждений, которого служба не назвала.
 
@@ -68,9 +77,10 @@ def _с_рассуждениями(usage: dict[str, Any], рассуждения
     if not рассуждения or not providers.is_local(model) or not tokens.exact(model):
         return usage
     расход = tokens.normalize(usage)
-    if расход["reasoning_tokens"] or not расход["completion_tokens"]:
-        return usage
     подробности = usage.get("completion_tokens_details")
+    названо = isinstance(подробности, dict) and "reasoning_tokens" in подробности
+    if названо or not расход["completion_tokens"]:
+        return usage
     return {
         **usage,
         "completion_tokens_details": {
@@ -1616,9 +1626,8 @@ class Agent:
         живёт здесь и меняется по ходу сеанса, и второе место, где её берут, разъехалось бы
         с первым на первом же обмене.
 
-        Модель без имени берёт базовый замер — так отвечает и `overhead`. Умолчание оставлено
-        ради вызывающих, которым модель неизвестна (предпросмотр запроса до выбора модели):
-        подставить им чужую поправку было бы хуже, чем честное приближение."""
+        Модель обязательна: ею выбирается и словарь счёта, и надбавка. Пустое имя означает
+        DeepSeek с базовой надбавкой."""
         return tokens.count_messages(messages, model, overhead=self.overhead(model))
 
     def _preview(self, content: str, system: str) -> list[dict]:
@@ -2381,10 +2390,7 @@ class Agent:
         if len(round_usages) == 1:
             usage = round_usages[0]
         elif round_usages:
-            usage = tokens.total_usage(round_usages)
-            if any(круг.get(ИСТОЧНИК_РАССУЖДЕНИЙ) for круг in round_usages):
-                # Сумма строится по числовым полям и признак теряет — возвращаем его.
-                usage = {**usage, ИСТОЧНИК_РАССУЖДЕНИЙ: "program"}
+            usage = _сумма_кругов(round_usages)
         elapsed = time.monotonic() - started
         snapshot = self.profile.snapshot()
         if status == "ok" and круг_прерван is not None:

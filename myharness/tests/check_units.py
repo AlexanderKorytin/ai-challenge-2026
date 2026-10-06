@@ -3250,6 +3250,8 @@ check(
 check("наряд, где ответили все, даёт код 0", код_успеха == 0, str(код_успеха))
 check("сводка напечатана", "ответили 3 из 3" in вывод_успеха, вывод_успеха)
 check("клиент закрыт после наряда", НарядныйКлиент.последний.закрыт is True)
+check("наряд готовит модель до первого обмена: окно и словарь местной модели нужны первому счёту",
+      len(getattr(НарядныйКлиент.последний, "подготовлены", [])) == 1, str(getattr(НарядныйКлиент.последний, "подготовлены", [])))
 
 сорванный_путь = наряд(
     {
@@ -16885,7 +16887,7 @@ check("следующий обмен тем же словарём надбавк
       надбавка_после != tokens_mod.BASE_OVERHEAD and 0 <= надбавка_после < 40, str(надбавка_после))
 
 
-async def обмен_с_рассуждениями(модель, usage, рассуждения=ДЕСЯТЬ, кругов=1):
+async def обмен_с_рассуждениями(модель, usage, рассуждения=ДЕСЯТЬ):
     класс = type("КлиентРассуждений", (), {})
     async def stream_chat(self, model, messages, params=None, tools=None):
         yield api.StreamEvent("reasoning", text=рассуждения)
@@ -16913,6 +16915,18 @@ check("местная модель без словаря: оценка в рас
 check("число рассуждений, названное службой, программа не заменяет",
       tokens_mod.normalize(ход_названный.usage)["reasoning_tokens"] == 7
       and "reasoning_tokens_source" not in ход_названный.usage, str(ход_названный.usage))
+from myharness.agent import _сумма_кругов
+сумма_с_признаком = _сумма_кругов([ход_местный.usage, {"prompt_tokens": 5, "completion_tokens": 3}])
+check("сумма кругов сохраняет признак посчитанных рассуждений и складывает числа",
+      сумма_с_признаком.get("reasoning_tokens_source") == "program" and сумма_с_признаком["reasoning_tokens"] == 10
+      and сумма_с_признаком["completion_tokens"] == 43, str(сумма_с_признаком))
+check("сумма кругов без посчитанных рассуждений признака не несёт",
+      "reasoning_tokens_source" not in _сумма_кругов([{"prompt_tokens": 5, "completion_tokens": 3}] * 2))
+ход_нулевой = asyncio.run(обмен_с_рассуждениями(
+    "ollama/малая", {"prompt_tokens": 20, "completion_tokens": 40, "completion_tokens_details": {"reasoning_tokens": 0}}))
+check("ноль рассуждений, названный службой, тоже не заменяется",
+      tokens_mod.normalize(ход_нулевой.usage)["reasoning_tokens"] == 0 and "reasoning_tokens_source" not in ход_нулевой.usage,
+      str(ход_нулевой.usage))
 ход_облачный = asyncio.run(обмен_с_рассуждениями("deepseek-v4-flash", {"prompt_tokens": 20, "completion_tokens": 40}))
 check("расход DeepSeek программа не дополняет", "reasoning_tokens_source" not in ход_облачный.usage, str(ход_облачный.usage))
 
