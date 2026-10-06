@@ -81,7 +81,8 @@ def test_адрес_как_у_клиента_ollama(monkeypatch, значени�
 
 
 @pytest.mark.parametrize("значение, свой", [
-    ("", True), ("localhost:9999", True), ("127.0.0.5", True), ("[::1]:11434", True),
+    ("", True), ("localhost:9999", True), ("127.0.0.5", True), ("[::1]:11434", True), ("0.0.0.0", True),
+    ("localhost.evil.com", False), ("localhost@evil.com", False),
     ("192.168.1.5", False), ("https://example.org", False),
 ])
 def test_местный_адрес_парой(monkeypatch, значение, свой):

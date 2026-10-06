@@ -128,3 +128,16 @@ def test_разговор_переживает_отказ(monkeypatch, capsys):
     assert cli.main([]) == 0
     вывод = capsys.readouterr().out
     assert "Ответ модели не принят: плохо" in вывод and "Арбуз — оценка модели" in вывод
+
+
+def test_негодный_адрес_даёт_отказ_а_не_трассировку(monkeypatch, capsys):
+    """Настоящий путь: `оценить` не подменён, адрес не разбирается, запрос не уходит."""
+    monkeypatch.setenv("OLLAMA_HOST", "localhost:abc")
+    assert cli.main(["борщ"]) == 1
+    assert "localhost:abc" in capsys.readouterr().err
+
+
+def test_чужой_адрес_через_команду(monkeypatch, capsys):
+    monkeypatch.setenv("OLLAMA_HOST", "192.168.1.5")
+    assert cli.main(["борщ"]) == 1
+    assert "запрос не отправлен" in capsys.readouterr().err

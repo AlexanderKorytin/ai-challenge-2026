@@ -51,9 +51,11 @@ def местный() -> bool:
     if узел == "localhost":
         return True
     try:
-        return ipaddress.ip_address(узел).is_loopback
+        ip = ipaddress.ip_address(узел)
     except ValueError:
         return False
+    # 0.0.0.0 ставят для самой службы; как адрес назначения это тоже эта машина.
+    return ip.is_loopback or ip.is_unspecified
 
 
 def модель() -> str:
