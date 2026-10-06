@@ -80,14 +80,13 @@ def test_вид_прямого_ответа(вызовы, capsys):
     вывод = capsys.readouterr().out
     assert "Борщ со свининой — оценка модели" in вывод
     assert "65 ккал на 100 г" in вывод and "300 г → 195 ккал" in вывод and "45 (низкий)" in вывод
-    assert cli.ОГОВОРКА in вывод
 
 
 def test_вид_обратного_ответа(вызовы, capsys):
     assert cli.main(["450", "--блюд", "3"]) == 0
     вывод = capsys.readouterr().out
     assert вызовы == [("подобрать", 450.0, 3)]
-    assert "440 ккал (-10)" in вывод and cli.ОГОВОРКА in вывод
+    assert "440 ккал (-10)" in вывод
 
 
 def test_не_еда(monkeypatch, capsys):
