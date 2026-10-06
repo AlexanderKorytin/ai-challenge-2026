@@ -61,7 +61,7 @@ def cmd_tokens(state: State) -> None:
             # Взвешивается ровно системная часть следующего запроса активного Agent:
             # инструкция, глобальные сведения, Sticky Facts либо действующая выжимка.
             system=tokens.count_text(агент.system_text(), state.model),
-            overhead=агент.overhead(state.model),
+            overhead=агент.request_overhead(state.model),
             restored=агент.restored_pairs,
             runs=session_runs,
             usage=итог,

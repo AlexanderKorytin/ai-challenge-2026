@@ -12645,7 +12645,7 @@ check(
     "строка ожидания прибавляет вес описаний последнего обмена",
     output._predict_outgoing(состояние_строки, полоска_с, "в")
     - tokens_mod.count_messages(
-        [{"role": "user", "content": "в"}], "", overhead=полоска_с.overhead("deepseek-v4-flash")
+        [{"role": "user", "content": "в"}], "", overhead=полоска_с.request_overhead("deepseek-v4-flash")
     )
     - полоска_с.history_tokens('')
     == tokens_mod.count_tools(СХЕМЫ, ""),
@@ -16929,6 +16929,61 @@ check("ноль рассуждений, названный службой, то�
       str(ход_нулевой.usage))
 ход_облачный = asyncio.run(обмен_с_рассуждениями("deepseek-v4-flash", {"prompt_tokens": 20, "completion_tokens": 40}))
 check("расход DeepSeek программа не дополняет", "reasoning_tokens_source" not in ход_облачный.usage, str(ход_облачный.usage))
+
+# Обёртка реплики выводится из двух ответов службы. Подменная служба считает как настоящая
+# Ollama с `qwen3.5`: пять токенов на реплику и семь сверх них.
+async def разговор_со_службой(модель, реплик=4):
+    класс = type("СлужбаСОбёрткой", (), {})
+    async def stream_chat(self, model, messages, params=None, tools=None):
+        текст = tokens_mod.count_messages(messages, model, overhead=0, per_message=0)
+        yield api.StreamEvent("content", text="b")
+        yield api.StreamEvent("meta", finish_reason="stop", usage={"prompt_tokens": текст + 7 + 5 * len(messages), "completion_tokens": 1})
+    async def aclose(self):
+        return None
+    класс.stream_chat, класс.aclose = stream_chat, aclose
+    агент = Agent("обёртка", profiles.Profile(name="обёртка", keep_history=True))
+    ходы = [await агент.exchange(класс(), модель, "a" * (номер + 1)) for номер in range(реплик)]
+    return агент, [ход.predicted_prompt - ход.usage["prompt_tokens"] for ход in ходы]
+
+агент_обёртки, расхождения = asyncio.run(разговор_со_службой("ollama/малая"))
+check("предусловие: до двух замеров цена реплики чужая, второй обмен занижен на 7",
+      расхождения[1] == -7, str(расхождения))
+check("после двух замеров цена реплики выведена, и предсказание сходится с числом службы",
+      расхождения[2:] == [0, 0] and агент_обёртки.per_message("ollama/малая") == 5.0,
+      f"{расхождения} / {агент_обёртки.per_message('ollama/малая')}")
+check("основа обёртки после вывода цены — та, что у службы для одной реплики",
+      агент_обёртки.overhead("ollama/малая") == 12, str(агент_обёртки.overhead("ollama/малая")))
+агент_оценки, расхождения_оценки = asyncio.run(разговор_со_службой("ollama/соседняя"))
+check("при приблизительном счёте цена реплики не выводится: остаётся замер DeepSeek",
+      агент_оценки.per_message("ollama/соседняя") == tokens_mod.PER_MESSAGE_OVERHEAD, str(агент_оценки.per_message("ollama/соседняя")))
+память_обёртки = len(агент_обёртки._реплики_памяти())
+check("обёртка следующего запроса для показа включает цену реплик памяти и сходится с предсказанием",
+      агент_обёртки.request_overhead("ollama/малая") == 12 + 5 * память_обёртки
+      and tokens_mod.count_messages([{"role": "user", "content": "a"}], "ollama/малая",
+                                    overhead=агент_обёртки.request_overhead("ollama/малая"), per_message=0)
+      + агент_обёртки.history_tokens("ollama/малая")
+      == агент_обёртки.predict_tokens([*агент_обёртки._реплики_памяти(), {"role": "user", "content": "a"}], "ollama/малая"),
+      f"{агент_обёртки.request_overhead('ollama/малая')} при {память_обёртки} репликах памяти")
+агент_обёртки._подстроить_обёртку("ollama/малая", 14, 12 + 5 * 13 + 40, 0, True, звеньев=2)
+check("замер с другим числом звеньев инструментов цену реплики не меняет",
+      агент_обёртки.per_message("ollama/малая") == 5.0, str(агент_обёртки.per_message("ollama/малая")))
+агент_обёртки._подстроить_обёртку("ollama/малая", 4, 12 + 5 * 3, 0, True, звеньев=2)
+check("число реплик упало (сжатие): цена выводится из двух настоящих замеров и остаётся верной",
+      агент_обёртки.per_message("ollama/малая") == (12 + 5 * 13 + 40 - (12 + 5 * 3)) / 10, str(агент_обёртки.per_message("ollama/малая")))
+агент_обёртки._подстроить_обёртку("ollama/малая", 6, 12 + 5 * 5, 0, True, звеньев=2)
+агент_обёртки._подстроить_обёртку("ollama/малая", 8, 12 + 5 * 5 - 4, 0, True, звеньев=2)
+check("отрицательная цена не выводится: действует прежняя",
+      агент_обёртки.per_message("ollama/малая") >= 0, str(агент_обёртки.per_message("ollama/малая")))
+агент_обёртки._подстроить_обёртку("ollama/малая", 2, 17, 0, True)
+агент_обёртки._подстроить_обёртку("ollama/малая", 4, 27, 0, True)
+агент_обёртки._подстроить_обёртку("ollama/малая", 12, 67 + 200, 300, True)
+check("замер с другим набором инструментов цену реплики не меняет",
+      агент_обёртки.per_message("ollama/малая") == 5.0, str(агент_обёртки.per_message("ollama/малая")))
+до_нелепого = (агент_обёртки.overhead("ollama/малая"), агент_обёртки.per_message("ollama/малая"))
+агент_обёртки._подстроить_обёртку("ollama/малая", 14, 50_000, 300, True)
+check("неправдоподобный замер не принят целиком: ни основа, ни цена не сдвинулись",
+      (агент_обёртки.overhead("ollama/малая"), агент_обёртки.per_message("ollama/малая")) == до_нелепого,
+      str((агент_обёртки.overhead("ollama/малая"), агент_обёртки.per_message("ollama/малая"))))
 
 # Причин обрыва три; порога «мало места» нет — предел и окно либо достигнуты, либо нет.
 окно_почти = asyncio.run(

@@ -239,8 +239,17 @@ def count_text(text: str, model: str) -> int:
     return счёт
 
 
-def count_messages(messages: list[dict], model: str, *, overhead: int = BASE_OVERHEAD) -> int:
+def count_messages(
+    messages: list[dict],
+    model: str,
+    *,
+    overhead: int = BASE_OVERHEAD,
+    per_message: float = PER_MESSAGE_OVERHEAD,
+) -> int:
     """Вес запроса целиком: текст всех реплик плюс обёртка разговора.
+
+    `per_message` — обёртка каждой реплики сверх первой. Умолчание — замер DeepSeek; агент
+    подставляет цену, узнанную по ответам службы (`Agent.per_message`).
 
     Пустой список даёт ровно базовую надбавку, а не «минус одну реплику»: отрицательная
     поправка занизила бы предсказание там, где оно и так приблизительное.
@@ -263,7 +272,7 @@ def count_messages(messages: list[dict], model: str, *, overhead: int = BASE_OVE
     else:
         # Счёт — удобство, ронять из-за него harness нельзя.
         items = []
-    total = float(overhead) + PER_MESSAGE_OVERHEAD * max(0, len(items) - 1)
+    total = float(overhead) + per_message * max(0, len(items) - 1)
     for message in items:
         if isinstance(message, dict):
             total += count_message(message, model)

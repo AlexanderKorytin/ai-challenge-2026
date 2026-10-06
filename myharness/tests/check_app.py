@@ -2403,12 +2403,12 @@ async def main():
         следующий_main = (
             история_main
             + система_main
-            + state.main_agent.overhead(state.model)
+            + state.main_agent.request_overhead(state.model)
         )
         следующий_facts = (
             история_facts
             + система_facts
-            + facts_agent.overhead(state.model)
+            + facts_agent.request_overhead(state.model)
         )
         отметка_активного_расхода = len(facts_pane.log)
         commands_context.cmd_tokens(state)
