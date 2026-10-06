@@ -394,6 +394,20 @@ class OllamaClient(_ChatClient):
             return None
         return None
 
+    async def vocabulary(self, name: str) -> dict[str, Any] | None:
+        """Сведения о модели вместе со словарём (`tokenizer.ggml.*`); `None` — служба ответила,
+        но словаря не дала. Молчащая служба — исключение связи, а не `None`: вызывающему
+        нужно отличать «спрашивать снова незачем» от «спросить позже».
+
+        Без `verbose` служба отдаёт те же поля пустыми: списки токенов и слияний велики."""
+        ответ = await self._native.post("/api/show", json={"model": name, "verbose": True})
+        try:
+            ответ.raise_for_status()
+            сведения = ответ.json().get("model_info")
+        except Exception:  # noqa: BLE001 — ответ чужой службы: счёт остаётся оценкой, обмен жив
+            return None
+        return сведения if isinstance(сведения, dict) else None
+
     async def aclose(self) -> None:
         await self._native.aclose()
         await super().aclose()
@@ -420,6 +434,8 @@ class Clients:
         self._deepseek = deepseek or DeepSeekClient(api_key)
         self._местный = ollama
         self._окно_узнано: set[str] = set()
+        self._словарь_спрошен: set[str] = set()
+        self._просьбы_словаря: dict[str, asyncio.Future[None]] = {}
 
     @property
     def _ollama(self) -> OllamaClient:
@@ -455,7 +471,10 @@ class Clients:
         окно остаётся неизвестным, а причину назовёт сам запрос к модели.
 
         `load=False` не загружает модель: годится, только если окно задал файл модели."""
-        if not providers.is_local(model) or model in self._окно_узнано:
+        if not providers.is_local(model):
+            return
+        await self._узнать_словарь(model)
+        if model in self._окно_узнано:
             return
         try:
             окно = await self._ollama.window(providers.local_name(model), load=load)
@@ -464,6 +483,42 @@ class Clients:
         if окно:
             tokens.remember_window(model, окно)
             self._окно_узнано.add(model)
+
+    async def _узнать_словарь(self, model: str) -> None:
+        """Взять у службы словарь местной модели и отдать его счёту.
+
+        Просьба одна на модель, и ждут её все подготовки: вторая не спрашивает службу сама, а
+        дожидается первой. Вес первого запроса агент считает раньше, чем обмен дойдёт до
+        подготовки, поэтому вопрос, отправленный до прихода словаря, взвешен словарём DeepSeek и
+        помечен оценкой; замер надбавки такого обмена агент не принимает. Отмена ждущего просьбу не рвёт (`shield`): её
+        ждут и другие."""
+        if model in self._словарь_спрошен:
+            return
+        задача = self._просьбы_словаря.get(model)
+        if задача is None:
+            задача = asyncio.ensure_future(self._взять_словарь(model))
+            self._просьбы_словаря[model] = задача
+            задача.add_done_callback(lambda _: self._просьбы_словаря.pop(model, None))
+        await asyncio.shield(задача)
+
+    async def _взять_словарь(self, model: str) -> None:
+        """Одна просьба словаря. Спрошенной модель считается, только когда служба ОТВЕТИЛА:
+        словарём, отказом либо словарём незнакомого вида — от повтора такой ответ не изменится.
+        Служба не ответила вовсе — просьба повторится при следующей подготовке: службу
+        запускают и после старта инструмента, и окно в таком положении тоже узнаётся заново.
+
+        Сборка идёт в отдельном потоке: четверть миллиона токенов разбираются заметное время,
+        а цикл событий в это время обязан рисовать экран."""
+        try:
+            сведения = await self._ollama.vocabulary(providers.local_name(model))
+        except Exception:  # noqa: BLE001 — служба не слушает либо адрес негоден: спросим снова
+            return
+        self._словарь_спрошен.add(model)
+        if сведения is None:
+            return
+        словарь = await asyncio.to_thread(tokens.build_vocabulary, сведения)
+        if словарь is not None:
+            tokens.remember_vocabulary(model, словарь)
 
     async def stream_chat(
         self,

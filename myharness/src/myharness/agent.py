@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from . import api, context_strategy, journal, memory, tokens
+from . import api, context_strategy, journal, memory, providers, tokens
 
 if TYPE_CHECKING:  # только подсказка типов — на выполнении профиль сюда не импортируется
     # Умолчание окна памяти живёт здесь, рядом с правилом обрезки, а поле профиля берёт его
@@ -53,10 +53,32 @@ DEFAULT_WINDOW_PAIRS = 10
 # раз в пять ходов вместо каждого.
 WINDOW_SLACK_PAIRS = 5
 
-# Ниже этого остатка окна считаем, что на ответ места нет: даже короткая реплика с
-# рассуждениями весит больше. Число не из документации, а из наблюдения: на живом прогоне
-# при остатке в 81 токен модель израсходовала его на рассуждения и ответ не начала.
-ОСТАТОК_НА_ОТВЕТ = 500
+# Признак в расходе обмена: число рассуждений посчитала программа, а не служба.
+ИСТОЧНИК_РАССУЖДЕНИЙ = "reasoning_tokens_source"
+
+
+def _с_рассуждениями(usage: dict[str, Any], рассуждения: str, model: str) -> dict[str, Any]:
+    """Расход круга с числом рассуждений, которого служба не назвала.
+
+    Ollama отдаёт выход одним числом и рассуждения в нём не выделяет. При словаре самой
+    модели программа считает их по тексту рассуждений и помечает число признаком: журнал
+    обещает серверный расход, и посчитанное программой обязано от него отличаться. Число
+    службы не заменяется никогда; при чужом словаре поле не трогается — оценке в расходе не
+    место. Больше всего выхода рассуждения весить не могут."""
+    if not рассуждения or not providers.is_local(model) or not tokens.exact(model):
+        return usage
+    расход = tokens.normalize(usage)
+    if расход["reasoning_tokens"] or not расход["completion_tokens"]:
+        return usage
+    подробности = usage.get("completion_tokens_details")
+    return {
+        **usage,
+        "completion_tokens_details": {
+            **(подробности if isinstance(подробности, dict) else {}),
+            "reasoning_tokens": min(tokens.count_text(рассуждения, model), расход["completion_tokens"]),
+        },
+        ИСТОЧНИК_РАССУЖДЕНИЙ: "program",
+    }
 
 # Исход обмена, чей круг инструментов прервала команда `/clear`.
 ОЧИЩЕН_ПОСРЕДИ_КРУГА = "разговор очищен посреди круга — дальнейшие вызовы не исполнены"
@@ -1067,7 +1089,7 @@ class Agent:
         finally:
             self._restoring = False
 
-    def history_tokens(self) -> int:
+    def history_tokens(self, model: str) -> int:
         """Вес памяти в токенах — то, что уйдёт в следующий запрос помимо всего прочего.
 
         Ни системной инструкции, ни нового вопроса, ни надбавки обёртки здесь нет: это цена
@@ -1092,7 +1114,7 @@ class Agent:
             self.profile.context_strategy,
             self.profile.strategy_window,
         )
-        return sum(tokens.count_message(message) for message in _вес_памяти(selected.messages))
+        return sum(tokens.count_message(message, model) for message in _вес_памяти(selected.messages))
 
     def overhead(self, model: str) -> int:
         """Надбавка обёртки для этой модели: подстроенная, если её уже мерили, иначе замер.
@@ -1587,7 +1609,7 @@ class Agent:
             return None
         return max(список, key=lambda ограничитель: ограничитель.доля)
 
-    def predict_tokens(self, messages: list[dict], model: str = "") -> int:
+    def predict_tokens(self, messages: list[dict], model: str) -> int:
         """Предсказание веса запроса — с надбавкой, подстроенной ЭТИМ агентом под ЭТУ модель.
 
         Метод агента, а не прямой вызов `tokens.count_messages` у вызывающего: надбавка
@@ -1597,7 +1619,7 @@ class Agent:
         Модель без имени берёт базовый замер — так отвечает и `overhead`. Умолчание оставлено
         ради вызывающих, которым модель неизвестна (предпросмотр запроса до выбора модели):
         подставить им чужую поправку было бы хуже, чем честное приближение."""
-        return tokens.count_messages(messages, overhead=self.overhead(model))
+        return tokens.count_messages(messages, model, overhead=self.overhead(model))
 
     def _preview(self, content: str, system: str) -> list[dict]:
         """Каким выйдет запрос при нынешней памяти — чтобы взвесить его в обрезке.
@@ -2068,7 +2090,7 @@ class Agent:
             effective_run_id = uuid4().hex
         набор, жалоба_набора = await self._набор_инструментов()
         найденное, жалоба_поиска = await self._найти(content)
-        вес_инструментов = tokens.count_tools(набор.схемы) if набор is not None else 0
+        вес_инструментов = tokens.count_tools(набор.схемы, model) if набор is not None else 0
         self._вес_инструментов = вес_инструментов
         request_messages = self.build_messages(
             content,
@@ -2088,10 +2110,12 @@ class Agent:
         branch_head = self._request_branch_head
         branch_checkpoint = self._branch_checkpoint
         # Оба числа снимаются до ответа: память и запрос ещё описывают один и тот же ход.
-        history_tokens = self.history_tokens()
+        history_tokens = self.history_tokens(model)
         # Описания инструментов — часть входа, за который сервер назовёт `prompt_tokens`:
         # без них калибровка списала бы их вес на обёртку разговора.
-        text_tokens = tokens.count_messages(request_messages, overhead=0) + вес_инструментов
+        text_tokens = tokens.count_messages(request_messages, model, overhead=0) + вес_инструментов
+        # Словарь местной модели может прийти посреди обмена: см. калибровку ниже.
+        счёт_был_точен = tokens.exact(model)
         predicted = self.predict_tokens(request_messages, model) + вес_инструментов
         self.task = content
         generation = self._generation
@@ -2174,7 +2198,7 @@ class Agent:
                             )
                     if event.kind == "meta":
                         finish_reason = event.finish_reason
-                        round_usages.append(event.usage or {})
+                        round_usages.append(_с_рассуждениями(event.usage or {}, round_reasoning, model))
                         continue
                     if event.kind == "tool_calls":
                         calls.extend(event.calls)
@@ -2358,6 +2382,9 @@ class Agent:
             usage = round_usages[0]
         elif round_usages:
             usage = tokens.total_usage(round_usages)
+            if any(круг.get(ИСТОЧНИК_РАССУЖДЕНИЙ) for круг in round_usages):
+                # Сумма строится по числовым полям и признак теряет — возвращаем его.
+                usage = {**usage, ИСТОЧНИК_РАССУЖДЕНИЙ: "program"}
         elapsed = time.monotonic() - started
         snapshot = self.profile.snapshot()
         if status == "ok" and круг_прерван is not None:
@@ -2368,23 +2395,30 @@ class Agent:
         elif status == "ok" and not answer_text:
             status = "error"
             if finish_reason == "length":
-                # Вход ПОСЛЕДНЕГО круга: сумма входа всех кругов с окном не сравнима и дала
-                # бы ложное «в окне не осталось места».
-                последний = round_usages[-1] if round_usages else usage
-                вход = tokens.normalize(последний)["prompt_tokens"]
+                # Расход ПОСЛЕДНЕГО круга: сумма всех кругов с окном и пределом не сравнима и
+                # дала бы ложное «в окне не осталось места».
+                # Причин обрыва три, и советы у них разные. Порога «мало места» здесь нет:
+                # предел и окно названы службой, и достигнуты они либо нет.
+                последний = tokens.normalize(round_usages[-1] if round_usages else usage)
+                вход, выход = последний["prompt_tokens"], последний["completion_tokens"]
                 окно = tokens.window(model)
-                остаток = окно - вход if окно is not None else None
                 предел = self.profile.params.get("max_tokens")
-                if вход and остаток is not None and остаток < ОСТАТОК_НА_ОТВЕТ:
-                    error_text = (
-                        f"в окне модели не осталось места на ответ: занято {вход} "
-                        f"из {окно}, свободно {остаток} — "
-                        "очистите историю командой /clear или задайте вопрос короче"
-                    )
-                elif предел:
+                if isinstance(предел, (int, float)) and not isinstance(предел, bool) and 0 < предел <= выход:
                     error_text = (
                         "весь max_tokens ушёл на рассуждения, ответ не начат — "
                         "увеличьте max_tokens"
+                    )
+                elif вход and окно is not None and вход + выход >= окно:
+                    # Окно делят вход и выход, и совет зависит от того, кто его занял:
+                    # при коротком вопросе чистить историю бесполезно — окно съели рассуждения.
+                    совет = (
+                        "очистите историю командой /clear или задайте вопрос короче"
+                        if вход >= выход
+                        else "окно израсходовал выход: снизьте уровень рассуждений либо выключите их"
+                    )
+                    error_text = (
+                        f"в окне модели не осталось места на ответ: вход {вход} "
+                        f"и выход {выход} заняли окно {окно} — {совет}"
                     )
                 else:
                     error_text = "ответ оборван по длине, не начавшись"
@@ -2474,7 +2508,10 @@ class Agent:
         prompt_tokens = первый.get("prompt_tokens") if isinstance(первый, dict) else None
         if isinstance(prompt_tokens, int) and not isinstance(prompt_tokens, bool):
             measured = prompt_tokens - text_tokens
-            if 0 <= measured <= OVERHEAD_LIMIT:
+            # Текст взвешен до отправки. Если словарь модели пришёл за время обмена, число
+            # службы и наш счёт сделаны разными словарями, и их разность — не надбавка:
+            # принятая, она исказила бы вес следующего запроса, а по весу режется память.
+            if 0 <= measured <= OVERHEAD_LIMIT and tokens.exact(model) == счёт_был_точен:
                 self._overhead[model] = measured
 
         if предупреждения_окна:

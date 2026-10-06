@@ -2396,10 +2396,10 @@ async def main():
             state,
             "set вес_активной_панели " + "отдельный факт facts " * 17,
         )
-        история_main = state.main_agent.history_tokens()
-        история_facts = facts_agent.history_tokens()
-        система_main = tokens.count_text(state.main_agent.system_text())
-        система_facts = tokens.count_text(facts_agent.system_text())
+        история_main = state.main_agent.history_tokens('')
+        история_facts = facts_agent.history_tokens('')
+        система_main = tokens.count_text(state.main_agent.system_text(), "")
+        система_facts = tokens.count_text(facts_agent.system_text(), "")
         следующий_main = (
             история_main
             + система_main
@@ -3369,8 +3369,8 @@ async def main():
         check("набранный вопрос двигает заполнение", последний.текущее > основа, f"{основа} → {последний.текущее}")
         check(
             "добавка вопроса — ровно его вес",
-            последний.текущее == основа + tokens.count_text("а" * 7),
-            f"{последний.текущее} против {основа + tokens.count_text('а' * 7)}",
+            последний.текущее == основа + tokens.count_text("а" * 7, ""),
+            f"{последний.текущее} против {основа + tokens.count_text('а' * 7, '')}",
         )
         # На шкале в парах считать нечего вовсе: вопрос парой ещё не стал.
         with_пары = счёт.ближайший(собеседник, "очень длинный вопрос" * 50, model=state.model)

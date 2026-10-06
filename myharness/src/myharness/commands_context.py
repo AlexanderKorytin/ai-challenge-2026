@@ -56,11 +56,11 @@ def cmd_tokens(state: State) -> None:
         state,
         ui.tokens_report_fragments(
             state.model,
-            history=агент.history_tokens(),
+            history=агент.history_tokens(state.model),
             pairs=pairs,
             # Взвешивается ровно системная часть следующего запроса активного Agent:
             # инструкция, глобальные сведения, Sticky Facts либо действующая выжимка.
-            system=tokens.count_text(агент.system_text()),
+            system=tokens.count_text(агент.system_text(), state.model),
             overhead=агент.overhead(state.model),
             restored=агент.restored_pairs,
             runs=session_runs,

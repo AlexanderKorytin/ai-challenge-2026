@@ -250,8 +250,8 @@ def _predict_outgoing(state: State, agent_obj: Agent, content: str) -> int:
     # Описания инструментов — по последнему обмену: поставщика на каждый запрос отсюда не
     # зовём, и после включения или снятия паузы число отстаёт на один обмен.
     return (
-        tokens.count_messages(превью, overhead=обёртка)
-        + agent_obj.history_tokens()
+        tokens.count_messages(превью, state.model, overhead=обёртка)
+        + agent_obj.history_tokens(state.model)
         + agent_obj.вес_инструментов
     )
 

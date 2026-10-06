@@ -6,7 +6,8 @@
 в деньги и складывает расход за сеанс.
 
 Счёт до отправки — предсказание, а не истина: точный итог знает только сервер. Поэтому
-здесь два пути. Точный — настоящим словарём DeepSeek через библиотеку `tokenizers`.
+здесь два пути. Точный — настоящим словарём модели через библиотеку `tokenizers`: словарь
+DeepSeek лежит в пакете, словарь местной модели отдаёт служба Ollama (`build_vocabulary`).
 Запасной — по числу знаков, если словаря или библиотеки нет. Отсутствие словаря не ошибка:
 инструмент обязан работать и без него, просто честно сообщая, что счёт приблизительный
 (`exact()`).
@@ -87,12 +88,104 @@ def _vocabulary() -> Any | None:
     return loaded
 
 
-def exact(model: str = "") -> bool:
-    """Точен ли счёт: словарь и библиотека на месте. Показу нужно, чтобы поставить «≈».
+# Предварительная разбивка текста по имени из файла модели (`tokenizer.ggml.pre`). Выражения
+# взяты дословно из llama.cpp, `src/llama-vocab.cpp`, ветви `LLAMA_VOCAB_PRE_TYPE_QWEN2` и
+# `LLAMA_VOCAB_PRE_TYPE_QWEN35`. Имени нет в таблице — точного счёта нет: выражение не
+# подбирается на глаз, от него зависит каждое число.
+РАЗБИВКИ: dict[str, str] = {
+    "qwen2": (
+        r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}|"
+        r" ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+    ),
+    "qwen35": (
+        r"(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}|"
+        r" ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+    ),
+}
+# Виды токенов в файле модели, которые словарь обязан находить в тексте целиком, до разбивки:
+# 3 — управляющие метки (`<|im_start|>`), 4 — заданные автором модели.
+_ЦЕЛЬНЫЕ_ВИДЫ = (3, 4)
 
-    Словарь — DeepSeek. У местной модели свой, и счёт чужим словарём для неё приблизителен
-    всегда: показ обязан пометить его так же, как счёт по знакам."""
-    return _vocabulary() is not None and not providers.is_local(model)
+# Словари местных моделей: полное имя с приставкой `ollama/` → собранный счётчик. Кладёт
+# клиент (`api`), получив словарь от службы; на диск они не пишутся — служба отдаёт словарь
+# за десятую секунды, а файл устаревал бы при замене модели под тем же именем.
+_LOCAL_VOCABULARIES: dict[str, Any] = {}
+
+
+def build_vocabulary(model_info: dict) -> Any | None:
+    """Счётчик из сведений о модели, как их отдаёт Ollama (`/api/show`, `verbose: true`).
+
+    `None` — точного счёта для этой модели нет: вид словаря не попарное слияние байтов
+    (`gpt2`), разбивка незнакома, полей нет либо нет библиотеки. Это не ошибка: модель
+    остаётся на оценке, и показ помечает число.
+
+    Нормализатора нет намеренно: служба текст не нормализует, и NFC расходится с её счётом
+    (живой замер 2026-10-06: 43 против 47 на строке с составными знаками)."""
+    try:
+        if model_info.get("tokenizer.ggml.model") != "gpt2":
+            return None
+        выражение = РАЗБИВКИ.get(model_info.get("tokenizer.ggml.pre") or "")
+        токены = model_info.get("tokenizer.ggml.tokens")
+        слияния = model_info.get("tokenizer.ggml.merges")
+        if not выражение or not токены or not isinstance(слияния, list):
+            return None
+        виды = model_info.get("tokenizer.ggml.token_type") or []
+        from tokenizers import AddedToken, Regex, Tokenizer, models, pre_tokenizers
+
+        счётчик = Tokenizer(
+            models.BPE(
+                vocab={токен: номер for номер, токен in enumerate(токены)},
+                merges=[tuple(слияние.split(" ", 1)) for слияние in слияния],
+            )
+        )
+        счётчик.pre_tokenizer = pre_tokenizers.Sequence(
+            [
+                pre_tokenizers.Split(Regex(выражение), "isolated"),
+                pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False),
+            ]
+        )
+        счётчик.add_tokens(
+            [
+                AddedToken(токен, special=True, normalized=False)
+                for токен, вид in zip(токены, виды)
+                if вид in _ЦЕЛЬНЫЕ_ВИДЫ
+            ]
+        )
+        return счётчик
+    except Exception:  # noqa: BLE001 — ответ чужой службы и чужая библиотека: любой сбой значит «оценка»
+        return None
+
+
+def remember_vocabulary(model: str, vocabulary: Any) -> None:
+    """Запомнить словарь местной модели.
+
+    Запомненные подсчёты других словарей остаются верны: до своего словаря модель считалась
+    под ключом DeepSeek. Выбрасывается только счёт прежним словарём ТОЙ ЖЕ модели."""
+    if model in _LOCAL_VOCABULARIES:
+        for отпечаток in [о for о in _ЗАПОМНЕНО if о[0] == model]:
+            del _ЗАПОМНЕНО[отпечаток]
+    _LOCAL_VOCABULARIES[model] = vocabulary
+
+
+def _словарь_для(model: str) -> tuple[str, Any | None]:
+    """Словарь, которым считается текст для модели, и его ключ в запомненных подсчётах.
+
+    Местная модель со своим словарём считается им. Местная модель без словаря — словарём
+    DeepSeek: оценка, но ближе к истине, чем счёт по знакам."""
+    свой = _LOCAL_VOCABULARIES.get(model)
+    if свой is not None:
+        return model, свой
+    return "", _vocabulary()
+
+
+def exact(model: str) -> bool:
+    """Точен ли счёт текста: словарь модели на месте. Показу нужно, чтобы поставить «≈».
+
+    Словарь DeepSeek для местной модели чужой: пока служба не отдала её собственный, счёт
+    для неё приблизителен, и показ обязан пометить его так же, как счёт по знакам."""
+    if providers.is_local(model):
+        return model in _LOCAL_VOCABULARIES
+    return _vocabulary() is not None
 
 
 # Запомненные подсчёты: отпечаток текста → число токенов. Замер на настоящем стоге сена —
@@ -109,12 +202,15 @@ def exact(model: str = "") -> bool:
 #
 # Пятьсот двенадцать записей — это пятьсот двенадцать пар чисел, то есть десятки килобайт:
 # цена запоминания несоизмерима с ценой пересчёта.
-_ЗАПОМНЕНО: dict[int, int] = {}
+_ЗАПОМНЕНО: dict[tuple[str, int], int] = {}
 ЗАПОМИНАТЬ_НЕ_БОЛЕЕ = 512
 
 
-def count_text(text: str) -> int:
-    """Сколько токенов в тексте — точно словарём либо на глазок по числу знаков.
+def count_text(text: str, model: str) -> int:
+    """Сколько токенов в тексте для модели — точно её словарём либо на глазок.
+
+    `model` обязателен: у местной модели свой словарь, и место вызова, забывшее назвать
+    модель, считало бы чужим молча. Пустая строка — DeepSeek.
 
     Счёт запоминается: те же тексты считают по многу раз за один обмен."""
     if not text:
@@ -122,8 +218,9 @@ def count_text(text: str) -> int:
     # Словарь спрашиваем ПЕРВЫМ делом: смена пути сбрасывает запомненное внутри `_vocabulary`,
     # и загляни мы в запомненное раньше — после подмены пути отдавали бы счёт прежним словарём,
     # ровно то, ради чего путь и перечитывается на каждом обращении.
-    vocabulary = _vocabulary()
-    отпечаток = hash(text)
+    ключ, vocabulary = _словарь_для(model)
+    # Один текст у двух моделей весит по-разному: ключ словаря входит в отпечаток.
+    отпечаток = (ключ, hash(text))
     запомненное = _ЗАПОМНЕНО.get(отпечаток)
     if запомненное is not None:
         return запомненное
@@ -142,7 +239,7 @@ def count_text(text: str) -> int:
     return счёт
 
 
-def count_messages(messages: list[dict], *, overhead: int = BASE_OVERHEAD) -> int:
+def count_messages(messages: list[dict], model: str, *, overhead: int = BASE_OVERHEAD) -> int:
     """Вес запроса целиком: текст всех реплик плюс обёртка разговора.
 
     Пустой список даёт ровно базовую надбавку, а не «минус одну реплику»: отрицательная
@@ -169,11 +266,11 @@ def count_messages(messages: list[dict], *, overhead: int = BASE_OVERHEAD) -> in
     total = float(overhead) + PER_MESSAGE_OVERHEAD * max(0, len(items) - 1)
     for message in items:
         if isinstance(message, dict):
-            total += count_message(message)
+            total += count_message(message, model)
     return int(total)
 
 
-def count_message(message: dict) -> int:
+def count_message(message: dict, model: str) -> int:
     """Вес одной реплики без обёртки: текст, возвращаемые рассуждения и вызовы инструментов.
 
     Рассуждения и вызовы считаются потому, что при круге инструментов они уходят в запрос
@@ -191,14 +288,14 @@ def count_message(message: dict) -> int:
     # Содержимое бывает списком частей (модели с картинками) или вовсе отсутствует —
     # такую реплику считаем пустой, но реплику как таковую учитывает обёртка.
     if isinstance(content, str):
-        total += count_text(content)
+        total += count_text(content, model)
     рассуждения = message.get("reasoning_content")
     if isinstance(рассуждения, str):
-        total += count_text(рассуждения)
+        total += count_text(рассуждения, model)
     вызовы = message.get("tool_calls")
     if вызовы:
         try:
-            total += count_text(json.dumps(вызовы, ensure_ascii=False))
+            total += count_text(json.dumps(вызовы, ensure_ascii=False), model)
         except (TypeError, ValueError):
             # Счёт — удобство: несериализуемый вызов уронит запрос позже и с понятной
             # ошибкой, а не здесь, посреди предсказания веса.
@@ -214,14 +311,14 @@ def count_message(message: dict) -> int:
 ОБЁРТКА_ИНСТРУМЕНТОВ = 190
 
 
-def count_tools(схемы: list[dict]) -> int:
+def count_tools(схемы: list[dict], model: str) -> int:
     """Вес описаний инструментов: они уходят в каждый запрос с `tools` рядом с разговором.
 
     Считаются как их JSON — так их видит сервер — плюс служебная обёртка сервера. Пустой
     список — ноль: без инструментов поле `tools` в запрос не уходит вовсе."""
     if not схемы:
         return 0
-    return count_text(json.dumps(схемы, ensure_ascii=False)) + ОБЁРТКА_ИНСТРУМЕНТОВ
+    return count_text(json.dumps(схемы, ensure_ascii=False), model) + ОБЁРТКА_ИНСТРУМЕНТОВ
 
 
 @dataclass(frozen=True)

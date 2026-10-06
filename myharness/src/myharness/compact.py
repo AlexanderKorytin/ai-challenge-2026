@@ -548,7 +548,7 @@ def дочитать(state: State) -> list[tuple[str, str]]:
     оставлено: list[tuple[str, str]] = []
     вес = 0
     for пара in reversed(хвост):
-        вес += tokens.count_text(пара[0]) + tokens.count_text(пара[1])
+        вес += tokens.count_text(пара[0], state.model) + tokens.count_text(пара[1], state.model)
         if вес > предел and оставлено:
             break
         оставлено.append(пара)

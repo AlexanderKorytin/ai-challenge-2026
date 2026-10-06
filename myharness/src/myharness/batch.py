@@ -445,6 +445,9 @@ async def main(args) -> int:
 
     client = api.Clients(settings.api_key)
     try:
+        # Окно и словарь местной модели нужны первому же счёту веса, а он идёт до отправки.
+        # Для модели DeepSeek вызов ничего не делает.
+        await client.prepare(order.model)
         turns = await run_order(order, client, on_line=lambda line: print(line, flush=True))
     finally:
         await client.aclose()

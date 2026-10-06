@@ -1238,12 +1238,33 @@ check("пустой ответ не считается успехом", пуст
 # рассуждения и не начала ответ, заплачено 1412 токенов, показано «пустой ответ».
 оборванный = asyncio.run(
     беседа.exchange(
-        StubClient(events=[api.StreamEvent("meta", finish_reason="length", usage={})]),
+        StubClient(
+            events=[
+                api.StreamEvent(
+                    "meta",
+                    finish_reason="length",
+                    usage={"prompt_tokens": 12, "completion_tokens": беседа.profile.params["max_tokens"]},
+                )
+            ]
+        ),
         "deepseek-v4-flash",
         "вопрос 4a",
     )
 )
 check("обрыв по длине назван причиной пустого ответа", "max_tokens" in (оборванный.error or ""), repr(оборванный.error))
+# Расхода нет вовсе — достигнут ли предел, неизвестно: причину не выдумываем.
+оборванный_без_расхода = asyncio.run(
+    беседа.exchange(
+        StubClient(events=[api.StreamEvent("meta", finish_reason="length", usage={})]),
+        "deepseek-v4-flash",
+        "вопрос 4b",
+    )
+)
+check(
+    "обрыв по длине без расхода назван без догадки о причине",
+    (оборванный_без_расхода.error or "") == "ответ оборван по длине, не начавшись",
+    repr(оборванный_без_расхода.error),
+)
 check("обрыв по длине — тоже не успех", оборванный.ok is False, оборванный.status)
 check("пустой ответ в память не попадает", len(беседа.history()) == до_пустого, str(беседа.history()))
 
@@ -3160,6 +3181,9 @@ class НарядныйКлиент:
         self.пик = 0
         self.закрыт = False
         НарядныйКлиент.последний = self
+
+    async def prepare(self, model, *, load=True):
+        self.подготовлены = [*getattr(self, "подготовлены", []), model]
 
     async def stream_chat(self, model, messages, params=None):
         self.модели.append(model)
@@ -5460,69 +5484,69 @@ print("\n19. Счёт токенов")
 
 # Словарь лежит в самом пакете, библиотека — в зависимостях: на рабочей машине счёт обязан
 # быть точным, запасной путь по знакам существует не для нормальной работы, а для сломанной.
-check("со словарём из пакета счёт точный", tokens_mod.exact() is True, str(tokens_mod.vocabulary_path()))
+check("со словарём из пакета счёт точный", tokens_mod.exact("") is True, str(tokens_mod.vocabulary_path()))
 check("словарь из пакета найден на диске", tokens_mod.vocabulary_path().exists())
 
 # Пустой список сообщений — это не «минус одна реплика»: надбавка за пустой запрос равна
 # базовой, иначе счёт уходит ниже BASE_OVERHEAD и предсказание врёт в меньшую сторону.
 check(
     "пустой список сообщений даёт базовую надбавку",
-    tokens_mod.count_messages([]) == tokens_mod.BASE_OVERHEAD,
-    str(tokens_mod.count_messages([])),
+    tokens_mod.count_messages([], "") == tokens_mod.BASE_OVERHEAD,
+    str(tokens_mod.count_messages([], "")),
 )
 одна_реплика = [{"role": "user", "content": ""}]
 check(
     "одна пустая реплика надбавку не увеличивает",
-    tokens_mod.count_messages(одна_реплика) == tokens_mod.BASE_OVERHEAD,
-    str(tokens_mod.count_messages(одна_реплика)),
+    tokens_mod.count_messages(одна_реплика, "") == tokens_mod.BASE_OVERHEAD,
+    str(tokens_mod.count_messages(одна_реплика, "")),
 )
 четыре_реплики = [{"role": "user", "content": ""} for _ in range(4)]
 # 83 + 1.5 * 3 = 87.5, вниз до целого — 87: ровно то, что показал живой замер. Округление
 # вверх дало бы 88 и разошлось бы с замером — проверка стоит здесь именно для этого.
 check(
     "четыре пустые реплики дают 87",
-    tokens_mod.count_messages(четыре_реплики) == 87,
-    str(tokens_mod.count_messages(четыре_реплики)),
+    tokens_mod.count_messages(четыре_реплики, "") == 87,
+    str(tokens_mod.count_messages(четыре_реплики, "")),
 )
 
-check("пустой текст — ноль токенов", tokens_mod.count_text("") == 0)
+check("пустой текст — ноль токенов", tokens_mod.count_text("", "") == 0)
 # Число снято настоящим словарём DeepSeek. Сравнение «короткий меньше длинного» такую
 # проверку не заменяет: ему удовлетворяет любая неубывающая функция длины, включая неверную.
 известная_строка = "Сколько токенов в этой строке?"
 check(
     "известная строка стоит одиннадцать токенов",
-    tokens_mod.count_text(известная_строка) == 11,
-    str(tokens_mod.count_text(известная_строка)),
+    tokens_mod.count_text(известная_строка, "") == 11,
+    str(tokens_mod.count_text(известная_строка, "")),
 )
-check("«Привет, мир!» стоит пять токенов", tokens_mod.count_text("Привет, мир!") == 5, str(tokens_mod.count_text("Привет, мир!")))
-check("английская строка стоит четыре токена", tokens_mod.count_text("The quick brown fox") == 4)
+check("«Привет, мир!» стоит пять токенов", tokens_mod.count_text("Привет, мир!", "") == 5, str(tokens_mod.count_text("Привет, мир!", "")))
+check("английская строка стоит четыре токена", tokens_mod.count_text("The quick brown fox", "") == 4)
 check(
     "текст сообщений входит в счёт сверх надбавки",
-    tokens_mod.count_messages([{"role": "user", "content": известная_строка}]) == tokens_mod.BASE_OVERHEAD + 11,
+    tokens_mod.count_messages([{"role": "user", "content": известная_строка}], "") == tokens_mod.BASE_OVERHEAD + 11,
 )
 # Содержимое бывает не строкой (список частей у моделей с картинками) или вовсе отсутствует —
 # такое сообщение считается как пустое, а не роняет предсказание перед отправкой.
 check(
     "нестроковое содержимое не роняет счёт",
-    tokens_mod.count_messages([{"role": "user"}, {"role": "user", "content": [{"type": "text"}]}])
+    tokens_mod.count_messages([{"role": "user"}, {"role": "user", "content": [{"type": "text"}]}], "")
     == tokens_mod.BASE_OVERHEAD + 1,
 )
 # Устойчивость нужна и к самой последовательности: модуль обещает не ронять harness из-за
 # счёта, а не «не ронять, если список хорошо составлен».
 check(
     "реплика не словарём пропускается, а не роняет счёт",
-    tokens_mod.count_messages([None, "строка", {"role": "user", "content": "да"}]) == 87,
-    str(tokens_mod.count_messages([None, "строка", {"role": "user", "content": "да"}])),
+    tokens_mod.count_messages([None, "строка", {"role": "user", "content": "да"}], "") == 87,
+    str(tokens_mod.count_messages([None, "строка", {"role": "user", "content": "да"}], "")),
 )
-check("не последовательность вместо списка даёт надбавку", tokens_mod.count_messages(None) == tokens_mod.BASE_OVERHEAD)
-check("кортеж считается наравне со списком", tokens_mod.count_messages(({"role": "user", "content": известная_строка},)) == tokens_mod.BASE_OVERHEAD + 11)
+check("не последовательность вместо списка даёт надбавку", tokens_mod.count_messages(None, "") == tokens_mod.BASE_OVERHEAD)
+check("кортеж считается наравне со списком", tokens_mod.count_messages(({"role": "user", "content": известная_строка},), "") == tokens_mod.BASE_OVERHEAD + 11)
 # Строка — тоже последовательность, и посимвольный обход дал бы 89: правдоподобное число
 # из ничего хуже явного отказа.
-check("строка вместо списка не даёт числа из ничего", tokens_mod.count_messages("абвгд") == tokens_mod.BASE_OVERHEAD, str(tokens_mod.count_messages("абвгд")))
+check("строка вместо списка не даёт числа из ничего", tokens_mod.count_messages("абвгд", "") == tokens_mod.BASE_OVERHEAD, str(tokens_mod.count_messages("абвгд", "")))
 # Генератор одноразовый, и те же реплики уходят потом в модель: опустошив его счётом, harness
 # отправил бы пустой запрос. Проверяем не только число, но и что последовательность цела.
 генератор_реплик = (реплика for реплика in [{"role": "user", "content": известная_строка}])
-check("генератор считается пустым списком", tokens_mod.count_messages(генератор_реплик) == tokens_mod.BASE_OVERHEAD)
+check("генератор считается пустым списком", tokens_mod.count_messages(генератор_реплик, "") == tokens_mod.BASE_OVERHEAD)
 check("генератор не исчерпан счётом", len(list(генератор_реплик)) == 1)
 
 # Правило проекта: всё, что пишет наружу, убирает за собой. `del` вместо восстановления
@@ -5532,29 +5556,29 @@ check("генератор не исчерпан счётом", len(list(гене
 try:
     os.environ["MYHARNESS_TOKENIZER"] = "/несуществующий/файл.json"
     check("подменённый путь виден сразу", str(tokens_mod.vocabulary_path()) == "/несуществующий/файл.json")
-    check("без словаря счёт объявлен неточным", tokens_mod.exact() is False)
+    check("без словаря счёт объявлен неточным", tokens_mod.exact("") is False)
     # 30 знаков при 3.0 знака на токен — ровно 10.
-    check("запасной путь считает по знакам", tokens_mod.count_text("я" * 30) == 10, str(tokens_mod.count_text("я" * 30)))
-    check("запасной путь округляет вниз", tokens_mod.count_text("я" * 29) == 9, str(tokens_mod.count_text("я" * 29)))
+    check("запасной путь считает по знакам", tokens_mod.count_text("я" * 30, "") == 10, str(tokens_mod.count_text("я" * 30, "")))
+    check("запасной путь округляет вниз", tokens_mod.count_text("я" * 29, "") == 9, str(tokens_mod.count_text("я" * 29, "")))
     # Ноль у непустого текста — неверное число: оно поедет и в предсказание переполнения,
     # и в цену. «да» короче делителя, но место в запросе занимает.
-    check("короткий текст не стоит ноль токенов", tokens_mod.count_text("да") == 1, str(tokens_mod.count_text("да")))
+    check("короткий текст не стоит ноль токенов", tokens_mod.count_text("да", "") == 1, str(tokens_mod.count_text("да", "")))
 
     # Относительный путь при смене каталога указывает на другой файл, оставаясь той же
     # строкой. Без приведения к абсолютному словарь остался бы в памяти и exact() лгал бы.
     os.chdir(str(Path(tokens_mod.__file__).parent / "data"))
     os.environ["MYHARNESS_TOKENIZER"] = "deepseek_v4_tokenizer.json"
-    check("относительный путь разрешается от текущего каталога", tokens_mod.exact() is True)
+    check("относительный путь разрешается от текущего каталога", tokens_mod.exact("") is True)
     check("путь словаря всегда абсолютный", tokens_mod.vocabulary_path().is_absolute())
     os.chdir(str(tmp))
-    check("после смены каталога чужой словарь не выдаётся за свой", tokens_mod.exact() is False)
+    check("после смены каталога чужой словарь не выдаётся за свой", tokens_mod.exact("") is False)
 finally:
     os.chdir(прежний_каталог)
     if прежний_словарь is None:
         os.environ.pop("MYHARNESS_TOKENIZER", None)
     else:
         os.environ["MYHARNESS_TOKENIZER"] = прежний_словарь
-check("после возврата пути счёт снова точный", tokens_mod.exact() is True)
+check("после возврата пути счёт снова точный", tokens_mod.exact("") is True)
 
 print("\n20. Тариф и деньги")
 
@@ -6086,7 +6110,7 @@ check(
 # «сколько стоит помнить», ради которого заведено.
 профиль_веса = profiles.Profile(name="вес", keep_history=True, history_window=0)
 весовщик = Agent("весовщик", профиль_веса)
-check("у пустой памяти веса нет", весовщик.history_tokens() == 0, str(весовщик.history_tokens()))
+check("у пустой памяти веса нет", весовщик.history_tokens('') == 0, str(весовщик.history_tokens('')))
 # Расход разложен нулями с первой секунды, а не пустым словарём: форма накопителя обязана
 # быть одна и та же всегда. Иначе строка ожидания и `/tokens`, спросив «total_tokens» на
 # чистом запуске, получили бы KeyError — и не на проверках, а у человека сразу после старта.
@@ -6095,11 +6119,11 @@ check("до первого обмена расход сеанса — нули �
 check("итог расхода читается и на чистом запуске", весовщик.session_usage["total_tokens"] == 0, str(весовщик.session_usage))
 check("до подъёма с диска поднятых пар нет", весовщик.restored_pairs == 0, str(весовщик.restored_pairs))
 весовщик.restore([("вопрос 1", "ответ 1"), ("вопрос 2", "ответ 2")])
-ожидаемый_вес = sum(tokens_mod.count_text(т) for т in ("вопрос 1", "ответ 1", "вопрос 2", "ответ 2"))
+ожидаемый_вес = sum(tokens_mod.count_text(т, "") for т in ("вопрос 1", "ответ 1", "вопрос 2", "ответ 2"))
 check(
     "вес памяти складывается из веса её реплик",
-    весовщик.history_tokens() == ожидаемый_вес,
-    f"{весовщик.history_tokens()} против {ожидаемый_вес}",
+    весовщик.history_tokens('') == ожидаемый_вес,
+    f"{весовщик.history_tokens('')} против {ожидаемый_вес}",
 )
 check("поднятые с диска пары сосчитаны", весовщик.restored_pairs == 2, str(весовщик.restored_pairs))
 # Вес памяти — это память, и только она. Системная инструкция уходит в тот же запрос, но
@@ -6112,9 +6136,9 @@ check("поднятые с диска пары сосчитаны", весовщ
 наставленный.restore([("вопрос 1", "ответ 1"), ("вопрос 2", "ответ 2")])
 check(
     "системная инструкция в вес памяти не входит",
-    наставленный.history_tokens() == ожидаемый_вес,
-    f"{наставленный.history_tokens()} против {ожидаемый_вес}, инструкция весит "
-    f"{tokens_mod.count_text(профиль_с_инструкцией.system)}",
+    наставленный.history_tokens('') == ожидаемый_вес,
+    f"{наставленный.history_tokens('')} против {ожидаемый_вес}, инструкция весит "
+    f"{tokens_mod.count_text(профиль_с_инструкцией.system, '')}",
 )
 # Профиль с выключенной историей память в запрос не кладёт вовсе, значит и весить она в
 # отчёте не должна: иначе журнал уверял бы, что обмен из одной реплики тащил за собой
@@ -6124,8 +6148,8 @@ check(
 беспамятный_вес.restore([("вопрос 1", "ответ 1"), ("вопрос 2", "ответ 2")])
 check(
     "при выключенной истории вес памяти нулевой",
-    беспамятный_вес.history_tokens() == 0 and len(беспамятный_вес.history()) == 4,
-    f"{беспамятный_вес.history_tokens()} при {len(беспамятный_вес.history())} сообщениях",
+    беспамятный_вес.history_tokens('') == 0 and len(беспамятный_вес.history()) == 4,
+    f"{беспамятный_вес.history_tokens('')} при {len(беспамятный_вес.history())} сообщениях",
 )
 
 # `/clear` забывает разговор целиком — вместе со счётом поднятых с диска пар. Оставь счёт —
@@ -6174,7 +6198,7 @@ check("до обмена надбавка — замеренная величи�
     ]
 )
 asyncio.run(мерщик.exchange(щедрый, "deepseek-v4-flash", "вопрос"))
-вес_текста = tokens_mod.count_messages(щедрый.calls[0]["messages"], overhead=0)
+вес_текста = tokens_mod.count_messages(щедрый.calls[0]["messages"], "", overhead=0)
 check(
     "надбавка подстроена под ответ сервера",
     мерщик.overhead("deepseek-v4-flash") == 300 - вес_текста,
@@ -6183,7 +6207,7 @@ check(
 check(
     "подстроенная надбавка идёт в предсказание",
     мерщик.predict_tokens([{"role": "user", "content": "проба"}], "deepseek-v4-flash")
-    == tokens_mod.count_text("проба") + (300 - вес_текста),
+    == tokens_mod.count_text("проба", "") + (300 - вес_текста),
     str(мерщик.predict_tokens([{"role": "user", "content": "проба"}], "deepseek-v4-flash")),
 )
 # Надбавка живёт ПО МОДЕЛЯМ. Модель меняется на лету командой `/model`, и в надбавку оседает
@@ -6198,7 +6222,7 @@ check(
 check(
     "предсказание для другой модели идёт по её надбавке",
     мерщик.predict_tokens([{"role": "user", "content": "проба"}], "deepseek-v4-pro")
-    == tokens_mod.count_text("проба") + tokens_mod.BASE_OVERHEAD,
+    == tokens_mod.count_text("проба", "") + tokens_mod.BASE_OVERHEAD,
     str(мерщик.predict_tokens([{"role": "user", "content": "проба"}], "deepseek-v4-pro")),
 )
 # Ответ без `prompt_tokens` калибровать нечем: подстраиваться не по чему, и надбавка обязана
@@ -6288,7 +6312,7 @@ def набить_память(агент, пар):
 казначей = Agent("казначей", профиль_бюджета)
 набить_память(казначей, 12)
 хвост = казначей.history()[agent_mod.WINDOW_SLACK_PAIRS * 2 :]
-профиль_бюджета.budget_tokens = казначей.predict_tokens([*хвост, {"role": "user", "content": "новый вопрос"}])
+профиль_бюджета.budget_tokens = казначей.predict_tokens([*хвост, {"role": "user", "content": "новый вопрос"}], '')
 блок = asyncio.run(казначей.exchange(StubClient(), "deepseek-v4-flash", "новый вопрос"))
 check("бюджет выбросил ровно один блок пар", блок.dropped_pairs == 5, str(блок.dropped_pairs))
 check(
@@ -6464,7 +6488,7 @@ check("на первом обмене память ничего не весит"
 check(
     "предсказанный вход записан",
     первая.get("predicted_prompt_tokens")
-    == tokens_mod.count_messages(клиент_записи.calls[0]["messages"], overhead=tokens_mod.BASE_OVERHEAD),
+    == tokens_mod.count_messages(клиент_записи.calls[0]["messages"], "", overhead=tokens_mod.BASE_OVERHEAD),
     str(первая.get("predicted_prompt_tokens")),
 )
 check("расход сеанса записан", первая.get("agent_session_tokens") == 15, str(первая.get("agent_session_tokens")))
@@ -6492,7 +6516,7 @@ check("номер обмена вырос", вторая.get("index") == 2, str(
 check(
     "вес памяти снят до пополнения её ответом",
     вторая.get("history_tokens")
-    == tokens_mod.count_text("первый вопрос") + tokens_mod.count_text(первый_прогон.text),
+    == tokens_mod.count_text("первый вопрос", "") + tokens_mod.count_text(первый_прогон.text, ""),
     str(вторая.get("history_tokens")),
 )
 check("расход сеанса в записи накоплен", вторая.get("agent_session_tokens") == 30, str(вторая.get("agent_session_tokens")))
@@ -6521,19 +6545,19 @@ check(
     ]
 )
 asyncio.run(подстроенный.exchange(клиент_подстройки, "deepseek-v4-flash", "первый вопрос"))
-надбавка_после_первого = 300 - tokens_mod.count_messages(клиент_подстройки.calls[0]["messages"], overhead=0)
+надбавка_после_первого = 300 - tokens_mod.count_messages(клиент_подстройки.calls[0]["messages"], "", overhead=0)
 asyncio.run(подстроенный.exchange(клиент_подстройки, "deepseek-v4-flash", "второй вопрос"))
 запись_второго = json.loads(journal_lines()[-1])
 check(
     "предсказание второго обмена считано подстроенной надбавкой",
     запись_второго.get("predicted_prompt_tokens")
-    == tokens_mod.count_messages(клиент_подстройки.calls[1]["messages"], overhead=надбавка_после_первого),
+    == tokens_mod.count_messages(клиент_подстройки.calls[1]["messages"], "", overhead=надбавка_после_первого),
     f"{запись_второго.get('predicted_prompt_tokens')} при надбавке {надбавка_после_первого}",
 )
 check(
     "базовой надбавкой то же число не получается",
     запись_второго.get("predicted_prompt_tokens")
-    != tokens_mod.count_messages(клиент_подстройки.calls[1]["messages"], overhead=tokens_mod.BASE_OVERHEAD),
+    != tokens_mod.count_messages(клиент_подстройки.calls[1]["messages"], "", overhead=tokens_mod.BASE_OVERHEAD),
     str(запись_второго.get("predicted_prompt_tokens")),
 )
 
@@ -6596,7 +6620,7 @@ check(
 check(
     "вес памяти отменённого обмена — вес памяти до него",
     запись_отмены["history_tokens"]
-    == tokens_mod.count_text("вопрос 2") + tokens_mod.count_text("щука"),
+    == tokens_mod.count_text("вопрос 2", "") + tokens_mod.count_text("щука", ""),
     str(запись_отмены.get("history_tokens")),
 )
 
@@ -6627,9 +6651,9 @@ try:
     tokens_mod._ЗАПОМНЕНО.clear()
 
     текст = "Космический корабль движется по заданной траектории. " * 40
-    первый = tokens_mod.count_text(текст)
+    первый = tokens_mod.count_text(текст, "")
     после_первого = считающий.обращений
-    второй = tokens_mod.count_text(текст)
+    второй = tokens_mod.count_text(текст, "")
     check("запомненный счёт совпадает с посчитанным", первый == второй, f"{первый} против {второй}")
     check(
         "второй счёт того же текста до словаря не доходит",
@@ -6637,13 +6661,13 @@ try:
         f"обращений {считающий.обращений}",
     )
 
-    другой = tokens_mod.count_text(текст + " хвост")
+    другой = tokens_mod.count_text(текст + " хвост", "")
     check("разные тексты не путаются", другой > первый, f"{другой} против {первый}")
     check("новый текст словарь всё же считает", считающий.обращений == 2, str(считающий.обращений))
 
     # Предел нужен затем, чтобы длинный разговор не удерживал отпечаток каждой своей реплики.
     for номер in range(tokens_mod.ЗАПОМИНАТЬ_НЕ_БОЛЕЕ + 5):
-        tokens_mod.count_text(f"реплика номер {номер}")
+        tokens_mod.count_text(f"реплика номер {номер}", "")
     check(
         "запоминание не растёт без предела",
         len(tokens_mod._ЗАПОМНЕНО) <= tokens_mod.ЗАПОМИНАТЬ_НЕ_БОЛЕЕ,
@@ -6768,9 +6792,9 @@ try:
         длинный_запрос.append({"role": "user", "content": f"вопрос номер {номер}"})
         длинный_запрос.append({"role": "assistant", "content": f"ответ номер {номер}"})
 
-    tokens_mod.count_messages(длинный_запрос)
+    tokens_mod.count_messages(длинный_запрос, "")
     после_первого = считающий.обращений
-    tokens_mod.count_messages(длинный_запрос)
+    tokens_mod.count_messages(длинный_запрос, "")
     после_второго = считающий.обращений
     check(
         "второй проход по длинному запросу словарь не трогает",
@@ -6779,7 +6803,7 @@ try:
     )
     check(
         "инструкция не вытеснена собственными репликами запроса",
-        tokens_mod.count_text(инструкция) and считающий.обращений == после_первого,
+        tokens_mod.count_text(инструкция, "") and считающий.обращений == после_первого,
         f"обращений {считающий.обращений}, было {после_первого}",
     )
 finally:
@@ -7146,7 +7170,7 @@ check(
 набить_память(весовой, 12)
 профиль_взвешивания.budget_tokens = весовой.predict_tokens(
     [*весовой.history()[agent_mod.WINDOW_SLACK_PAIRS * 2 :], {"role": "user", "content": "новый вопрос"}]
-)
+, '')
 налегке = asyncio.run(весовой.exchange(StubClient(), "deepseek-v4-flash", "новый вопрос"))
 с_пересказом = Agent("с пересказом", профиль_взвешивания)
 набить_память(с_пересказом, 12)
@@ -7769,7 +7793,7 @@ check("отмена отказом не считается", отменяемы�
 for вопрос_пары, ответ_пары in пары_подбора[-3:]:
     сообщения_трёх.append({"role": "user", "content": вопрос_пары})
     сообщения_трёх.append({"role": "assistant", "content": ответ_пары})
-подборщик.profile.compact_at = подборщик.predict_tokens(сообщения_трёх) / tokens_mod.CONTEXT_WINDOW
+подборщик.profile.compact_at = подборщик.predict_tokens(сообщения_трёх, '') / tokens_mod.CONTEXT_WINDOW
 check(
     "с конца берётся столько пар, сколько влезает в порог",
     подборщик.подобрать_с_конца(пары_подбора) == 3,
@@ -11811,18 +11835,18 @@ check(
 ТЯЖЁЛОЕ = {"reasoning_content": "рассуждение " * 50, "звенья": ТЯЖЁЛЫЕ_ЗВЕНЬЯ}
 весомый = Agent("весомый", profiles.Profile(name="весомый", keep_history=True))
 весомый.restore([("в0", "о0"), ("в1", "о1")], [{}, ТЯЖЁЛОЕ])
-голый_текст = sum(tokens_mod.count_text(с["content"]) for с in весомый.history())
+голый_текст = sum(tokens_mod.count_text(с["content"], "") for с in весомый.history())
 
 
 def вес_предпросмотра(агент):
-    return tokens_mod.count_messages(агент._preview("вопрос", ""), overhead=0)
+    return tokens_mod.count_messages(агент._preview("вопрос", ""), "", overhead=0)
 
 
-до_сборки = (весомый.history_tokens(), вес_предпросмотра(весомый))
+до_сборки = (весомый.history_tokens(''), вес_предпросмотра(весомый))
 весомый.build_messages("вопрос")
-после_голой = (весомый.history_tokens(), вес_предпросмотра(весомый))
+после_голой = (весомый.history_tokens(''), вес_предпросмотра(весомый))
 весомый.build_messages("вопрос", полные=True)
-после_полной = (весомый.history_tokens(), вес_предпросмотра(весомый))
+после_полной = (весомый.history_tokens(''), вес_предпросмотра(весомый))
 check(
     "вес памяти и предпросмотра одинаков до сборки, после голой и после полной",
     до_сборки == после_голой == после_полной,
@@ -11837,8 +11861,8 @@ check(
 лёгкий.restore([("в0", "о0"), ("в1", "о1")])
 check(
     "без приложений вес памяти — прежний счёт текста (парная)",
-    лёгкий.history_tokens() == голый_текст,
-    f"{лёгкий.history_tokens()} / {голый_текст}",
+    лёгкий.history_tokens('') == голый_текст,
+    f"{лёгкий.history_tokens('')} / {голый_текст}",
 )
 
 # Подбор пар при запуске взвешивает приложения.
@@ -11849,7 +11873,7 @@ check(
 предел_подбора = подборщик.порог_сжатия()
 пары_подбора = [(f"вопрос {н}", f"ответ {н}") for н in range(6)]
 вес_пары_с_приложением = tokens_mod.count_messages(
-    раскрыть([{"role": "user", "content": "в"}, {"role": "assistant", "content": "о", "приложение": ТЯЖЁЛОЕ}], True),
+    раскрыть([{"role": "user", "content": "в"}, {"role": "assistant", "content": "о", "приложение": ТЯЖЁЛОЕ}], True), "",
     overhead=0,
 )
 # Приложение раздуваем до трети порога: три таких пары в порог не лезут, голые — лезут все.
@@ -11950,22 +11974,22 @@ check(
 обычное = {"role": "assistant", "content": известная_строка}
 check(
     "обычное сообщение весит как прежде",
-    tokens_mod.count_messages([обычное]) == tokens_mod.BASE_OVERHEAD + 11,
-    str(tokens_mod.count_messages([обычное])),
+    tokens_mod.count_messages([обычное], "") == tokens_mod.BASE_OVERHEAD + 11,
+    str(tokens_mod.count_messages([обычное], "")),
 )
 check(
     "рассуждения прибавляют вес",
-    tokens_mod.count_messages([{**обычное, "reasoning_content": известная_строка}])
+    tokens_mod.count_messages([{**обычное, "reasoning_content": известная_строка}], "")
     == tokens_mod.BASE_OVERHEAD + 22,
-    str(tokens_mod.count_messages([{**обычное, "reasoning_content": известная_строка}])),
+    str(tokens_mod.count_messages([{**обычное, "reasoning_content": известная_строка}], "")),
 )
 check(
     "вызовы инструментов прибавляют вес",
-    tokens_mod.count_messages([ЗВЕНЬЯ[0]])
-    > tokens_mod.count_messages([{"role": "assistant", "content": "", "reasoning_content": "надо посмотреть план"}]),
+    tokens_mod.count_messages([ЗВЕНЬЯ[0]], "")
+    > tokens_mod.count_messages([{"role": "assistant", "content": "", "reasoning_content": "надо посмотреть план"}], ""),
 )
-check("пустой список инструментов не весит ничего", tokens_mod.count_tools([]) == 0)
-check("описания инструментов весят", tokens_mod.count_tools([{"type": "function", "function": {"name": "план"}}]) > 0)
+check("пустой список инструментов не весит ничего", tokens_mod.count_tools([], "") == 0)
+check("описания инструментов весят", tokens_mod.count_tools([{"type": "function", "function": {"name": "план"}}], "") > 0)
 
 # Шаг 3 автомата задачи. Круг вызовов инструментов идёт внутри одного обмена.
 print("\nКруг вызовов инструментов")
@@ -12120,8 +12144,8 @@ check(
     "калибровка надбавки — по первому кругу, а не по сумме",
     кругом.overhead("deepseek-v4-flash")
     == 500
-    - tokens_mod.count_messages(клиент_круга.calls[0]["messages"], overhead=0)
-    - tokens_mod.count_tools(СХЕМЫ),
+    - tokens_mod.count_messages(клиент_круга.calls[0]["messages"], "", overhead=0)
+    - tokens_mod.count_tools(СХЕМЫ, ""),
     str(кругом.overhead("deepseek-v4-flash")),
 )
 # Следующий обмен раскрывает пару полностью.
@@ -12300,12 +12324,12 @@ check(
 ход_без = asyncio.run(взвешенный_без.exchange(ТрёхдоводныйКлиент([], запасной=КРУГ_ОТВЕТА), "deepseek-v4-flash", "в"))
 check(
     "предусловие: описания инструментов весят",
-    tokens_mod.count_tools(СХЕМЫ) > 0,
+    tokens_mod.count_tools(СХЕМЫ, "") > 0,
 )
 check(
     "предсказание с набором тяжелее ровно на вес описаний",
-    ход_с.predicted_prompt - ход_без.predicted_prompt == tokens_mod.count_tools(СХЕМЫ),
-    f"{ход_с.predicted_prompt} / {ход_без.predicted_prompt} / {tokens_mod.count_tools(СХЕМЫ)}",
+    ход_с.predicted_prompt - ход_без.predicted_prompt == tokens_mod.count_tools(СХЕМЫ, ""),
+    f"{ход_с.predicted_prompt} / {ход_без.predicted_prompt} / {tokens_mod.count_tools(СХЕМЫ, '')}",
 )
 # Обрезка знает вес описаний: предел, который голый запрос держит, а с описаниями нет.
 голый_вес = взвешенный_без.predict_tokens(взвешенный_без.build_messages("в", ""), "")
@@ -12313,7 +12337,7 @@ check(
 без_описаний = Agent("без-описаний", предельный)
 без_описаний.build_messages("в", "")
 check("предусловие: голый запрос в пределе — перевеса нет", без_описаний._over_budget is False)
-без_описаний.build_messages("в", "", вес_инструментов=tokens_mod.count_tools(СХЕМЫ))
+без_описаний.build_messages("в", "", вес_инструментов=tokens_mod.count_tools(СХЕМЫ, ""))
 check("с весом описаний тот же запрос тяжелее предела (парная)", без_описаний._over_budget is True)
 # Перевес считается по собранному запросу: тяжёлые звенья памяти не дают перевеса голому запросу.
 тяжёлые_звенья = [
@@ -12569,7 +12593,7 @@ try:
     переполненный = Agent("переполненный", профиль_круга("переполненный"), инструменты=lambda: Инструменты(СХЕМЫ, исполнитель))
     tokens_mod.CONTEXT_WINDOW = переполненный.predict_tokens(
         [{"role": "user", "content": "в"}], "deepseek-v4-flash"
-    ) + tokens_mod.count_tools(СХЕМЫ) + 5
+    ) + tokens_mod.count_tools(СХЕМЫ, "") + 5
     клиент_переполненного = КруговойКлиент([КРУГ_ВЫЗОВА, КРУГ_ОТВЕТА])
     ход_переполненного = asyncio.run(переполненный.exchange(клиент_переполненного, "deepseek-v4-flash", "в"))
     окно_проверки = tokens_mod.CONTEXT_WINDOW
@@ -12607,11 +12631,11 @@ def занятость(агент):
 
 check(
     "вес описаний запомнен последним обменом",
-    полоска_с.вес_инструментов == tokens_mod.count_tools(СХЕМЫ) and полоска_без.вес_инструментов == 0,
+    полоска_с.вес_инструментов == tokens_mod.count_tools(СХЕМЫ, "") and полоска_без.вес_инструментов == 0,
 )
 check(
     "ограничители прибавляют вес описаний последнего обмена",
-    занятость(полоска_с)[-1].текущее - занятость(полоска_без)[-1].текущее == tokens_mod.count_tools(СХЕМЫ),
+    занятость(полоска_с)[-1].текущее - занятость(полоска_без)[-1].текущее == tokens_mod.count_tools(СХЕМЫ, ""),
     f"{занятость(полоска_с)} / {занятость(полоска_без)}",
 )
 состояние_строки = SimpleNamespace(model="deepseek-v4-flash")
@@ -12619,10 +12643,10 @@ check(
     "строка ожидания прибавляет вес описаний последнего обмена",
     output._predict_outgoing(состояние_строки, полоска_с, "в")
     - tokens_mod.count_messages(
-        [{"role": "user", "content": "в"}], overhead=полоска_с.overhead("deepseek-v4-flash")
+        [{"role": "user", "content": "в"}], "", overhead=полоска_с.overhead("deepseek-v4-flash")
     )
-    - полоска_с.history_tokens()
-    == tokens_mod.count_tools(СХЕМЫ),
+    - полоска_с.history_tokens('')
+    == tokens_mod.count_tools(СХЕМЫ, ""),
 )
 check("с_местом_под_ответ прибавляет max_tokens профиля", длинный.с_местом_под_ответ(1000) == 1100)
 
@@ -14042,7 +14066,7 @@ check(
     профиль_группы.стадии is not None and профиль_группы.agents == [] and any("консилиум стадии" in ж for ж in жалобы_мастера_группы),
     f"{профиль_группы.agents} {жалобы_мастера_группы}",
 )
-check("вес описаний включает обёртку сервера", tokens_mod.count_tools([{"a": 1}]) == tokens_mod.count_text('[{"a": 1}]') + tokens_mod.ОБЁРТКА_ИНСТРУМЕНТОВ)
+check("вес описаний включает обёртку сервера", tokens_mod.count_tools([{"a": 1}], "") == tokens_mod.count_text('[{"a": 1}]', "") + tokens_mod.ОБЁРТКА_ИНСТРУМЕНТОВ)
 
 # --- Шаг 11: /profile new --проект --------------------------------------------------------------
 from myharness import commands_model as commands_model_mod, interview as interview_mod  # noqa: E402
@@ -16017,8 +16041,8 @@ check("найденное в память не оседает",
       ищущий.history()[0]["content"] == "где настройки?" and "текст куска" not in str(ищущий.history()),
       str(ищущий.history()))
 check("вес найденного учтён: предсказание запроса с найденным больше, чем без него",
-      ищущий.predict_tokens(ищущий.build_messages("где настройки?", найденное="x " * 500))
-      > ищущий.predict_tokens(ищущий.build_messages("где настройки?")))
+      ищущий.predict_tokens(ищущий.build_messages("где настройки?", найденное="x " * 500), '')
+      > ищущий.predict_tokens(ищущий.build_messages("где настройки?"), ''))
 
 простой = Agent("простой", профиль_rag, work=lambda: "<рабочее-состояние>")
 клиент_простой = StubClient()
@@ -16705,7 +16729,7 @@ check("пометка temperature при рассуждениях: у DeepSeek �
       and params_mod.inapplicable_reason("temperature", {}) is not None
       and params_mod.inapplicable_reason("temperature", {}, "ollama/м") is None)
 check("счёт местной модели помечен приблизительным и при словаре; счёт DeepSeek — как прежде",
-      tokens_mod.exact("ollama/м") is False and tokens_mod.exact("deepseek-v4-flash") == tokens_mod.exact())
+      tokens_mod.exact("ollama/м") is False and tokens_mod.exact("deepseek-v4-flash") == tokens_mod.exact(""))
 снимок_местной = "".join(текст for _, текст in ui.tokens_report_fragments(
     "ollama/м", history=0, pairs=0, overhead=0, system=0, restored=0, runs=0, usage={}, budget=0, cost="0"))
 check("/tokens местной модели называет причину оценки — чужой словарь, а не его отсутствие",
@@ -16723,6 +16747,199 @@ check("приветствие называет поставщика текуще
       "Ollama" in "".join(текст for _, текст in ui.banner_fragments("ollama/м", True, "default"))
       and "DeepSeek API" in "".join(текст for _, текст in ui.banner_fragments("deepseek-v4-flash", True, "default")))
 tokens_mod._LOCAL_WINDOWS.clear()
+
+print("\n# Словарь местной модели: счёт, запрос у службы, рассуждения, причина обрыва (отложенная задача 16)")
+# Малый словарь в том виде, в каком его отдаёт Ollama: попарное слияние байтов, разбивка qwen35.
+# Слияния «a a» нет намеренно: десять «a» обязаны дать десять токенов — у словаря DeepSeek меньше.
+СВЕДЕНИЯ_МАЛЫЕ = {
+    "tokenizer.ggml.model": "gpt2",
+    "tokenizer.ggml.pre": "qwen35",
+    "tokenizer.ggml.tokens": ["a", "b", "c", "ab", "abc", "Ġ", "<|метка|>"],
+    "tokenizer.ggml.merges": ["a b", "ab c"],
+    "tokenizer.ggml.token_type": [1, 1, 1, 1, 1, 1, 3],
+}
+ДЕСЯТЬ = "a" * 10
+малый_словарь = tokens_mod.build_vocabulary(СВЕДЕНИЯ_МАЛЫЕ)
+check("словарь вида gpt2 с разбивкой qwen35 собирается", малый_словарь is not None)
+check("словарь вида llama не собирается: точного счёта нет",
+      tokens_mod.build_vocabulary({**СВЕДЕНИЯ_МАЛЫЕ, "tokenizer.ggml.model": "llama"}) is None)
+check("незнакомая разбивка не собирается: выражение на глаз не подбирается",
+      tokens_mod.build_vocabulary({**СВЕДЕНИЯ_МАЛЫЕ, "tokenizer.ggml.pre": "неизвестная"}) is None)
+check("сведения без словаря не собираются", tokens_mod.build_vocabulary({"tokenizer.ggml.model": "gpt2"}) is None)
+tokens_mod._LOCAL_VOCABULARIES.pop("ollama/малая", None)
+до_словаря = tokens_mod.count_text(ДЕСЯТЬ, "ollama/малая")
+check("предусловие: словарь DeepSeek считает десять «a» не в десять токенов",
+      tokens_mod.count_text(ДЕСЯТЬ, "") != 10, str(tokens_mod.count_text(ДЕСЯТЬ, "")))
+check("местная модель без своего словаря считается словарём DeepSeek и помечена оценкой",
+      до_словаря == tokens_mod.count_text(ДЕСЯТЬ, "") and tokens_mod.exact("ollama/малая") is False, str(до_словаря))
+tokens_mod.remember_vocabulary("ollama/малая", малый_словарь)
+check("со своим словарём счёт местной модели точный, у соседней модели — прежний",
+      tokens_mod.exact("ollama/малая") is True and tokens_mod.exact("ollama/соседняя") is False)
+check("текст для местной модели весит по её словарю",
+      tokens_mod.count_text(ДЕСЯТЬ, "ollama/малая") == 10, str(tokens_mod.count_text(ДЕСЯТЬ, "ollama/малая")))
+check("запомненное различает словари: тот же текст для DeepSeek весит по-своему и после счёта местной",
+      tokens_mod.count_text(ДЕСЯТЬ, "") == до_словаря and tokens_mod.count_text(ДЕСЯТЬ, "ollama/малая") == 10)
+check("слияния и цельная метка работают: «abc abc<|метка|>» — abc, Ġ, abc, метка",
+      tokens_mod.count_text("abc abc<|метка|>", "ollama/малая") == 4, str(tokens_mod.count_text("abc abc<|метка|>", "ollama/малая")))
+check("вес реплик и инструментов идёт словарём названной модели",
+      tokens_mod.count_messages([{"role": "user", "content": ДЕСЯТЬ}], "ollama/малая", overhead=0) == 10
+      and tokens_mod.count_message({"role": "assistant", "content": "", "reasoning_content": ДЕСЯТЬ}, "ollama/малая") == 10)
+try:
+    tokens_mod.count_text("а")
+    без_модели = "счёт прошёл"
+except TypeError:
+    без_модели = "TypeError"
+check("счёт без имени модели падает сразу, а не считает чужим словарём", без_модели == "TypeError", без_модели)
+вес_памяти_агент = Agent("вес местной", profiles.Profile(name="вес местной", keep_history=True))
+вес_памяти_агент._messages = [{"role": "user", "content": ДЕСЯТЬ}, {"role": "assistant", "content": ДЕСЯТЬ}]
+check("вес памяти агента считается словарём названной модели",
+      вес_памяти_агент.history_tokens("ollama/малая") == 20 and вес_памяти_агент.history_tokens("") == 2 * до_словаря,
+      f"{вес_памяти_агент.history_tokens('ollama/малая')} / {вес_памяти_агент.history_tokens('')}")
+
+
+class СлужбаСловаря:
+    """Подменная служба: словарь отдаёт только на просьбу с `verbose`, как настоящая."""
+
+    def __init__(self, сведения, код=200, молчит_раз=0):
+        self.сведения, self.код, self.просьб_словаря, self.молчит_раз = сведения, код, 0, молчит_раз
+
+    def __call__(self, запрос: httpx2.Request) -> httpx2.Response:
+        тело = json.loads(запрос.content) if запрос.content else {}
+        if запрос.url.path == "/api/show":
+            if тело.get("verbose"):
+                self.просьб_словаря += 1
+                if self.просьб_словаря <= self.молчит_раз:
+                    raise httpx2.ConnectError("служба не слушает", request=запрос)
+                if self.код != 200:
+                    return httpx2.Response(self.код)
+                return httpx2.Response(200, json={"model_info": self.сведения})
+            return httpx2.Response(200, json={"parameters": "num_ctx 4096", "model_info": {}})
+        return httpx2.Response(404)
+
+
+async def подготовка(служба, модель):
+    клиенты = api.Clients("sk", deepseek=ПодставнойDeepSeek(), ollama=api.OllamaClient(httpx2.MockTransport(служба)))
+    try:
+        await клиенты.prepare(модель, load=False)
+        await клиенты.prepare(модель, load=False)
+    finally:
+        await клиенты.aclose()
+
+служба_со_словарём = СлужбаСловаря(СВЕДЕНИЯ_МАЛЫЕ)
+asyncio.run(подготовка(служба_со_словарём, "ollama/от-службы"))
+check("подготовка местной модели берёт словарь у службы: счёт точный и идёт им",
+      tokens_mod.exact("ollama/от-службы") is True and tokens_mod.count_text(ДЕСЯТЬ, "ollama/от-службы") == 10)
+check("словарь спрошен один раз на модель", служба_со_словарём.просьб_словаря == 1, str(служба_со_словарём.просьб_словаря))
+служба_без_словаря = СлужбаСловаря(СВЕДЕНИЯ_МАЛЫЕ, код=404)
+asyncio.run(подготовка(служба_без_словаря, "ollama/без-словаря"))
+check("служба словарь не отдала: подготовка не падает, счёт остаётся оценкой",
+      служба_без_словаря.просьб_словаря == 1 and tokens_mod.exact("ollama/без-словаря") is False)
+служба_чужого_вида = СлужбаСловаря({**СВЕДЕНИЯ_МАЛЫЕ, "tokenizer.ggml.model": "llama"})
+asyncio.run(подготовка(служба_чужого_вида, "ollama/чужой-вид"))
+check("словарь незнакомого вида: счёт остаётся оценкой", tokens_mod.exact("ollama/чужой-вид") is False)
+служба_поздняя = СлужбаСловаря(СВЕДЕНИЯ_МАЛЫЕ, молчит_раз=1)
+asyncio.run(подготовка(служба_поздняя, "ollama/поздняя"))
+check("служба молчала при первой подготовке: словарь спрошен снова и получен",
+      служба_поздняя.просьб_словаря == 2 and tokens_mod.exact("ollama/поздняя") is True, str(служба_поздняя.просьб_словаря))
+
+
+async def одновременная_подготовка():
+    служба = СлужбаСловаря(СВЕДЕНИЯ_МАЛЫЕ)
+    клиенты = api.Clients("sk", deepseek=ПодставнойDeepSeek(), ollama=api.OllamaClient(httpx2.MockTransport(служба)))
+    try:
+        первая = asyncio.ensure_future(клиенты.prepare("ollama/разом", load=False))
+        await asyncio.sleep(0)
+        предусловие = tokens_mod.exact("ollama/разом") is False
+        await клиенты.prepare("ollama/разом", load=False)
+        точен_после_второй = tokens_mod.exact("ollama/разом")
+        await первая
+        return предусловие, точен_после_второй, служба.просьб_словаря
+    finally:
+        await клиенты.aclose()
+
+check("вторая подготовка дожидается словаря, который уже в пути, и не спрашивает его сама",
+      asyncio.run(одновременная_подготовка()) == (True, True, 1), str(asyncio.run(одновременная_подготовка())))
+
+
+async def словарь_посреди_обмена():
+    """Словарь приходит между счётом веса и ответом службы — как после `/auth` при местной модели."""
+    tokens_mod._LOCAL_VOCABULARIES.pop("ollama/посреди", None)
+    класс = type("КлиентПосреди", (), {})
+    async def stream_chat(self, model, messages, params=None, tools=None):
+        tokens_mod.remember_vocabulary(model, малый_словарь)
+        yield api.StreamEvent("content", text="ответ")
+        yield api.StreamEvent("meta", finish_reason="stop", usage={"prompt_tokens": 40, "completion_tokens": 2})
+    async def aclose(self):
+        return None
+    класс.stream_chat, класс.aclose = stream_chat, aclose
+    агент = Agent("посреди", profiles.Profile(name="посреди"))
+    await агент.exchange(класс(), "ollama/посреди", ДЕСЯТЬ)
+    первая = агент.overhead("ollama/посреди")
+    await агент.exchange(класс(), "ollama/посреди", ДЕСЯТЬ)
+    return первая, агент.overhead("ollama/посреди")
+
+надбавка_смены, надбавка_после = asyncio.run(словарь_посреди_обмена())
+check("словарь сменился за время обмена: замер надбавки не принят",
+      надбавка_смены == tokens_mod.BASE_OVERHEAD, str(надбавка_смены))
+check("следующий обмен тем же словарём надбавку подстраивает — парная проверка",
+      надбавка_после != tokens_mod.BASE_OVERHEAD and 0 <= надбавка_после < 40, str(надбавка_после))
+
+
+async def обмен_с_рассуждениями(модель, usage, рассуждения=ДЕСЯТЬ, кругов=1):
+    класс = type("КлиентРассуждений", (), {})
+    async def stream_chat(self, model, messages, params=None, tools=None):
+        yield api.StreamEvent("reasoning", text=рассуждения)
+        yield api.StreamEvent("content", text="ответ")
+        yield api.StreamEvent("meta", finish_reason="stop", usage=dict(usage))
+    async def aclose(self):
+        return None
+    класс.stream_chat, класс.aclose = stream_chat, aclose
+    агент = Agent("рассуждающий", profiles.Profile(name="рассуждающий"))
+    return await агент.exchange(класс(), модель, "вопрос")
+
+ход_местный = asyncio.run(обмен_с_рассуждениями("ollama/малая", {"prompt_tokens": 20, "completion_tokens": 40}))
+check("местная модель со словарём: рассуждения посчитаны программой и помечены",
+      tokens_mod.normalize(ход_местный.usage)["reasoning_tokens"] == 10
+      and ход_местный.usage.get("reasoning_tokens_source") == "program", str(ход_местный.usage))
+ход_тесный = asyncio.run(обмен_с_рассуждениями("ollama/малая", {"prompt_tokens": 20, "completion_tokens": 4}))
+check("рассуждения не весят больше всего выхода",
+      tokens_mod.normalize(ход_тесный.usage)["reasoning_tokens"] == 4, str(ход_тесный.usage))
+ход_без_словаря = asyncio.run(обмен_с_рассуждениями("ollama/соседняя", {"prompt_tokens": 20, "completion_tokens": 40}))
+check("местная модель без словаря: оценка в расход не кладётся",
+      tokens_mod.normalize(ход_без_словаря.usage)["reasoning_tokens"] == 0
+      and "reasoning_tokens_source" not in ход_без_словаря.usage, str(ход_без_словаря.usage))
+ход_названный = asyncio.run(обмен_с_рассуждениями(
+    "ollama/малая", {"prompt_tokens": 20, "completion_tokens": 40, "completion_tokens_details": {"reasoning_tokens": 7}}))
+check("число рассуждений, названное службой, программа не заменяет",
+      tokens_mod.normalize(ход_названный.usage)["reasoning_tokens"] == 7
+      and "reasoning_tokens_source" not in ход_названный.usage, str(ход_названный.usage))
+ход_облачный = asyncio.run(обмен_с_рассуждениями("deepseek-v4-flash", {"prompt_tokens": 20, "completion_tokens": 40}))
+check("расход DeepSeek программа не дополняет", "reasoning_tokens_source" not in ход_облачный.usage, str(ход_облачный.usage))
+
+# Причин обрыва три; порога «мало места» нет — предел и окно либо достигнуты, либо нет.
+окно_почти = asyncio.run(
+    обрыв_по_длине({"prompt_tokens": tokens_mod.CONTEXT_WINDOW - 81, "completion_tokens": 80}, {})
+)
+check("окно не достигнуто на один токен: окном обрыв не назван",
+      "в окне модели не осталось места" not in (окно_почти.error or "")
+      and "оборван по длине" in (окно_почти.error or ""), str(окно_почти.error))
+умолчание_службы = asyncio.run(обрыв_по_длине({"prompt_tokens": 500, "completion_tokens": 4096}, {}))
+check("предел не задан, окно свободно: общая строка, без совета про окно и про max_tokens",
+      (умолчание_службы.error or "") == "ответ оборван по длине, не начавшись", str(умолчание_службы.error))
+предел_не_достигнут = asyncio.run(
+    обрыв_по_длине({"prompt_tokens": tokens_mod.CONTEXT_WINDOW - 50, "completion_tokens": 50}, {"max_tokens": 100})
+)
+check("предел задан, но не достигнут, а окно кончилось: названо окно",
+      "в окне модели не осталось места" in (предел_не_достигнут.error or ""), str(предел_не_достигнут.error))
+окно_съел_выход = asyncio.run(
+    обрыв_по_длине({"prompt_tokens": 800, "completion_tokens": tokens_mod.CONTEXT_WINDOW - 800}, {})
+)
+check("окно занял выход: названы вход и выход, совет — про рассуждения, а не про историю",
+      "вход 800" in (окно_съел_выход.error or "") and "рассуждений" in (окно_съел_выход.error or "")
+      and "/clear" not in (окно_съел_выход.error or ""), str(окно_съел_выход.error))
+дробный_предел = asyncio.run(обрыв_по_длине({"prompt_tokens": 500, "completion_tokens": 100}, {"max_tokens": 100.0}))
+check("предел, пришедший дробным числом, тоже назван пределом",
+      "max_tokens" in (дробный_предел.error or ""), str(дробный_предел.error))
 
 print()
 if failures:
