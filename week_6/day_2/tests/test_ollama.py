@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from calories import ollama
-from calories.ollama import МоделиНет, ОтветНегоден, СлужбаНедоступна, спросить
+from calories.ollama import МоделиНет, ОтветНегоден, СлужбаНедоступна, ЧужойАдрес, спросить
 
 from conftest import служба
 
@@ -87,6 +87,15 @@ def test_адрес_как_у_клиента_ollama(monkeypatch, значени�
 def test_местный_адрес_парой(monkeypatch, значение, свой):
     monkeypatch.setenv("OLLAMA_HOST", значение)
     assert ollama.местный() is свой
+
+
+@pytest.mark.parametrize("значение", ["192.168.1.5", "https://example.org", "example.org:11434"])
+def test_на_чужую_машину_запрос_не_уходит(monkeypatch, значение):
+    monkeypatch.setenv("OLLAMA_HOST", значение)
+    запросы = []
+    with pytest.raises(ЧужойАдрес):
+        спросить("с", "в", СХЕМА, клиент=служба({}, запросы=запросы))
+    assert запросы == []
 
 
 def test_негодный_адрес_не_трассировка(monkeypatch):

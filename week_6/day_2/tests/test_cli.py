@@ -2,7 +2,7 @@ import pytest
 
 from calories import cli
 from calories.core import Блюдо
-from calories.ollama import МоделиНет, ОтветНегоден, СлужбаНедоступна
+from calories.ollama import МоделиНет, ОтветНегоден, СлужбаНедоступна, ЧужойАдрес
 
 
 @pytest.fixture
@@ -47,14 +47,6 @@ def test_недостача_блюд_названа(вызовы, capsys):
     assert "меньше просимого: 1 из 3" in capsys.readouterr().out
     cli.main(["450", "--блюд", "1"])
     assert "меньше просимого" not in capsys.readouterr().out
-
-
-def test_чужой_адрес_даёт_предупреждение_парой(вызовы, monkeypatch, capsys):
-    cli.main(["борщ"])
-    assert "Внимание" not in capsys.readouterr().err
-    monkeypatch.setenv("OLLAMA_HOST", "https://example.org")
-    cli.main(["борщ"])
-    assert "example.org" in capsys.readouterr().err
 
 
 def test_замер_через_команду(tmp_path, monkeypatch, capsys):
@@ -107,6 +99,7 @@ def test_не_еда(monkeypatch, capsys):
 @pytest.mark.parametrize("ошибка, слова", [
     (СлужбаНедоступна("x"), ["http://127.0.0.1:11434", "ollama serve"]),
     (СлужбаНедоступна("ReadError: обрыв"), ["ReadError: обрыв"]),
+    (ЧужойАдрес("https://example.org"), ["https://example.org", "запрос не отправлен"]),
     (МоделиНет("model not found"), ["qwen3.5:9b-q4_K_M-32k", "CALORIES_MODEL", "model not found"]),
     (ОтветНегоден("калорийность 950"), ["калорийность 950"]),
 ])
