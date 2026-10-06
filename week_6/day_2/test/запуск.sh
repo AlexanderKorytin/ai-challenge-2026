@@ -8,5 +8,4 @@ step борщ со свининой
 step арбуз
 step табуретка
 step 450
-printf '\n\033[1m$ OLLAMA_HOST=192.168.1.5 калории борщ\033[0m\n'; OLLAMA_HOST=192.168.1.5 .venv/bin/калории борщ
 exit 0
