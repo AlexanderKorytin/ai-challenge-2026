@@ -1,0 +1,56 @@
+{
+ "model": "deepseek-v4-flash",
+ "concurrency": 1,
+ "tasks": [
+  {
+   "agent": "q01-cloud",
+   "profile": "rag-cloud",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-cloud",
+   "profile": "rag-cloud",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-cloud",
+   "profile": "rag-cloud",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-cloud",
+   "profile": "rag-cloud",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-cloud",
+   "profile": "rag-cloud",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-cloud",
+   "profile": "rag-cloud",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-cloud",
+   "profile": "rag-cloud",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-cloud",
+   "profile": "rag-cloud",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-cloud",
+   "profile": "rag-cloud",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-cloud",
+   "profile": "rag-cloud",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  }
+ ]
+}

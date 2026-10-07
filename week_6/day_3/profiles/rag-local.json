@@ -1,0 +1,1 @@
+{"name": "rag-local", "description": "ответы о проекте по базе знаний, местная модель", "system_file": "проект-rag.md", "rag": "rag-local", "keep_history": false, "temperature": 0, "thinking": {"type": "disabled"}}

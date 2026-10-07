@@ -1,0 +1,1 @@
+{"name": "rag-cloud", "description": "ответы о проекте по базе знаний, модель DeepSeek", "system_file": "проект-rag.md", "rag": "rag-cloud", "keep_history": false, "temperature": 0, "thinking": {"type": "disabled"}}

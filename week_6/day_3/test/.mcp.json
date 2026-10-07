@@ -1,0 +1,38 @@
+{
+ "mcpServers": {
+  "rag-cloud": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_MODE": "heuristic",
+    "RAG_REWRITE": "1",
+    "RAG_K1": "30",
+    "RAG_K2": "5",
+    "RAG_THRESHOLD": "0.35"
+   }
+  },
+  "rag-local": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_MODE": "heuristic",
+    "RAG_REWRITE": "0",
+    "RAG_K1": "30",
+    "RAG_K2": "5",
+    "RAG_THRESHOLD": "0.35"
+   }
+  }
+ }
+}

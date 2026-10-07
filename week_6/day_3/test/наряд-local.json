@@ -1,0 +1,56 @@
+{
+ "model": "ollama/qwen3.5:9b-q4_K_M-32k",
+ "concurrency": 1,
+ "tasks": [
+  {
+   "agent": "q01-local",
+   "profile": "rag-local",
+   "ask": "Где myharness хранит настройки и какие права ставит файлу?"
+  },
+  {
+   "agent": "q02-local",
+   "profile": "rag-local",
+   "ask": "Каких параметров генерации нельзя заводить в myharness и почему?"
+  },
+  {
+   "agent": "q03-local",
+   "profile": "rag-local",
+   "ask": "Сколько по умолчанию ждёт ответа MCP-сервер и чем это меняется?"
+  },
+  {
+   "agent": "q04-local",
+   "profile": "rag-local",
+   "ask": "Каким инструментом модель меняет стадию автомата задачи и кто открывает ворота?"
+  },
+  {
+   "agent": "q05-local",
+   "profile": "rag-local",
+   "ask": "Что происходит с задачей, когда судья выносит вердикт по правилу уровня А?"
+  },
+  {
+   "agent": "q06-local",
+   "profile": "rag-local",
+   "ask": "Почему в дне 19 отказались от MCP sampling?"
+  },
+  {
+   "agent": "q07-local",
+   "profile": "rag-local",
+   "ask": "Почему Ollama поставлена не через Homebrew?"
+  },
+  {
+   "agent": "q08-local",
+   "profile": "rag-local",
+   "ask": "Во что обошёлся день 15 и сколько было кругов просмотра?"
+  },
+  {
+   "agent": "q09-local",
+   "profile": "rag-local",
+   "ask": "Куда myharness пишет журнал прогонов и чем меняется это место?"
+  },
+  {
+   "agent": "q10-local",
+   "profile": "rag-local",
+   "ask": "Какой эмбеддер считает векторы индекса документов и где он работает?"
+  }
+ ]
+}
