@@ -14,7 +14,7 @@
     "RAG_REWRITE": "1",
     "RAG_K1": "30",
     "RAG_K2": "5",
-    "RAG_THRESHOLD": "0.35"
+    "RAG_THRESHOLD": "0.50"
    }
   },
   "rag-local": {
@@ -31,7 +31,7 @@
     "RAG_REWRITE": "0",
     "RAG_K1": "30",
     "RAG_K2": "5",
-    "RAG_THRESHOLD": "0.35"
+    "RAG_THRESHOLD": "0.50"
    }
   }
  }
