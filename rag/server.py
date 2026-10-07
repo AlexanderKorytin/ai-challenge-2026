@@ -155,7 +155,7 @@ _поиск: рр.Поиск | None = None
 
 srv = MCPServer(
     "rag",
-    instructions="Поиск по знаниям проекта: требования openspec/specs, документы docs/, CLAUDE.md.",
+    instructions="Поиск по требованиям проекта: openspec/specs.",
 )
 
 
