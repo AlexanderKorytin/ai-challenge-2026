@@ -88,7 +88,7 @@
 **Ход**: быстрый
 **Требование**: не про `myharness`
 **Проверка**: живой вызов без ключа. Команда из `rag/`:
-`MYHARNESS_CONFIG_DIR=<пустой каталог> RAG_REWRITE_MODEL=ollama/qwen3.5:9b-q4_K_M-32k uv run python -c "import rewrite; print(rewrite.переписать('Почему в дне 19 отказались от MCP sampling?'))"`
+`MYHARNESS_CONFIG_DIR=<пустой каталог> RAG_REWRITE_MODEL=ollama/qwen3.5:9b-q4_K_M-32k uv run python -c "import rewrite; print(rewrite.переписать('<вопрос q06 из rag/answers.jsonl>'))"`
 печатает одну строку запроса. Без `RAG_REWRITE_MODEL` та же команда кончается ошибкой «нет
 ключа DeepSeek» — парная проверка.
 **Содержание**: по договору выше. В `check_rag.py` рядом с проверками строк 413–444, тем же
