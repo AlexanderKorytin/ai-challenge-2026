@@ -2156,7 +2156,11 @@ class Agent:
         if strategy == context_strategy.CONTEXT_FACTS and effective_run_id is None:
             effective_run_id = uuid4().hex
         набор, жалоба_набора = await self._набор_инструментов()
+        # Время поиска — отдельным полем записи (`search_ms`): отсчёт обмена (`started`) стартует
+        # ниже, и переписывание запроса местной моделью иначе не было бы видно в журнале вовсе.
+        поиск_начат = time.monotonic()
         найденное, жалоба_поиска = await self._найти(content)
+        search_ms = int((time.monotonic() - поиск_начат) * 1000) if self._поиск is not None else None
         вес_инструментов = tokens.count_tools(набор.схемы, model) if набор is not None else 0
         self._вес_инструментов = вес_инструментов
         request_messages = self.build_messages(
@@ -2620,6 +2624,8 @@ class Agent:
             "elapsed_ms": int(elapsed * 1000),
             "error": error_text,
         }
+        if search_ms is not None:
+            entry["search_ms"] = search_ms
         if self._over_budget:
             entry["over_budget"] = True
         if self.restored_pairs:

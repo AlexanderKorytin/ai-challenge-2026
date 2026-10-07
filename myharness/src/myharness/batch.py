@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from . import api, config, context_strategy, mcp_tools, profiles
+from . import api, config, context_strategy, mcp_tools, profiles, providers
 from .agent import Agent, Turn, usage_tokens
 from .profiles import Profile, Substitution
 
@@ -434,7 +434,9 @@ async def main(args) -> int:
         order.concurrency = args.concurrency
 
     settings = config.load()
-    if not settings.is_authorized:
+    # Ключ нужен только модели DeepSeek: наряд местной модели в облако не ходит вовсе.
+    # Условие стоит после `--model` — поставщика называет итоговое имя модели наряда.
+    if not settings.is_authorized and not providers.is_local(order.model):
         print(
             "нет ключа DeepSeek: пакетный режим не спрашивает его сам. "
             "Задайте ключ командой /auth в обычном режиме — он ляжет в "

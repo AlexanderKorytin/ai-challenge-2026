@@ -422,7 +422,9 @@ class Clients:
     идут моделью разговора — значит, и местной.
 
     Клиент Ollama заводится при первой надобности, а не в конструкторе: негодный `OLLAMA_HOST`
-    не должен ронять запуск того, кто работает с DeepSeek."""
+    не должен ронять запуск того, кто работает с DeepSeek. Клиент DeepSeek — так же: наряд
+    местной модели стартует без ключа (способность `batch`), а без ключа клиент не строится.
+    Обращение к DeepSeek без ключа кончается `AuthError` в месте обращения."""
 
     def __init__(
         self,
@@ -431,11 +433,20 @@ class Clients:
         deepseek: DeepSeekClient | None = None,
         ollama: OllamaClient | None = None,
     ) -> None:
-        self._deepseek = deepseek or DeepSeekClient(api_key)
+        self._ключ = api_key
+        self._облачный = deepseek
         self._местный = ollama
         self._окно_узнано: set[str] = set()
         self._словарь_спрошен: set[str] = set()
         self._просьбы_словаря: dict[str, asyncio.Future[None]] = {}
+
+    @property
+    def _deepseek(self) -> DeepSeekClient:
+        if self._облачный is None:
+            if not self._ключ:
+                raise AuthError("нет ключа DeepSeek: задайте его командой /auth")
+            self._облачный = DeepSeekClient(self._ключ)
+        return self._облачный
 
     @property
     def _ollama(self) -> OllamaClient:
@@ -536,6 +547,7 @@ class Clients:
             yield event
 
     async def aclose(self) -> None:
-        await self._deepseek.aclose()
+        if self._облачный is not None:
+            await self._облачный.aclose()
         if self._местный is not None:
             await self._местный.aclose()
