@@ -1,6 +1,11 @@
 # День 28. Местная языковая модель и RAG
 
-**Стадия: Validation** — 2026-10-07 (ход стадий — `docs/состояние-местный-rag.md`).
+**Стадия: Report** — 2026-10-07, результат подтверждён (ход стадий — `docs/состояние-местный-rag.md`, копия — `состояние.md`).
+
+## Ссылки
+
+- Видео: https://drive.google.com/open?id=1k9BMsFNZHxd4xCYfFB-xBbJmh2h5tcRj
+- Код дня: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w6d3/week_6/day_3
 
 ## Постановка
 
@@ -44,6 +49,7 @@
 `week_6/day_1/Modelfile`, ветка `w6d1`).
 
 ```
+./test/показ.sh            # окно myharness с профилем rag-local; модель выбирает /model
 ./test/запуск.sh local     # 10 вопросов местной модели, без ключа
 ./test/запуск.sh cloud     # 10 вопросов DeepSeek
 uv run --project ~/challenge/main/rag ~/challenge/main/rag/eval.py \
