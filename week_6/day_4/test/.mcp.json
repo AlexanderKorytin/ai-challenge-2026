@@ -1,0 +1,18 @@
+{
+ "mcpServers": {
+  "rules": {
+   "type": "stdio",
+   "command": "uv",
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/main/rag",
+    "/Users/aleksandrkorytin/challenge/main/rag/server.py"
+   ],
+   "env": {
+    "RAG_INDEX": "/Users/aleksandrkorytin/challenge/w6d4/week_6/day_4/test/правила/правила.sqlite",
+    "RAG_MODE": "base"
+   }
+  }
+ }
+}

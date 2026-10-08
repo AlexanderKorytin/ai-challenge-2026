@@ -1,0 +1,6 @@
+# Текст правил защищён авторским правом: PDF, Markdown и индекс в git не идут.
+test/правила/
+test/state/
+test/profiles/
+test/наряды/
+__pycache__/
