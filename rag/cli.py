@@ -1,6 +1,9 @@
 """Командная строка индекса: `index`, `search`, `compare`, `rerank-compare`.
 
 Запуск из корня репозитория: `uv run --project rag rag/cli.py <команда>`.
+
+`index --corpus <каталог>` собирает индекс из чужого каталога файлов Markdown. Ему нужен явный
+`--index`: базу знаний проекта чужой корпус не заменяет.
 """
 
 from __future__ import annotations
@@ -67,8 +70,11 @@ def _git(*доводы: str) -> str:
     return subprocess.run(["git", *доводы], cwd=КОРЕНЬ, capture_output=True, text=True, check=True).stdout.strip()
 
 
-def собрать(strategy: str, куски: list[ч.Кусок], индекс: Path, fixed_size: int | None, считать=эм.эмбеддинги) -> dict:
-    """Эмбеддинги по файлам (одна просьба на файл) и запись сборки стратегии в индекс."""
+def собрать(strategy: str, куски: list[ч.Кусок], индекс: Path, fixed_size: int | None, считать=эм.эмбеддинги,
+            из_git: bool = True) -> dict:
+    """Эмбеддинги по файлам (одна просьба на файл) и запись сборки стратегии в индекс.
+
+    `из_git` ложь — корпус лежит вне репозитория: `commit_hash` и `dirty` сборки остаются `NULL`."""
     начало = time.monotonic()
     по_файлам: dict[str, list[ч.Кусок]] = {}
     for к in куски:
@@ -82,24 +88,28 @@ def собрать(strategy: str, куски: list[ч.Кусок], индекс:
         все_векторы.append(матрица)
     print(file=sys.stderr)
     матрица = np.concatenate(все_векторы)
-    сведения = {"model": эм.МОДЕЛЬ, "dim": int(матрица.shape[1]), "commit_hash": _git("rev-parse", "HEAD"),
-                "dirty": int(bool(_git("status", "--porcelain", "--", *ПУТИ_КОРПУСА))),
+    сведения = {"model": эм.МОДЕЛЬ, "dim": int(матрица.shape[1]),
+                "commit_hash": _git("rev-parse", "HEAD") if из_git else None,
+                "dirty": int(bool(_git("status", "--porcelain", "--", *ПУТИ_КОРПУСА))) if из_git else None,
                 "built_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
                 "seconds": round(time.monotonic() - начало, 1), "chunks": len(все_куски), "fixed_size": fixed_size}
     store.записать(индекс, strategy, все_куски, матрица, сведения)
     return сведения
 
 
-def команда_index(доводы) -> None:
-    корпус = ч.корпус(КОРЕНЬ)
+def команда_index(доводы, считать=эм.эмбеддинги) -> None:
+    свой = доводы.corpus is None
+    корпус = ч.корпус(КОРЕНЬ) if свой else ч.корпус_каталога(доводы.corpus)
+    if not корпус:
+        raise ValueError(f"в каталоге {доводы.corpus} нет файлов .md" if not свой else "корпус проекта пуст")
     structure = [к for source, текст in корпус for к in ч.нарезать_structure(source, текст)]
     размер = ч.размер_fixed(structure)
     if доводы.strategy in ("structure", "all"):
-        с = собрать("structure", structure, доводы.index, None)
+        с = собрать("structure", structure, доводы.index, None, считать, свой)
         print(f"structure: {с['chunks']} кусков за {с['seconds']} с")
     if доводы.strategy in ("fixed", "all"):
         fixed = [к for source, текст in корпус for к in ч.нарезать_fixed(source, текст, размер)]
-        с = собрать("fixed", fixed, доводы.index, размер)
+        с = собрать("fixed", fixed, доводы.index, размер, считать, свой)
         print(f"fixed (окно {размер}): {с['chunks']} кусков за {с['seconds']} с")
 
 
@@ -149,10 +159,12 @@ def команда_rerank_compare(доводы) -> None:
 
 def главная(argv: list[str] | None = None) -> None:
     разбор = argparse.ArgumentParser(prog="rag", description="Индекс документов проекта")
-    разбор.add_argument("--index", type=Path, default=ИНДЕКС, help=f"файл индекса (по умолчанию {ИНДЕКС})")
+    разбор.add_argument("--index", type=Path, help=f"файл индекса (по умолчанию {ИНДЕКС})")
     команды = разбор.add_subparsers(dest="команда", required=True)
     и = команды.add_parser("index", help="нарезать корпус, посчитать эмбеддинги, записать индекс")
     и.add_argument("--strategy", choices=["structure", "fixed", "all"], default="all")
+    и.add_argument("--corpus", type=Path,
+                   help="каталог чужого корпуса: все *.md рекурсивно вместо требований проекта; нужен явный --index")
     и.set_defaults(действие=команда_index)
     п = команды.add_parser("search", help="найти куски по вопросу")
     п.add_argument("вопрос")
@@ -174,6 +186,11 @@ def главная(argv: list[str] | None = None) -> None:
     р.set_defaults(действие=команда_rerank_compare)
     доводы = разбор.parse_args(argv)
     try:
+        if доводы.index is None:
+            # Чужой корпус в индекс по умолчанию затёр бы базу знаний проекта — молча и целиком.
+            if getattr(доводы, "corpus", None) is not None:
+                raise ValueError("--corpus требует --index")
+            доводы.index = ИНДЕКС
         доводы.действие(доводы)
     except (эм.ОшибкаЭмбеддера, пер.ОшибкаПереписывания, LookupError, ValueError) as e:
         sys.exit(f"rag: {e}")
