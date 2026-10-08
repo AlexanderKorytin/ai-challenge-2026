@@ -4,3 +4,5 @@ test/state/
 test/profiles/
 test/наряды/
 __pycache__/
+# Журнал несёт найденные куски правил дословно — в git не идёт. Отчёты строятся из него.
+test/myharness-journal.jsonl
