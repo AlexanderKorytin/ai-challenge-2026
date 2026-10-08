@@ -1,0 +1,7 @@
+{
+ "name": "default",
+ "description": "модель как есть: инструкция в одну строку, параметры — умолчания модели",
+ "system_file": "default.md",
+ "rag": "rules",
+ "keep_history": true
+}
