@@ -1,0 +1,10 @@
+{
+ "name": "хозяин-таверны",
+ "description": "ведущий игры Betrayal at Baldur's Gate: правило по книге, сцена, развитие событий",
+ "system_file": "хозяин-таверны.md",
+ "rag": "rules",
+ "keep_history": true,
+ "thinking": {"type": "disabled"},
+ "temperature": 1.0,
+ "max_tokens": 400
+}
