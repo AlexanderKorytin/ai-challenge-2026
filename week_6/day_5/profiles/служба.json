@@ -1,0 +1,8 @@
+{
+ "name": "служба",
+ "description": "день 30: чат с местной моделью через шлюз, короткие ответы без рассуждений",
+ "system_file": "служба.md",
+ "keep_history": true,
+ "thinking": {"type": "disabled"},
+ "max_tokens": 300
+}
