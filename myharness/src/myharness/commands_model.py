@@ -501,6 +501,8 @@ async def cmd_profile(state: State, arg: str) -> None:
         state.profile_dirty = False
         state.config.profile = name
         save_config(state.config)
+        # Имя профиля сменилось на месте: шапка обязана назвать новое, как и строка состояния.
+        refresh_banner(state)
         append_log(state, ui.system_fragments(f"профиль сохранён: {path}"))
         соседняя = path.with_suffix(".md")
         if соседняя.exists():

@@ -130,8 +130,6 @@ def refresh_banner(state: State) -> None:
     if len(шапка) != length:
         return
     replace_log(state, pane, at, length, шапка)
-    if state.app is not None:
-        state.app.invalidate()
 
 
 def replace_log(
