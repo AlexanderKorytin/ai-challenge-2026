@@ -104,6 +104,9 @@ class State:
     model: str
     profile: Profile
     app: Application | None = None
+    # Где в ленте лежит шапка приветствия: панель, место и число фрагментов. По этой отметке
+    # шапка перерисовывается на месте, когда меняются модель, профиль или авторизация.
+    banner: tuple[screens_mod.Pane, int, int] | None = None
     screens: list[screens_mod.Screen] = field(default_factory=lambda: [screens_mod.main_screen()])
     active: int = 0
     queue: asyncio.Queue[Request] = field(default_factory=asyncio.Queue)

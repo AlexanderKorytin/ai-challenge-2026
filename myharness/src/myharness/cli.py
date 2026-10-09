@@ -26,7 +26,7 @@ from . import profiles, ui
 from .api import Clients
 from .config import load as load_config
 from .conversation import restore_conversation, поднять_слои
-from .output import append_log
+from .output import append_log, print_banner
 from .state import State
 from .strategies import open_profile_surfaces
 from .workers import close_pane_workers, worker
@@ -61,7 +61,7 @@ def greet(state: State) -> None:
     """Шапка и подсказка про инструкцию. Вынесены из `repl`, потому что печатать их надо
     ДО восстановления разговора: строка «восстановлен разговор…», вылезшая выше приветствия,
     читается так, будто разговор подняли ещё до запуска инструмента."""
-    append_log(state, ui.banner_fragments(state.model, state.config.is_authorized, state.profile.name))
+    print_banner(state)
     if state.profile.system:
         append_log(state, ui.system_fragments("профиль задаёт системную инструкцию — показать: /system"))
 

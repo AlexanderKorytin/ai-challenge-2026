@@ -18,7 +18,7 @@ from . import picker as picker_mod
 from .api import Clients
 from . import interview, memory, profile_maker
 from .config import save as save_config
-from .output import append_log, refresh
+from .output import append_log, refresh, refresh_banner
 from .panes import active_profile
 from .state import State
 from .strategies import STRATEGY_TITLES, switch_profile, use_strategy
@@ -52,6 +52,7 @@ async def do_auth(raw_key: str, state: State) -> None:
     state.client = candidate
     state.config.api_key = key
     save_config(state.config)
+    refresh_banner(state)
     append_log(state, ui.system_fragments("авторизация сохранена — вводить ключ заново не потребуется"))
 
 
@@ -59,6 +60,7 @@ def set_model(state: State, name: str) -> None:
     state.model = name
     state.config.model = name
     save_config(state.config)
+    refresh_banner(state)
     append_log(state, ui.system_fragments(f"модель установлена: {name} ({ui.supplier_title(name)})"))
     if state.client is not None and providers.is_local(name):
         # Окно местной модели узнаём сразу, а не на первом вопросе: полоска занятости и счёт до

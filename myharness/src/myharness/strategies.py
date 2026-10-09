@@ -17,7 +17,7 @@ from . import context_strategy, memory, profiles, ui
 from . import methods as methods_mod
 from . import screens as screens_mod
 from .agent import Agent
-from .output import append_log
+from .output import append_log, refresh_banner
 from .config import save as save_config
 from .conversation import restore_conversation
 from .panes import active_profile, apply_prefill, drop_agent_screens, switch_screen
@@ -307,6 +307,7 @@ async def switch_profile(state: State, name: str) -> None:
         state.profile_dirty = False
         state.config.profile = profile.name
         save_config(state.config)
+        refresh_banner(state)
         for warning in warnings:
             append_log(state, ui.error_fragments(warning))
         if had_history:

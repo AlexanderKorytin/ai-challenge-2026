@@ -107,6 +107,33 @@ def append_log(
         state.app.invalidate()
 
 
+def print_banner(state: State) -> None:
+    """Напечатать шапку приветствия и запомнить её место в ленте."""
+    pane = target_pane(state, None)
+    шапка = ui.banner_fragments(state.model, state.config.is_authorized, state.profile.name)
+    state.banner = (pane, len(pane.log), len(шапка))
+    append_log(state, шапка, pane)
+
+
+def refresh_banner(state: State) -> None:
+    """Перерисовать шапку на месте: она называет ТЕКУЩИЕ модель, профиль и авторизацию.
+
+    Шапка печатается один раз, а модель меняют командой `/model` уже после: без перерисовки
+    человек видел бы наверху «DeepSeek API · deepseek-flash», разговаривая с местной моделью.
+    Число фрагментов шапки постоянно — меняется только текст, — поэтому места всего, что лежит
+    в ленте ниже (строка ожидания помнит своё), не сдвигаются. Изменись оно — шапку не трогаем:
+    сдвинутая лента хуже устаревшей шапки."""
+    if state.banner is None:
+        return
+    pane, at, length = state.banner
+    шапка = ui.banner_fragments(state.model, state.config.is_authorized, state.profile.name)
+    if len(шапка) != length:
+        return
+    replace_log(state, pane, at, length, шапка)
+    if state.app is not None:
+        state.app.invalidate()
+
+
 def replace_log(
     state: State, pane: screens_mod.Pane, at: int, length: int, fragments: Fragments
 ) -> None:

@@ -16862,6 +16862,32 @@ check("парная: окно названо — полоска есть",
 check("приветствие называет поставщика текущей модели",
       "Ollama" in "".join(текст for _, текст in ui.banner_fragments("ollama/м", True, "default"))
       and "DeepSeek API" in "".join(текст for _, текст in ui.banner_fragments("deepseek-v4-flash", True, "default")))
+
+# Шапка следует за текущей моделью: смена командой /model перерисовывает её на месте.
+from myharness import commands_model as _команды_модели  # noqa: E402
+from myharness import output as _вывод  # noqa: E402
+
+шапочное = state_mod.State(config=Config(api_key=None), client=None, model="deepseek-v4-flash", profile=profiles.builtin_default())
+_вывод.print_banner(шапочное)
+_вывод.append_log(шапочное, ui.system_fragments("строка ниже шапки"))
+лента_шапки = шапочное.main.first
+текст_до = "".join(текст for _, текст in лента_шапки.log)
+длина_до, строк_до = len(лента_шапки.log), лента_шапки.line_count
+_команды_модели.set_model(шапочное, "ollama/проба-шапки")
+текст_после = "".join(текст for _, текст in лента_шапки.log)
+шапка_после = текст_после.split("строка ниже шапки")[0]
+check("предусловие: до смены модели шапка называет DeepSeek и прежнюю модель",
+      "DeepSeek API" in текст_до and "модель: deepseek-v4-flash" in текст_до)
+check("после /model шапка называет новую модель и её поставщика, прежних слов в ней нет",
+      "модель: ollama/проба-шапки" in шапка_после and "Ollama, местная модель" in шапка_после
+      and "DeepSeek API" not in шапка_после and "deepseek-v4-flash" not in шапка_после, шапка_после)
+check("шапка перерисована на месте: строка ниже неё цела, лента выросла только на сообщение о модели",
+      "строка ниже шапки" in текст_после and текст_после.index("модель: ollama/проба-шапки") < текст_после.index("строка ниже шапки")
+      and len(лента_шапки.log) == длина_до + len(ui.system_fragments("x")) and лента_шапки.line_count == строк_до + 1,
+      f"{len(лента_шапки.log)} {длина_до} {лента_шапки.line_count} {строк_до}")
+без_шапки = state_mod.State(config=Config(api_key=None), client=None, model="deepseek-v4-flash", profile=profiles.builtin_default())
+_вывод.refresh_banner(без_шапки)
+check("парная: без напечатанной шапки перерисовка ленту не трогает", без_шапки.main.first.log == [])
 tokens_mod._LOCAL_WINDOWS.clear()
 
 print("\n# Словарь местной модели: счёт, запрос у службы, рассуждения, причина обрыва (отложенная задача 16)")
