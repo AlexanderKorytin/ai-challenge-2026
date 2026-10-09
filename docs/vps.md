@@ -119,3 +119,50 @@ rsync, sqlite3. Рабочий каталог `/opt/challenge/` — git, сек�
   ручной запуск — `systemctl start cbr-digest` (каждый тратит деньги DeepSeek и пишет сводку в
   рабочую базу). Предел одного запуска — `TimeoutStartSec=5min`; без инструментов или без их
   вызовов агент сводку не сохраняет и выходит с кодом 1.
+
+### `llm-gateway` — шлюз перед службой Ollama (день 30) — на сервере `188.120.230.58`
+
+Модель `qwen3.5:9b-q4_K_M-32k` работает в Ollama на Маке. Сервер даёт вход из сети:
+`https://188.120.230.58`, пути `/v1/*` и `/api/*`. Устройство и отказы — `llm_gateway/README.md`,
+дизайн — `docs/местная-служба.md`.
+
+```
+клиент → Caddy :443 → шлюз 127.0.0.1:8780 → 127.0.0.1:11435 (туннель ssh) → Ollama на Маке
+```
+
+- **Служба работает, пока Мак включён и не спит.** Туннеля нет — шлюз отвечает 503
+  «узел модели недоступен».
+- Код — `llm_gateway/` и библиотека `myharness/`. Доставка:
+  `rsync -a --no-owner --no-group --delete --exclude .venv --exclude __pycache__ --exclude .pytest_cache myharness/ challenge-mcp:/opt/challenge/myharness/`,
+  то же для `llm_gateway/` в `/opt/challenge/llm_gateway/`, затем на сервере из
+  `/opt/challenge/llm_gateway`: `/root/.local/bin/uv sync --frozen --reinstall-package myharness`,
+  `cp deploy/llm-gateway.service /etc/systemd/system/`, `systemctl daemon-reload`,
+  `systemctl restart llm-gateway`.
+- Служба systemd `llm-gateway` (`deploy/llm-gateway.service`): слушает `127.0.0.1:8780`, не от
+  root (`DynamicUser`), ходит только на петлю (`IPAddressAllow=localhost`). Память со словарём
+  модели — 227 МБ (замер 2026-10-09); свободно на сервере после запуска 403 МБ.
+- Токены клиентов — `/opt/challenge/llm-gateway.env` (root 600): строки `LLM_TOKEN_mac` и
+  `LLM_TOKEN_challenge`. Новый клиент — новая строка `LLM_TOKEN_<имя>=$(openssl rand -hex 32)`
+  и `systemctl restart llm-gateway`. Клиент берёт токен при запуске:
+  `export OLLAMA_API_KEY=$(ssh challenge-mcp "grep ^LLM_TOKEN_mac= /opt/challenge/llm-gateway.env | cut -d= -f2")`.
+- Настройки шлюза — строки `Environment=` модуля: список моделей `LLM_MODELS`, частота
+  `LLM_RATE_PER_MINUTE=12` (решение пользователя 2026-10-09).
+- Журнал запросов — `/var/lib/private/llm-gateway/journal.jsonl`, строка на запрос, без текста
+  запросов и ответов. Ротации нет.
+- Caddy: пути `/v1/*` и `/api/*` в общем файле `mcp_servers/cbr/deploy/Caddyfile`. Прежний файл
+  сохранён на сервере как `/etc/caddy/Caddyfile.before-llm`.
+- **Туннель.** Его держит агент launchd на Маке `com.challenge.llm-tunnel`
+  (`llm_gateway/deploy/com.challenge.llm-tunnel.plist` → `~/Library/LaunchAgents/`), журнал —
+  `~/Library/Logs/llm-tunnel.log`. Снять: `launchctl bootout gui/$(id -u)/com.challenge.llm-tunnel`.
+  Поставить: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.challenge.llm-tunnel.plist`.
+- Пользователь туннеля на сервере — `llm-tunnel` (без оболочки, дом `/var/lib/llm-tunnel`), ключ
+  на Маке — `~/.ssh/llm_tunnel`. Ключу разрешено одно действие — слушать `127.0.0.1:11435`. Это
+  держат два слоя: `/etc/ssh/sshd_config.d/90-llm-tunnel.conf` (`Match User llm-tunnel`,
+  `AllowTcpForwarding remote`, `PermitListen 127.0.0.1:11435`) и строка `authorized_keys`
+  (`restrict,port-forwarding,permitlisten=…,permitopen="127.0.0.1:1"`). Замер 2026-10-09:
+  оболочка — «This account is currently not available», порт 9999 — «remote port forwarding
+  failed», прямая переадресация `-L` — «administratively prohibited».
+- Проверка: `curl -s -o /dev/null -w '%{http_code}' https://188.120.230.58/v1/models` — 401 без
+  токена; с токеном — список из одной модели. `systemctl is-active llm-gateway`.
+- Остаточные риски: любой процесс сервера ходит в `127.0.0.1:11435` мимо шлюза и получает всю
+  службу Ollama Мака; предела размера тела запроса у шлюза нет.
