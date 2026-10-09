@@ -1,0 +1,50 @@
+# Шлюз перед службой Ollama на VPS 188.120.230.58 (день 30).
+# Ставится: cp deploy/llm-gateway.service /etc/systemd/system/ && systemctl enable --now llm-gateway
+# Слушает только 127.0.0.1: наружу его выводит Caddy по HTTPS (mcp_servers/cbr/deploy/Caddyfile).
+[Unit]
+Description=Шлюз перед службой Ollama: токен, пути, модели, частота, окно
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Токены клиентов LLM_TOKEN_<имя> — свой файл root:600 вне git, а не общий /opt/challenge/.env:
+# там лежат ключ DeepSeek и токен cbr-mcp, шлюзу они не нужны. systemd читает файл до сброса
+# прав, самой службе доступ к нему не нужен.
+EnvironmentFile=/opt/challenge/llm-gateway.env
+# Конец обратного туннеля ssh: его открывает Мак с моделью (deploy/com.challenge.llm-tunnel.plist).
+# Имя переменной — как у самой Ollama и у myharness.
+Environment=OLLAMA_HOST=http://127.0.0.1:11435
+Environment=LLM_MODELS=qwen3.5:9b-q4_K_M-32k
+# Решение пользователя 2026-10-09: 12 запросов в минуту на клиента (docs/местная-служба.md).
+Environment=LLM_RATE_PER_MINUTE=12
+StateDirectory=llm-gateway
+Environment=LLM_GATEWAY_LOG=/var/lib/llm-gateway/journal.jsonl
+WorkingDirectory=/opt/challenge/llm_gateway
+# Окружение собирается при доставке (`uv sync --frozen` от root); служба запускает его Python
+# напрямую — uv и его кеш в /root ей не нужны.
+ExecStart=/opt/challenge/llm_gateway/.venv/bin/python gateway.py --host 127.0.0.1 --port 8780
+Restart=on-failure
+# Не root: процесс разбирает чужой JSON из сети. Временный пользователь, система только на чтение.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+ProtectKernelLogs=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+CapabilityBoundingSet=
+# Журнал запросов читает только сама служба и root.
+UMask=0077
+# Шлюзу нужна только петля: Caddy спереди и туннель сзади. В сеть он не ходит.
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

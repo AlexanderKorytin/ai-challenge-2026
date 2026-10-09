@@ -11,10 +11,14 @@
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
 
 OLLAMA_PREFIX = "ollama/"
 DEFAULT_OLLAMA_PORT = 11434
 DEFAULT_OLLAMA_ROOT = f"http://127.0.0.1:{DEFAULT_OLLAMA_PORT}"
+# Строка в заголовке, когда токена нет: службе Ollama на своей машине он не нужен.
+OLLAMA_TOKEN_STUB = "ollama"
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def is_local(model: str) -> bool:
@@ -40,3 +44,26 @@ def ollama_root() -> str:
     if ":" not in остаток.rpartition("]")[2]:
         root = f"{схема}://{остаток}:{DEFAULT_OLLAMA_PORT}"
     return root
+
+
+def ollama_token() -> str:
+    """Токен службы Ollama для заголовка `Authorization`. `OLLAMA_API_KEY` — переменная самой
+    Ollama (под ней она держит ключ своего облака), своей не заводим.
+
+    Токен нужен службе за шлюзом на чужой машине. По открытому `http://` на чужой адрес он не
+    уходит: его прочёл бы любой узел на пути. Такое сочетание — `ValueError` с причиной."""
+    токен = os.environ.get("OLLAMA_API_KEY", "").strip()
+    if not токен:
+        return OLLAMA_TOKEN_STUB
+    if not токен.isascii() or not токен.isprintable() or " " in токен:
+        # Заголовок HTTP несёт только печатные знаки ASCII: иначе клиент упал бы трассировкой
+        # при сборке запроса.
+        raise ValueError("токен службы Ollama (OLLAMA_API_KEY) содержит пробел либо знаки вне печатных ASCII")
+    корень = ollama_root()
+    адрес = urlsplit(корень)
+    if адрес.scheme != "https" and адрес.hostname not in LOOPBACK_HOSTS:
+        raise ValueError(
+            f"токен службы Ollama (OLLAMA_API_KEY) не уходит по открытому адресу {корень}: "
+            "назовите адрес с https:// либо уберите токен"
+        )
+    return токен

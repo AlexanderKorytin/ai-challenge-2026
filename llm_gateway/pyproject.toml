@@ -1,0 +1,17 @@
+[project]
+name = "llm-gateway"
+version = "0.1.0"
+description = "Шлюз перед службой Ollama: токен, список путей и моделей, частота, окно"
+requires-python = ">=3.11"
+dependencies = [
+    # Счёт токенов словарём модели и клиент Ollama — из библиотеки myharness как есть.
+    "myharness",
+    # Тот же клиент HTTP, что у myharness: транспорт обязан быть той же библиотеки.
+    "httpx2>=2.12,<3",
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+]
+
+[tool.uv.sources]
+# Тот же путь в репозитории и на сервере: /opt/challenge/llm_gateway → /opt/challenge/myharness.
+myharness = { path = "../myharness" }

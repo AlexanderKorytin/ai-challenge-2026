@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Обратный туннель ssh от Мака с моделью к VPS 188.120.230.58 (день 30).
+  Мак за домашним маршрутизатором, внешнего адреса у него нет. Поэтому Мак сам открывает
+  соединение и просит VPS слушать 127.0.0.1:11435; всё пришедшее туда уходит службе Ollama
+  на 127.0.0.1:11434 Мака. Агент поднимает туннель после обрыва (KeepAlive).
+  Ставится: cp в ~/Library/LaunchAgents/, затем
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.challenge.llm-tunnel.plist
+  Снимается: launchctl bootout gui/$(id -u)/com.challenge.llm-tunnel
+  Ключ ~/.ssh/llm_tunnel на сервере разрешает одно действие — слушать 127.0.0.1:11435:
+  блок Match User llm-tunnel в настройке sshd и строка authorized_keys (docs/vps.md).
+  ServerAliveInterval 30 и ServerAliveCountMax 3: мёртвое соединение замечается за 90 с.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.challenge.llm-tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/ssh</string>
+    <string>-N</string>
+    <string>-T</string>
+    <string>-F</string><string>/dev/null</string>
+    <string>-o</string><string>ExitOnForwardFailure=yes</string>
+    <string>-o</string><string>ServerAliveInterval=30</string>
+    <string>-o</string><string>ServerAliveCountMax=3</string>
+    <string>-o</string><string>IdentitiesOnly=yes</string>
+    <string>-o</string><string>BatchMode=yes</string>
+    <string>-o</string><string>UserKnownHostsFile=/Users/aleksandrkorytin/.ssh/known_hosts</string>
+    <string>-i</string><string>/Users/aleksandrkorytin/.ssh/llm_tunnel</string>
+    <string>-R</string><string>127.0.0.1:11435:127.0.0.1:11434</string>
+    <string>llm-tunnel@188.120.230.58</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/Users/aleksandrkorytin/Library/Logs/llm-tunnel.log</string>
+</dict>
+</plist>

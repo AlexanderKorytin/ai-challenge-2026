@@ -16695,6 +16695,80 @@ check("служба не слушает: сообщение называет Oll
       and tokens_mod.window("ollama/qwen3.5:9b") is None, сбой_службы)
 
 
+# --- Токен службы Ollama: OLLAMA_API_KEY уходит заголовком (docs/план-местная-служба.md) ------
+def с_окружением_ollama(адрес, токен, действие):
+    прежние = {имя: os.environ.pop(имя, None) for имя in ("OLLAMA_HOST", "OLLAMA_API_KEY")}
+    try:
+        if адрес is not None:
+            os.environ["OLLAMA_HOST"] = адрес
+        if токен is not None:
+            os.environ["OLLAMA_API_KEY"] = токен
+        return действие()
+    finally:
+        for имя, значение in прежние.items():
+            os.environ.pop(имя, None)
+            if значение is not None:
+                os.environ[имя] = значение
+
+
+def заголовки_службы(адрес, токен):
+    служба = СлужбаOllama()
+
+    def действие():
+        tokens_mod._LOCAL_WINDOWS.clear()
+        asyncio.run(обмен_через_распределитель(служба, "ollama/qwen9-day26"))
+        return {запись[0]: запись[2] for запись in служба.запросы}, {запись[3] for запись in служба.запросы}
+
+    return с_окружением_ollama(адрес, токен, действие)
+
+
+заголовки_с_токеном, адреса_с_токеном = заголовки_службы("https://188.120.230.58:443", "taina-sluzhby")
+check("токен службы Ollama уходит заголовком и чату, и родным адресам /api",
+      {"/v1/chat/completions", "/api/show", "/api/tags"} <= set(заголовки_с_токеном)
+      and set(заголовки_с_токеном.values()) == {"Bearer taina-sluzhby"}, str(заголовки_с_токеном))
+check("адрес https с портом 443 взят как есть, порт 11434 не дописан",
+      all(адрес.startswith("https://188.120.230.58/") or адрес.startswith("https://188.120.230.58:443/")
+          for адрес in адреса_с_токеном), str(адреса_с_токеном))
+заголовки_без_токена, _ = заголовки_службы(None, None)
+check("парная: без OLLAMA_API_KEY во всех запросах прежняя заглушка",
+      set(заголовки_без_токена.values()) == {"Bearer ollama"}, str(заголовки_без_токена))
+заголовки_пустого, _ = заголовки_службы(None, "  ")
+check("пустой OLLAMA_API_KEY — та же заглушка", set(заголовки_пустого.values()) == {"Bearer ollama"}, str(заголовки_пустого))
+заголовки_петли, _ = заголовки_службы("http://127.0.0.1:11434", "taina-sluzhby")
+check("токен по http на петлевой адрес уходит", set(заголовки_петли.values()) == {"Bearer taina-sluzhby"}, str(заголовки_петли))
+
+
+def обмен_по_открытому_адресу():
+    async def ход():
+        клиенты = api.Clients("sk", deepseek=ПодставнойDeepSeek())
+        try:
+            return [с async for с in клиенты.stream_chat("ollama/qwen3.5:9b", [{"role": "user", "content": "2+2"}])]
+        finally:
+            await клиенты.aclose()
+
+    try:
+        asyncio.run(ход())
+        return ""
+    except api.OllamaUnavailable as исключение:
+        return str(исключение)
+
+
+отказ_знаков = с_окружением_ollama("https://188.120.230.58:443", "тайна", обмен_по_открытому_адресу)
+check("токен со знаками вне ASCII — ошибка обмена без трассировки, значения в ней нет",
+      "ASCII" in отказ_знаков and "тайна" not in отказ_знаков, отказ_знаков)
+отказ_строки = с_окружением_ollama("https://188.120.230.58:443", "taina\nsluzhby", обмен_по_открытому_адресу)
+check("токен с переводом строки внутри — ошибка обмена без трассировки", "ASCII" in отказ_строки, отказ_строки)
+for адрес_петли in ("http://localhost:11434", "http://[::1]:11434", "HTTPS://188.120.230.58:443"):
+    заголовки_адреса, _ = заголовки_службы(адрес_петли, "taina-sluzhby")
+    check(f"токен уходит на адрес {адрес_петли}", set(заголовки_адреса.values()) == {"Bearer taina-sluzhby"}, str(заголовки_адреса))
+отказ_всех = с_окружением_ollama("http://0.0.0.0:11434", "taina-sluzhby", обмен_по_открытому_адресу)
+check("адрес 0.0.0.0 петлевым не считается", "OLLAMA_API_KEY" in отказ_всех, отказ_всех)
+отказ_открытого = с_окружением_ollama("http://10.0.0.5:11434", "taina-sluzhby", обмен_по_открытому_адресу)
+check("парная: токен по http на чужой адрес не уходит — обмен кончается ошибкой с причиной и адресом",
+      "OLLAMA_API_KEY" in отказ_открытого and "http://10.0.0.5:11434" in отказ_открытого
+      and "taina-sluzhby" not in отказ_открытого, отказ_открытого)
+
+
 async def местные_при_молчащей_службе():
     клиенты = api.Clients("sk", deepseek=ПодставнойDeepSeek(), ollama=api.OllamaClient(httpx2.MockTransport(СлужбаOllama(отказ=True))))
     try:

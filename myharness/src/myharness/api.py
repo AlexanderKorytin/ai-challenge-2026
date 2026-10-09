@@ -272,7 +272,7 @@ class DeepSeekClient(_ChatClient):
 
 
 class OllamaUnavailable(Exception):
-    """Местная служба не приняла соединение."""
+    """Служба Ollama не приняла соединение либо запрос к ней нельзя отправить."""
 
 
 def split_local_params(params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -299,24 +299,30 @@ def _num_ctx(show: dict[str, Any]) -> int | None:
 
 
 class OllamaClient(_ChatClient):
-    """Местная служба Ollama. Ключа у неё нет: в заголовок уходит строка-заглушка, и ключ
-    DeepSeek сюда не попадает ни при каком пути.
+    """Служба Ollama. У службы на своей машине токена нет: в заголовок уходит строка-заглушка.
+    Службе за шлюзом уходит токен из `OLLAMA_API_KEY` (`providers.ollama_token`). Ключ DeepSeek
+    сюда не попадает ни при каком пути.
 
-    Соединение не повторяется: служба на этой же машине либо слушает, либо нет, и повторы
-    DeepSeek дали бы минуты ожидания вместо сообщения, что её надо запустить.
+    Соединение не повторяется: служба отвечает сразу либо не запущена, и повторы DeepSeek дали
+    бы минуты ожидания вместо сообщения, что её надо запустить.
 
     Обмен идёт по `/v1` — тот же формат, что у DeepSeek, и тот же разбор потока. Список моделей
     и окно `/v1` не отдаёт, за ними клиент ходит в родные `/api/tags`, `/api/show`, `/api/ps`."""
 
     def __init__(self, transport: httpx2.AsyncBaseTransport | None = None) -> None:
         self.root = providers.ollama_root()
+        try:
+            токен = providers.ollama_token()
+        except ValueError as exc:
+            raise OllamaUnavailable(str(exc)) from exc
         super().__init__(
-            f"{self.root}/v1", "ollama", transport=transport or _transport(self.root, retries=0), max_retries=0
+            f"{self.root}/v1", токен, transport=transport or _transport(self.root, retries=0), max_retries=0
         )
         self._native = httpx2.AsyncClient(
             base_url=self.root,
             timeout=REQUEST_TIMEOUT,
             transport=transport or _transport(self.root, retries=0),
+            headers={"Authorization": f"Bearer {токен}"},
         )
 
     def _split(self, params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
