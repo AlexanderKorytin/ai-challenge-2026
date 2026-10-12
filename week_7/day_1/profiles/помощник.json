@@ -1,0 +1,10 @@
+{
+ "name": "помощник",
+ "description": "копия встроенного профиля — пакетный режим берёт профиль только из файлов",
+ "system_file": "помощник.md",
+ "rag": "rag",
+ "keep_history": false,
+ "thinking": {
+  "type": "disabled"
+ }
+}
