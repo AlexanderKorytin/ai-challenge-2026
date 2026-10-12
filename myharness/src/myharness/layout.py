@@ -109,7 +109,7 @@ class HarnessCompleter(Completer):
                         display=strategy,
                         display_meta=STRATEGY_TITLES[strategy],
                     )
-        elif command == "/help" and len(parts) == 2:
+        elif command == "/info" and len(parts) == 2:
             # Подсказываются целые слова, а команда принимает и их начало: состав подсказок
             # не шире того, что она понимает.
             for раздел in helpdoc.РАЗДЕЛЫ:

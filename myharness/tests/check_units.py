@@ -412,7 +412,7 @@ class Doc:
 names = [c.text for c in comp.get_completions(Doc("/"), None)]
 check(
     "без авторизации в меню /auth и команды без ключа, но не /model и /profile",
-    {"/auth", "/help", "/mcp"} <= set(names) and not ({"/model", "/profile", "/set"} & set(names)),
+    {"/auth", "/info", "/mcp"} <= set(names) and "/help" not in names and not ({"/model", "/profile", "/set"} & set(names)),
     str(names),
 )
 state.config.api_key = "sk-test"
@@ -8889,7 +8889,7 @@ async def прогон_команды():
     os.chdir(папка_развилки)
     try:
         было = len(развилочное.интервью.пары)
-        await commands.handle_submit("/help", развилочное)
+        await commands.handle_submit("/info", развилочное)
         return было, len(развилочное.интервью.пары)
     finally:
         os.chdir(прежний)
@@ -17156,6 +17156,163 @@ check("окно занял выход: названы вход и выход, с
 дробный_предел = asyncio.run(обрыв_по_длине({"prompt_tokens": 500, "completion_tokens": 100}, {"max_tokens": 100.0}))
 check("предел, пришедший дробным числом, тоже назван пределом",
       "max_tokens" in (дробный_предел.error or ""), str(дробный_предел.error))
+
+# Помощник по проекту: `/help <вопрос>` — отдельный агент на вопрос, общей очередью главного экрана.
+from myharness import assistant, workers  # noqa: E402
+
+помощник_встроенный, предупреждения_помощника = assistant.профиль()
+check(
+    "помощник: без пары файлов профиль встроенный, с поиском и без истории",
+    помощник_встроенный.source is None and помощник_встроенный.rag == "rag"
+    and not помощник_встроенный.keep_history and not предупреждения_помощника,
+    repr(помощник_встроенный),
+)
+каталог_помощника = Path(os.environ["MYHARNESS_PROFILES"])
+каталог_помощника.mkdir(parents=True, exist_ok=True)
+пара_помощника = каталог_помощника / f"{assistant.ИМЯ_ПОМОЩНИКА}.json"
+пара_помощника.write_text(json.dumps({"system": "своя инструкция", "rag": "моя-база"}), encoding="utf-8")
+try:
+    помощник_свой, _ = assistant.профиль()
+    check(
+        "помощник: пара файлов в каталоге профилей перекрывает встроенный профиль",
+        помощник_свой.system == "своя инструкция" and помощник_свой.rag == "моя-база",
+        repr(помощник_свой),
+    )
+finally:
+    пара_помощника.unlink()
+
+
+async def прогон_помощника(строка):
+    """Команда → очередь → рабочий цикл главного экрана; возвращает состояние и клиента."""
+    клиент = клиент_ответа("код лежит в myharness/src", токены=140)
+    # Профиль разговора — умолчательный: с историей и без группы, иначе пара «обычный вопрос
+    # меняет память» проверяла бы устройство чужого профиля, а не развилку очереди.
+    состояние = state_mod.State(
+        config=Config(api_key="sk-test"), client=клиент, model="deepseek-v4-pro", profile=profiles.builtin_default()
+    )
+    исполнитель = asyncio.create_task(workers.worker(состояние))
+    try:
+        await commands.handle_submit(строка, состояние)
+        await asyncio.wait_for(состояние.queue.join(), timeout=10)
+    finally:
+        исполнитель.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await исполнитель
+    return состояние, клиент
+
+
+состояние_помощи, клиент_помощи = asyncio.run(прогон_помощника("/help где лежит код?"))
+лента_помощи = "".join(текст for _, текст in состояние_помощи.main.first.log)
+check(
+    "помощник: вопрос ушёл модели сеанса одним запросом, без слова команды",
+    len(клиент_помощи.calls) == 1 and клиент_помощи.calls[0]["model"] == "deepseek-v4-pro"
+    and клиент_помощи.calls[0]["messages"][-1]["content"].endswith("где лежит код?")
+    and "/help" not in клиент_помощи.calls[0]["messages"][-1]["content"],
+    str(клиент_помощи.calls),
+)
+check(
+    "помощник: в запросе его инструкция, а не профиль разговора",
+    клиент_помощи.calls[0]["messages"][0]["content"].startswith("Ты помощник разработчика"),
+    str(клиент_помощи.calls[0]["messages"][0])[:200],
+)
+check("помощник: ответ напечатан в главном экране", "код лежит в myharness/src" in лента_помощи, лента_помощи[-400:])
+check(
+    "помощник: память разговора не изменилась",
+    состояние_помощи.main_agent.длина_памяти() == 0 and состояние_помощи.main_agent.history() == [],
+    str(состояние_помощи.main_agent.history()),
+)
+check(
+    "помощник: расход вошёл в итог сеанса копилкой выбывших",
+    usage_tokens(состояние_помощи.retired_usage) == 140 and состояние_помощи.retired_runs == 1
+    and usage_tokens(состояние_помощи.session_usage_total()) == 140,
+    f"{состояние_помощи.retired_usage} / {состояние_помощи.session_usage_total()}",
+)
+# Пара: тот же путь обычным вопросом память разговора меняет, а в копилку выбывших не кладёт.
+состояние_вопроса, _ = asyncio.run(прогон_помощника("где лежит код?"))
+check(
+    "пара к помощнику: обычный вопрос ложится в память разговора и в копилку не идёт",
+    len(состояние_вопроса.main_agent.history()) == 2 and состояние_вопроса.retired_runs == 0,
+    f"{состояние_вопроса.main_agent.history()} / {состояние_вопроса.retired_runs}",
+)
+# Испорченная пара: вопрос оплачен, поэтому уйти он обязан с инструкцией помощника, а не с `default`.
+пара_помощника.write_text("{не json", encoding="utf-8")
+try:
+    помощник_битый, предупреждения_битого = assistant.профиль()
+    check(
+        "помощник: испорченная пара — встроенный профиль и предупреждение",
+        помощник_битый.system == assistant.ИНСТРУКЦИЯ and помощник_битый.rag == "rag"
+        and any("испорчен" in п for п in предупреждения_битого),
+        f"{помощник_битый!r} / {предупреждения_битого}",
+    )
+finally:
+    пара_помощника.unlink()
+
+# Инструменты: ровно набор MCP, без инструментов автомата задачи.
+набор_mcp = agent_mod.Инструменты([{"type": "function", "function": {"name": "mcp__git__git_status"}}], None)
+
+
+class _ПодставныеСоединения:
+    async def набор(self, каталог):
+        return набор_mcp
+
+
+состояние_набора = состояние_спроса(None)
+состояние_набора.mcp = _ПодставныеСоединения()
+агент_набора, _ = assistant.агент(состояние_набора)
+полученный_набор, жалоба_набора = asyncio.run(агент_набора._набор_инструментов())
+check(
+    "помощник: получает набор MCP как есть, без инструментов автомата",
+    полученный_набор is набор_mcp and жалоба_набора is None,
+    f"{полученный_набор!r} / {жалоба_набора}",
+)
+
+
+async def прогон_помощника_группы():
+    """Активный профиль — ведущий группы: вопрос помощнику обязан пройти мимо группы."""
+    клиент = клиент_ответа("ветка main", токены=90)
+    состояние = state_mod.State(
+        config=Config(api_key="sk-test"), client=клиент, model="deepseek-v4-pro",
+        profile=profiles.Profile(name="ведущий", system="я ведущий группы", agents=["нет-такого-эксперта"]),
+    )
+    исполнитель = asyncio.create_task(workers.worker(состояние))
+    try:
+        await commands.handle_submit("/help в какой я ветке?", состояние)
+        await asyncio.wait_for(состояние.queue.join(), timeout=10)
+    finally:
+        исполнитель.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await исполнитель
+    return состояние, клиент
+
+
+состояние_группы, клиент_группы = asyncio.run(прогон_помощника_группы())
+check(
+    "помощник: активный профиль с группой на вопрос не влияет — один запрос с инструкцией помощника",
+    len(клиент_группы.calls) == 1
+    and клиент_группы.calls[0]["messages"][0]["content"].startswith("Ты помощник разработчика")
+    and "ветка main" in "".join(т for _, т in состояние_группы.main.first.log),
+    str(клиент_группы.calls)[:400],
+)
+запись_помощника = json.loads(journal_lines()[-1])
+check(
+    "помощник: прогон записан в журнал под именем агента «помощник», номер обмена 1",
+    запись_помощника.get("agent") == assistant.ИМЯ_ПОМОЩНИКА and запись_помощника.get("index") == 1,
+    str({к: запись_помощника.get(к) for к in ("agent", "index", "query")}),
+)
+
+состояние_пустого, клиент_пустого = asyncio.run(прогон_помощника("/help"))
+check(
+    "помощник: /help без вопроса — отказ строкой, запроса нет",
+    not клиент_пустого.calls and "вопрос не задан" in "".join(т for _, т in состояние_пустого.main.first.log),
+    "".join(т for _, т in состояние_пустого.main.first.log)[-200:],
+)
+names_auth = [name for name, _, _ in ui.visible_commands(False)]
+check(
+    "/info видна до ключа, /help — только после",
+    "/info" in names_auth and "/help" not in names_auth
+    and "/help" in [name for name, _, _ in ui.visible_commands(True)],
+    str(names_auth),
+)
 
 print()
 if failures:

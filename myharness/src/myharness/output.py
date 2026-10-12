@@ -240,7 +240,12 @@ def _session_before(state: State, pane: screens_mod.Pane, agent_obj: Agent) -> i
     if getter is None:
         return 0
     try:
-        return int(getter().get("total_tokens", 0))
+        итог = int(getter().get("total_tokens", 0))
+        # Гость главной панели — помощник по проекту (`/help`): в панелях его нет, а в копилку
+        # выбывших он уйдёт только после обмена. Без этой прибавки замершая строка показала
+        # бы «Σ» без только что оплаченного обмена — число упало бы на глазах.
+        гость = not any(agent_obj is свой for свой in state.agents())
+        return итог + (int(agent_obj.session_usage.get("total_tokens", 0)) if гость else 0)
     except Exception:  # noqa: BLE001 — счёт расхода вспомогателен, обмен из-за него не роняем
         return 0
 

@@ -93,6 +93,9 @@ class Request:
     content: str
     pane: screens_mod.Pane
     lead: Profile | None = None
+    # Задан только у вопроса помощнику по проекту (`/help <вопрос>`): обмен ведёт этот агент,
+    # а не собеседник главного экрана. Очередь та же: два обмена в одной ленте не идут разом.
+    агент: Agent | None = None
 
 
 @dataclass

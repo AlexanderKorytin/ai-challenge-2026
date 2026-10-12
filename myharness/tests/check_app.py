@@ -133,7 +133,7 @@ class УправляемыйКлиент:
 
 
 def раздел_справки(слово):
-    """Текст одного раздела справки — ровно то, что печатает `/help <слово>`."""
+    """Текст одного раздела справки — ровно то, что печатает `/info <слово>`."""
     подходящие = helpdoc.найти(слово)
     assert len(подходящие) == 1, (слово, подходящие)
     return fragments_text(helpdoc.фрагменты(подходящие[0]))
@@ -418,16 +418,16 @@ async def main():
 
         лента_главного = lambda: fragments_text(state.main.first.log)  # noqa: E731
         до = len(лента_главного())
-        await send("/help мышь" + ENTER, pause=0.2)
+        await send("/info мышь" + ENTER, pause=0.2)
         напечатано = лента_главного()[до:]
-        check("/help мышь печатает раздел сразу", "Справка · Мышь и клавиши" in напечатано and "решает терминал" in напечатано, напечатано[:200])
+        check("/info мышь печатает раздел сразу", "Справка · Мышь и клавиши" in напечатано and "решает терминал" in напечатано, напечатано[:200])
         check("и панели не открывает", state.picker is None)
         до = len(лента_главного())
-        await send("/help ПАМ" + ENTER, pause=0.2)
+        await send("/info ПАМ" + ENTER, pause=0.2)
         напечатано = лента_главного()[до:]
         check("начало слова без учёта регистра находит раздел", "Справка · Память" in напечатано and "проект (папка)" in напечатано, напечатано[:200])
         до = len(лента_главного())
-        await send("/help к" + ENTER, pause=0.2)
+        await send("/info к" + ENTER, pause=0.2)
         напечатано = лента_главного()[до:]
         check(
             "неоднозначное начало — ошибка с подходящими словами",
@@ -437,11 +437,11 @@ async def main():
         )
         check("и панели не открывает", state.picker is None)
         до = len(лента_главного())
-        await send("/help ко" + ENTER, pause=0.2)
+        await send("/info ко" + ENTER, pause=0.2)
         напечатано = лента_главного()[до:]
         check("а однозначное начало печатает раздел", "Справка · Команды" in напечатано, напечатано[:200])
         до = len(лента_главного())
-        await send("/help нет-такого" + ENTER, pause=0.2)
+        await send("/info нет-такого" + ENTER, pause=0.2)
         напечатано = лента_главного()[до:]
         check(
             "незнакомое слово — ошибка с перечнем всех слов",
@@ -450,17 +450,17 @@ async def main():
         )
         check("и панели не открывает", state.picker is None)
 
-        await send("/help ин")
+        await send("/info ин")
         варианты = [c.text for c in buffer.complete_state.completions] if buffer.complete_state else []
-        check("после «/help ин» подставляется «инварианты»", "инварианты" in варианты, str(варианты))
+        check("после «/info ин» подставляется «инварианты»", "инварианты" in варианты, str(варианты))
         check("а «память» — нет", "память" not in варианты, str(варианты))
         await send(ESC + "\x7f" * 40, pause=0.5)
 
         до = len(лента_главного())
-        await send("/help" + ENTER, pause=0.2)
+        await send("/info" + ENTER, pause=0.2)
         check(
-            "/help открывает меню из одиннадцати разделов",
-            state.picker is not None and state.picker.title == "/help — справка" and len(state.picker.items) == 11,
+            "/info открывает меню из одиннадцати разделов",
+            state.picker is not None and state.picker.title == "/info — справка" and len(state.picker.items) == 11,
             str(state.picker and state.picker.title),
         )
         check("открытое меню ничего не печатает", len(лента_главного()) == до)
@@ -469,8 +469,8 @@ async def main():
         check("↓ и Enter печатают второй раздел — «Память»", "Справка · Память" in напечатано, напечатано[:200])
         check("и закрывают меню", state.picker is None)
         до = len(лента_главного())
-        await send("/help " + ENTER, pause=0.2)
-        check("«/help » с одним пробелом тоже открывает меню", state.picker is not None)
+        await send("/info " + ENTER, pause=0.2)
+        check("«/info » с одним пробелом тоже открывает меню", state.picker is not None)
         app.key_processor.feed(KeyPress(Keys.Escape, "\x1b"))
         app.key_processor.process_keys()
         await asyncio.sleep(0.5)

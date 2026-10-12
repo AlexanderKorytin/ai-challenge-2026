@@ -47,9 +47,29 @@ def корпус(корень: Path) -> list[tuple[str, str]]:
     return sorted((п.relative_to(корень).as_posix(), п.read_text("utf-8")) for п in пути if п.is_file())
 
 
-def корпус_каталога(каталог: Path) -> list[tuple[str, str]]:
-    """[(source, текст)] чужого корпуса: все `*.md` каталога рекурсивно, source — путь от каталога."""
-    пути = [п for п in каталог.rglob("*.md") if п.is_file()]
+def корпус_каталога(каталог: Path, включить: list[str] | None = None) -> list[tuple[str, str]]:
+    """[(source, текст)] чужого корпуса: все `*.md` каталога рекурсивно, source — путь от каталога.
+
+    `включить` сужает корпус до названных путей от каталога: файл `.md` берётся как есть,
+    каталог — рекурсивно. Названного пути нет — `ValueError`: опечатка в имени иначе молча
+    собрала бы индекс без целого раздела документации."""
+    if включить is None:
+        пути = [п for п in каталог.rglob("*.md") if п.is_file()]
+    else:
+        пути = []
+        корень = каталог.resolve()
+        for имя in включить:
+            путь = (каталог / имя).resolve()
+            if путь != корень and корень not in путь.parents:
+                raise ValueError(f"--include: путь {имя} лежит вне каталога {каталог}")
+            if путь.is_dir():
+                пути.extend(п for п in путь.rglob("*.md") if п.is_file())
+            elif путь.is_file() and путь.suffix == ".md":
+                пути.append(путь)
+            else:
+                raise ValueError(f"--include: в каталоге {каталог} нет каталога или файла .md с именем {имя}")
+        пути = list(dict.fromkeys(пути))
+        return sorted((п.relative_to(корень).as_posix(), п.read_text("utf-8")) for п in пути)
     return sorted((п.relative_to(каталог).as_posix(), п.read_text("utf-8")) for п in пути)
 
 

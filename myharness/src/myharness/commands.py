@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 
-from . import background, helpdoc, recognizer, ui
+from . import assistant, background, helpdoc, recognizer, ui
 from . import agents_panel, commands_context, commands_memory, commands_model, commands_params
 from . import commands_mcp, commands_project, commands_task
 from . import screens as screens_mod
@@ -53,6 +53,8 @@ async def handle_command(text: str, state: State) -> bool:
         )
         return False
     if cmd == "/help":
+        _вопрос_помощнику(state, text, arg)
+    elif cmd == "/info":
         if not arg:
             commands_model.open_help_picker(state)
         else:
@@ -161,9 +163,36 @@ async def handle_command(text: str, state: State) -> bool:
     else:
         append_log(
             state,
-            ui.error_fragments(f"неизвестная команда: {cmd} (см. /help)"),
+            ui.error_fragments(f"неизвестная команда: {cmd} (см. /info)"),
         )
     return False
+
+
+def _вопрос_помощнику(state: State, text: str, вопрос: str) -> None:
+    """`/help <вопрос>`: вопрос о проекте уходит помощнику общей очередью главного экрана.
+
+    Агент заводится здесь, на каждый вопрос новый: памяти у помощника нет, и память разговора
+    он не трогает. Смену профиля у двери в очередь проверять незачем — её отсекла развилка
+    команд, и между ней и постановкой нет ни одного ожидания."""
+    pane = state.main.first
+    if not вопрос:
+        append_log(state, ui.error_fragments("вопрос не задан: /help <вопрос о проекте>"), pane)
+        return
+    if state.client is None:
+        append_log(state, ui.error_fragments("помощнику нечем ответить: нет ключа — /auth"), pane)
+        return
+    агент, предупреждения = assistant.агент(state)
+    if state.screen is not state.main:
+        # Эхо и ответ идут в главный экран; без этой строки на текущем экране не осталось бы
+        # ничего — картинка, неотличимая от молча съеденной команды.
+        append_log(state, ui.system_fragments("вопрос помощнику ушёл — ответ на главном экране"), state.screen.pane)
+    append_log(state, ui.user_fragments(text), pane)
+    for предупреждение in предупреждения:
+        append_log(state, ui.error_fragments(предупреждение), pane)
+    was_busy = state.busy or not state.queue.empty()
+    state.queue.put_nowait(Request(content=вопрос, pane=pane, агент=агент))
+    if was_busy:
+        append_log(state, ui.queued_fragments(state.queue.qsize()), pane)
 
 
 async def handle_submit(

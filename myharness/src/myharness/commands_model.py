@@ -139,7 +139,7 @@ def open_help_picker(state: State) -> None:
         append_log(state, helpdoc.фрагменты(payload))
 
     state.picker = picker_mod.Picker(
-        title="/help — справка",
+        title="/info — справка",
         description="какой раздел показать",
         items=items,
         on_choose=choose,

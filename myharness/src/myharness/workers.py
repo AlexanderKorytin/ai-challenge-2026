@@ -185,7 +185,14 @@ async def worker(state: State) -> None:
         # Чем занят запрос, помним отдельно: по одному лишь возвращённому значению не
         # отличить итог оркестратора от обмена, который сам себя уже показал.
         kind = "обмен"
-        if lead.methods:
+        if request.агент is not None:
+            # Вопрос помощнику по проекту: агент пришёл с запросом, профиль ведущего ни при
+            # чём — и группа, и набор способов отвечали бы на вопрос о проекте своими ролями.
+            kind = "помощник"
+            task = asyncio.create_task(
+                run_turn(state, request.агент, request.content, pane=request.pane, agent_name=request.агент.name)
+            )
+        elif lead.methods:
             kind = "набор"
             task = asyncio.create_task(methods_mod.run_all(state, request.content, lead))
         elif lead.agents:
@@ -227,6 +234,11 @@ async def worker(state: State) -> None:
                 raise
             append_log(state, ui.system_fragments("запрос отменён"), request.pane)
         finally:
+            if request.агент is not None:
+                # Помощник живёт один вопрос и в дерево экранов не входит: без проводов его
+                # токены не попали бы в `/tokens` никогда. В `finally` — оборванный обмен тоже
+                # мог быть оплачен.
+                state.retire([request.агент])
             state.current_task = None
             state.busy = False
             state.queue.task_done()

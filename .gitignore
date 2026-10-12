@@ -22,3 +22,4 @@ myharness-journal.jsonl
 
 # Индекс документов (день 21) — собирается командой, в git не хранится
 rag/index.sqlite
+rag/assistant.sqlite
