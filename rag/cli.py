@@ -7,7 +7,11 @@
 названных файлов и каталогов. Так собирается индекс помощника по проекту (`/help` в `myharness`):
 
     uv run --project rag rag/cli.py --index rag/assistant.sqlite index --strategy structure \\
-        --corpus . --include README.md docs openspec/specs
+        --corpus . --include README.md docs openspec/specs \\
+        --exclude 'docs/план-*.md' 'docs/состояние-*.md'
+
+`--exclude <шаблон>...` убирает из каталога файлы по шаблону пути: рабочие записи задач — планы и
+файлы состояния — в индекс помощника не входят.
 """
 
 from __future__ import annotations
@@ -103,7 +107,7 @@ def собрать(strategy: str, куски: list[ч.Кусок], индекс:
 
 def команда_index(доводы, считать=эм.эмбеддинги) -> None:
     свой = доводы.corpus is None
-    корпус = ч.корпус(КОРЕНЬ) if свой else ч.корпус_каталога(доводы.corpus, getattr(доводы, "include", None))
+    корпус = ч.корпус(КОРЕНЬ) if свой else ч.корпус_каталога(доводы.corpus, getattr(доводы, "include", None), getattr(доводы, "exclude", None))
     if not корпус:
         raise ValueError(f"в каталоге {доводы.corpus} нет файлов .md" if not свой else "корпус проекта пуст")
     structure = [к for source, текст in корпус for к in ч.нарезать_structure(source, текст)]
@@ -171,6 +175,8 @@ def главная(argv: list[str] | None = None) -> None:
                    help="каталог чужого корпуса: все *.md рекурсивно вместо требований проекта; нужен явный --index")
     и.add_argument("--include", nargs="+", metavar="ПУТЬ",
                    help="взять из каталога --corpus только названные файлы .md и каталоги")
+    и.add_argument("--exclude", nargs="+", metavar="ШАБЛОН",
+                   help="не брать из каталога --corpus файлы, чей путь подходит под шаблон (fnmatch)")
     и.set_defaults(действие=команда_index)
     п = команды.add_parser("search", help="найти куски по вопросу")
     п.add_argument("вопрос")
@@ -192,8 +198,9 @@ def главная(argv: list[str] | None = None) -> None:
     р.set_defaults(действие=команда_rerank_compare)
     доводы = разбор.parse_args(argv)
     try:
-        if getattr(доводы, "include", None) and getattr(доводы, "corpus", None) is None:
-            raise ValueError("--include требует --corpus")
+        for имя in ("include", "exclude"):
+            if getattr(доводы, имя, None) and getattr(доводы, "corpus", None) is None:
+                raise ValueError(f"--{имя} требует --corpus")
         if доводы.index is None:
             # Чужой корпус в индекс по умолчанию затёр бы базу знаний проекта — молча и целиком.
             if getattr(доводы, "corpus", None) is not None:

@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import re
 import statistics
 from dataclasses import dataclass
@@ -47,12 +48,22 @@ def корпус(корень: Path) -> list[tuple[str, str]]:
     return sorted((п.relative_to(корень).as_posix(), п.read_text("utf-8")) for п in пути if п.is_file())
 
 
-def корпус_каталога(каталог: Path, включить: list[str] | None = None) -> list[tuple[str, str]]:
+def корпус_каталога(каталог: Path, включить: list[str] | None = None,
+                    исключить: list[str] | None = None) -> list[tuple[str, str]]:
     """[(source, текст)] чужого корпуса: все `*.md` каталога рекурсивно, source — путь от каталога.
 
     `включить` сужает корпус до названных путей от каталога: файл `.md` берётся как есть,
     каталог — рекурсивно. Названного пути нет — `ValueError`: опечатка в имени иначе молча
-    собрала бы индекс без целого раздела документации."""
+    собрала бы индекс без целого раздела документации.
+
+    `исключить` — шаблоны `fnmatch` по имени источника (путь от каталога): подошедший файл в
+    корпус не входит. Так из индекса помощника уходят рабочие записи `docs/план-*.md` и
+    `docs/состояние-*.md`: их «карты файлов» вытесняли из выдачи сами требования."""
+    пары = _корпус_каталога(каталог, включить)
+    return [(имя, текст) for имя, текст in пары if not any(fnmatch.fnmatchcase(имя, ш) for ш in исключить or ())]
+
+
+def _корпус_каталога(каталог: Path, включить: list[str] | None) -> list[tuple[str, str]]:
     if включить is None:
         пути = [п for п in каталог.rglob("*.md") if п.is_file()]
     else:

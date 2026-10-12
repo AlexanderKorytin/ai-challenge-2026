@@ -28,9 +28,9 @@ user_invocable: true
     uv run --project rag rag/cli.py index --strategy structure
 
 Вторая команда пересобирает индекс помощника по проекту (`/help` в `myharness`). В него входят
-`README.md`, `docs` и `openspec/specs`:
+`README.md`, `docs` без планов и файлов состояния, и `openspec/specs`:
 
-    uv run --project rag rag/cli.py --index rag/assistant.sqlite index --strategy structure --corpus . --include README.md docs openspec/specs
+    uv run --project rag rag/cli.py --index rag/assistant.sqlite index --strategy structure --corpus . --include README.md docs openspec/specs --exclude 'docs/план-*.md' 'docs/состояние-*.md'
 
 Индекс `rag/index.sqlite` питает поиск `myharness` (поле профиля `rag`). Он собирается только из
 требований `openspec/specs` (с 2026-10-07; `docs` и `CLAUDE.md` в базу не входят) и в git не
