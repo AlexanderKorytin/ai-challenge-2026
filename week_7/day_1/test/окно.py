@@ -8,7 +8,7 @@ def записей():
     except FileNotFoundError: return 0
 pid, fd = pty.fork()
 if pid == 0:
-    os.execvp("uv", ["uv", "run", "--project", "/Users/aleksandrkorytin/challenge/main/myharness", "myharness", "--model", модель])
+    os.execvp("uv", ["uv", "run", "--project", os.path.expanduser("~/challenge/main/myharness"), "myharness", "--model", модель])
 экран = b""
 def читать(секунд):
     global экран
