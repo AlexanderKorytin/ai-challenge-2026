@@ -97,7 +97,8 @@ def собрать(strategy: str, куски: list[ч.Кусок], индекс:
     начало = time.monotonic()
     прежние: dict[str, np.ndarray] = {}
     if индекс.is_file() and store.стратегии(индекс).get(strategy, {}).get("model") == эм.МОДЕЛЬ:
-        прежние = dict(zip((к.text for к in store.куски(индекс, strategy)[0]), store.куски(индекс, strategy)[1]))
+        старые, матрица = store.куски(индекс, strategy)
+        прежние = dict(zip((к.text for к in старые), матрица))
     посчитано = 0
 
     def с_прежними(тексты: list[str]) -> np.ndarray:
