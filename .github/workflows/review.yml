@@ -1,0 +1,141 @@
+# Просмотр кода на каждый запрос на слияние: изменения → поиск по документации и коду →
+# DeepSeek → один комментарий в запросе. Устройство и риски — docs/просмотр-кода.md.
+#
+# Событие pull_request, а не pull_request_target: запрос из чужой копии репозитория не получает
+# тайну и права записи. Код запроса не исполняется: задание выгружает основу, программа
+# берётся из неё, а вершину читают только команды git. Сам файл конвейера GitHub берёт из
+# фиксации слияния запроса: изменить его может автор с правом записи в репозиторий.
+#
+# Отправка в main собирает индекс и кладёт кэши в область основной ветки: кэш, сохранённый
+# запуском запроса, другим запросам не виден.
+name: Просмотр кода
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    # bash с `-eo pipefail`: без него код выхода строки `команда | tee` — это код `tee`.
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Версия службы — та же, что на рабочем Маке: числа поиска подобраны на ней.
+      OLLAMA_VERSION: "0.34.4"
+    steps:
+      - name: Есть ли ключ DeepSeek
+        id: key
+        env:
+          KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = push ]; then
+            echo "::error::В репозитории нет тайны DEEPSEEK_API_KEY."
+            exit 1
+          else
+            echo "::notice::Просмотра нет: тайна DEEPSEEK_API_KEY этому запуску недоступна (запрос из чужой копии репозитория)."
+          fi
+
+      # Действия закреплены хэшем фиксации: метку версии владелец действия может переставить.
+      - name: Выгрузить основу
+        if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Репозиторий открытый: вершина читается без учётных данных.
+      - name: Дотянуть вершину запроса
+        if: github.event_name == 'pull_request' && steps.key.outputs.present == 'true'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: git fetch --no-tags origin "pull/$PR/head"
+
+      - name: Поставить uv
+        if: steps.key.outputs.present == 'true'
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+
+      - name: Кэш модели векторов
+        if: steps.key.outputs.present == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.ollama/models
+          key: ollama-bge-m3
+
+      - name: Запустить Ollama с bge-m3
+        if: steps.key.outputs.present == 'true'
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          # Сценарий установки заводит службу systemd от своего пользователя; модели тогда
+          # лежат вне домашнего каталога и в кэш не попадают. Служба идёт от исполнителя.
+          sudo systemctl stop ollama
+          nohup ollama serve > "$RUNNER_TEMP/ollama.log" 2>&1 &
+          pid=$!
+          until curl -sf http://127.0.0.1:11434/api/version > /dev/null; do
+            kill -0 "$pid" || { cat "$RUNNER_TEMP/ollama.log"; exit 1; }
+            sleep 1
+          done
+          ollama pull bge-m3
+
+      - name: Кэш индекса просмотра
+        if: steps.key.outputs.present == 'true'
+        id: index
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: rag/review.sqlite
+          key: review-index-${{ hashFiles('README.md', 'docs/**', 'openspec/specs/**', '**/*.py', '.github/workflows/review.yml') }}
+
+      # Окружение проекта agents/review: в нём нет sentence-transformers, а сборке он не нужен.
+      - name: Собрать индекс основы
+        if: steps.key.outputs.present == 'true' && steps.index.outputs.cache-hit != 'true'
+        run: |
+          uv run --locked --project agents/review python rag/cli.py --index rag/review.sqlite index --strategy structure \
+            --corpus . --include README.md docs openspec/specs \
+            --exclude 'docs/план-*.md' 'docs/состояние-*.md' | tee -a "$GITHUB_STEP_SUMMARY"
+          uv run --locked --project agents/review python rag/cli.py --index rag/review.sqlite index --strategy code \
+            --corpus . --include myharness/src rag mcp_servers llm_gateway agents bin \
+            --exclude '*/.venv/*' '*/tests/*' '*check_*.py' | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Вершина — фиксация из события, а не «последняя на момент шага».
+      - name: Просмотреть изменения
+        if: github.event_name == 'pull_request' && steps.key.outputs.present == 'true'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          MYHARNESS_JOURNAL: ${{ runner.temp }}/myharness-journal.jsonl
+        run: |
+          uv run --locked --project agents/review agents/review/review.py \
+            --base "$BASE" --head "$HEAD" --out "$RUNNER_TEMP/review.md"
+          cat "$RUNNER_TEMP/review.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Один комментарий на запрос: повторный запуск обновляет его по метке первой строки.
+      # Автор сверяется: комментарий с той же меткой может оставить любой человек.
+      - name: Опубликовать комментарий
+        if: github.event_name == 'pull_request' && steps.key.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- просмотр-кода -->"))) | .id' | head -n 1)
+          if [ -n "$id" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$id" -F "body=@$RUNNER_TEMP/review.md" --jq .html_url
+          else
+            gh api --method POST "repos/$REPO/issues/$PR/comments" -F "body=@$RUNNER_TEMP/review.md" --jq .html_url
+          fi

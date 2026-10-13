@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import re
 import statistics
@@ -33,10 +34,11 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Кусок:
     chunk_id: str  # f"{strategy}:{source}:{n}", n — порядковый номер в файле с 0
-    strategy: str  # "structure" | "fixed"
+    strategy: str  # "structure" | "fixed" | "code"
     source: str  # путь от корня репозитория, разделитель "/"
-    title: str  # первый заголовок "# " файла; нет его — имя файла без .md
-    section: str  # цепочка заголовков уровней 2–4 на позиции start; "" до первого
+    title: str  # первый заголовок "# " файла; нет его — имя файла без .md; у code — путь файла
+    section: str  # цепочка заголовков уровней 2–4 на позиции start; "" до первого;
+    # у code — «Класс › метод» либо имя функции, "" у остатка модуля
     start: int  # смещение в символах внутри файла, включительно
     end: int  # исключительно
     text: str
@@ -49,8 +51,10 @@ def корпус(корень: Path) -> list[tuple[str, str]]:
 
 
 def корпус_каталога(каталог: Path, включить: list[str] | None = None,
-                    исключить: list[str] | None = None) -> list[tuple[str, str]]:
+                    исключить: list[str] | None = None, расширение: str = ".md") -> list[tuple[str, str]]:
     """[(source, текст)] чужого корпуса: все `*.md` каталога рекурсивно, source — путь от каталога.
+
+    `расширение` меняет род файлов: `.py` собирает корпус кода для стратегии `code`.
 
     `включить` сужает корпус до названных путей от каталога: файл `.md` берётся как есть,
     каталог — рекурсивно. Названного пути нет — `ValueError`: опечатка в имени иначе молча
@@ -59,13 +63,15 @@ def корпус_каталога(каталог: Path, включить: list[s
     `исключить` — шаблоны `fnmatch` по имени источника (путь от каталога): подошедший файл в
     корпус не входит. Так из индекса помощника уходят рабочие записи `docs/план-*.md` и
     `docs/состояние-*.md`: их «карты файлов» вытесняли из выдачи сами требования."""
-    пары = _корпус_каталога(каталог, включить)
-    return [(имя, текст) for имя, текст in пары if not any(fnmatch.fnmatchcase(имя, ш) for ш in исключить or ())]
+    # Шаблон отсекает файл до чтения: окружение `.venv` несёт файлы `.py` не в UTF-8.
+    пары = _корпус_каталога(каталог, включить, расширение)
+    return [(имя, путь.read_text("utf-8")) for имя, путь in пары
+            if not any(fnmatch.fnmatchcase(имя, ш) for ш in исключить or ())]
 
 
-def _корпус_каталога(каталог: Path, включить: list[str] | None) -> list[tuple[str, str]]:
+def _корпус_каталога(каталог: Path, включить: list[str] | None, расширение: str) -> list[tuple[str, Path]]:
     if включить is None:
-        пути = [п for п in каталог.rglob("*.md") if п.is_file()]
+        пути = [п for п in каталог.rglob(f"*{расширение}") if п.is_file()]
     else:
         пути = []
         корень = каталог.resolve()
@@ -74,14 +80,14 @@ def _корпус_каталога(каталог: Path, включить: list[
             if путь != корень and корень not in путь.parents:
                 raise ValueError(f"--include: путь {имя} лежит вне каталога {каталог}")
             if путь.is_dir():
-                пути.extend(п for п in путь.rglob("*.md") if п.is_file())
-            elif путь.is_file() and путь.suffix == ".md":
+                пути.extend(п for п in путь.rglob(f"*{расширение}") if п.is_file())
+            elif путь.is_file() and путь.suffix == расширение:
                 пути.append(путь)
             else:
-                raise ValueError(f"--include: в каталоге {каталог} нет каталога или файла .md с именем {имя}")
+                raise ValueError(f"--include: в каталоге {каталог} нет каталога или файла {расширение} с именем {имя}")
         пути = list(dict.fromkeys(пути))
-        return sorted((п.relative_to(корень).as_posix(), п.read_text("utf-8")) for п in пути)
-    return sorted((п.relative_to(каталог).as_posix(), п.read_text("utf-8")) for п in пути)
+        return sorted((п.relative_to(корень).as_posix(), п) for п in пути)
+    return sorted((п.relative_to(каталог).as_posix(), п) for п in пути)
 
 
 def заголовки(текст: str) -> list[tuple[int, int, str]]:
@@ -164,3 +170,63 @@ def нарезать_fixed(source: str, текст: str, размер: int) -> l
 def размер_fixed(куски_structure: list[Кусок]) -> int:
     """Медиана длины кусков structure, округлённая вниз."""
     return int(statistics.median(len(к.text) for к in куски_structure))
+
+
+ПЕРЕВОД_СТРОКИ = re.compile(r"\r\n|\r|\n")
+_ФУНКЦИИ = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _первая_строка(узел: ast.AST) -> int:
+    """Строка начала объявления вместе с декораторами."""
+    return min([узел.lineno, *(д.lineno for д in getattr(узел, "decorator_list", []))])
+
+
+def _единицы(дерево: ast.Module) -> list[tuple[int, int, str]]:
+    """[(первая строка, последняя строка, section)] по порядку файла: функции верхнего уровня,
+    заголовки и методы классов верхнего уровня. Методы делят класс встык: текст между двумя
+    методами остаётся у первого из них."""
+    итог: list[tuple[int, int, str]] = []
+    for узел in дерево.body:
+        if isinstance(узел, _ФУНКЦИИ):
+            итог.append((_первая_строка(узел), узел.end_lineno, узел.name))
+        elif isinstance(узел, ast.ClassDef):
+            методы = [у for у in узел.body if isinstance(у, _ФУНКЦИИ)]
+            начала = [_первая_строка(м) for м in методы]
+            if not методы:
+                итог.append((_первая_строка(узел), узел.end_lineno, узел.name))
+                continue
+            итог.append((_первая_строка(узел), начала[0] - 1, узел.name))
+            концы = [*(н - 1 for н in начала[1:]), узел.end_lineno]
+            итог += [(н, к, f"{узел.name}{РАЗДЕЛИТЕЛЬ}{м.name}") for м, н, к in zip(методы, начала, концы)]
+    return итог
+
+
+def нарезать_code(source: str, текст: str) -> list[Кусок]:
+    """Куски файла Python по объявлениям: функция, заголовок класса, метод, остаток модуля.
+
+    Куски идут встык по порядку файла; пустые (одни пробелы) пропускаются. Вложенные функции
+    и классы остаются внутри родителя. Файл, который `ast` не разбирает, даёт один кусок."""
+    try:
+        единицы = _единицы(ast.parse(текст))
+    except (SyntaxError, ValueError):
+        единицы = []
+    # Смещение начала строки с номером n — `смещения[n - 1]`; строки считаются как у `ast`.
+    смещения = [0, *(м.end() for м in ПЕРЕВОД_СТРОКИ.finditer(текст))]
+
+    def начало(строка: int) -> int:
+        return смещения[строка - 1] if строка - 1 < len(смещения) else len(текст)
+
+    границы: list[tuple[int, int, str]] = []
+    позиция = 0
+    for первая, последняя, раздел in единицы:
+        if начало(первая) > позиция:
+            границы.append((позиция, начало(первая), ""))
+        позиция = начало(последняя + 1)
+        границы.append((начало(первая), позиция, раздел))
+    if позиция < len(текст):
+        границы.append((позиция, len(текст), ""))
+    итог: list[Кусок] = []
+    for start, end, раздел in границы:
+        if текст[start:end].strip():
+            итог.append(Кусок(f"code:{source}:{len(итог)}", "code", source, source, раздел, start, end, текст[start:end]))
+    return итог

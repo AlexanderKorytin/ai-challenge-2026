@@ -10,6 +10,13 @@
         --corpus . --include README.md docs openspec/specs \\
         --exclude 'docs/план-*.md' 'docs/состояние-*.md'
 
+`index --strategy code` собирает из каталога `--corpus` файлы `*.py` и режет их по объявлениям.
+Индекс просмотра кода (`agents/review`) несёт две стратегии, `structure` и `code`:
+
+    uv run --project rag rag/cli.py --index rag/review.sqlite index --strategy code \\
+        --corpus . --include myharness/src rag mcp_servers llm_gateway agents bin \\
+        --exclude '*/.venv/*' '*/tests/*' '*check_*.py'
+
 `--exclude <шаблон>...` убирает из каталога файлы по шаблону пути: рабочие записи задач — планы и
 файлы состояния — в индекс помощника не входят.
 """
@@ -107,6 +114,16 @@ def собрать(strategy: str, куски: list[ч.Кусок], индекс:
 
 def команда_index(доводы, считать=эм.эмбеддинги) -> None:
     свой = доводы.corpus is None
+    if доводы.strategy == "code":
+        if свой:
+            raise ValueError("--strategy code требует --corpus: корпус кода называется явно")
+        код = ч.корпус_каталога(доводы.corpus, getattr(доводы, "include", None), getattr(доводы, "exclude", None), ".py")
+        if not код:
+            raise ValueError(f"в каталоге {доводы.corpus} нет файлов .py")
+        с = собрать("code", [к for source, текст in код for к in ч.нарезать_code(source, текст)],
+                    доводы.index, None, считать, False)
+        print(f"code: {с['chunks']} кусков за {с['seconds']} с")
+        return
     корпус = ч.корпус(КОРЕНЬ) if свой else ч.корпус_каталога(доводы.corpus, getattr(доводы, "include", None), getattr(доводы, "exclude", None))
     if not корпус:
         raise ValueError(f"в каталоге {доводы.corpus} нет файлов .md" if not свой else "корпус проекта пуст")
@@ -170,7 +187,8 @@ def главная(argv: list[str] | None = None) -> None:
     разбор.add_argument("--index", type=Path, help=f"файл индекса (по умолчанию {ИНДЕКС})")
     команды = разбор.add_subparsers(dest="команда", required=True)
     и = команды.add_parser("index", help="нарезать корпус, посчитать эмбеддинги, записать индекс")
-    и.add_argument("--strategy", choices=["structure", "fixed", "all"], default="all")
+    и.add_argument("--strategy", choices=["structure", "fixed", "code", "all"], default="all",
+                   help="code — файлы *.py каталога --corpus по объявлениям; all — structure и fixed")
     и.add_argument("--corpus", type=Path,
                    help="каталог чужого корпуса: все *.md рекурсивно вместо требований проекта; нужен явный --index")
     и.add_argument("--include", nargs="+", metavar="ПУТЬ",
@@ -180,7 +198,7 @@ def главная(argv: list[str] | None = None) -> None:
     и.set_defaults(действие=команда_index)
     п = команды.add_parser("search", help="найти куски по вопросу")
     п.add_argument("вопрос")
-    п.add_argument("--strategy", choices=["structure", "fixed"], default="structure")
+    п.add_argument("--strategy", choices=["structure", "fixed", "code"], default="structure")
     п.add_argument("-k", type=int, default=5)
     п.set_defaults(действие=команда_search)
     с = команды.add_parser("compare", help="сравнить стратегии на контрольном наборе")

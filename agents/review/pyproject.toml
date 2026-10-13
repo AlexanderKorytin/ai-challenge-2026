@@ -1,0 +1,17 @@
+[project]
+name = "code-review"
+version = "0.1.0"
+description = "Просмотр изменений между двумя ссылками git: поиск по документации и коду, ответ DeepSeek"
+requires-python = ">=3.11"
+dependencies = [
+    # Обмен с DeepSeek — библиотекой myharness, как у agents/digest: Agent и клиент.
+    "myharness",
+    # Модули поиска rag/ (rerank, store, embedder) подключаются путём; их зависимости — те же
+    # границы, что в rag/pyproject.toml. sentence-transformers не нужен: режим heuristic.
+    "numpy>=2,<3",
+    "httpx2>=2.12,<3",
+    "snowballstemmer>=3,<4",
+]
+
+[tool.uv.sources]
+myharness = { path = "../../myharness" }
