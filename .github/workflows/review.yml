@@ -50,11 +50,14 @@ jobs:
           fi
 
       # Действия закреплены хэшем фиксации: метку версии владелец действия может переставить.
+      # Основа — вершина ветки назначения, а не `pull_request.base.sha`: это поле GitHub
+      # держит на фиксации, от которой запрос открыт. Задание с ним брало бы старую программу
+      # и досчитывало индекс от старого дерева, хотя запуск на main уже собрал точный.
       - name: Выгрузить основу
         if: steps.key.outputs.present == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ github.event.pull_request.base.ref || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -119,12 +122,11 @@ jobs:
         if: github.event_name == 'pull_request' && steps.key.outputs.present == 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           MYHARNESS_JOURNAL: ${{ runner.temp }}/myharness-journal.jsonl
         run: |
           uv run --locked --project agents/review agents/review/review.py \
-            --base "$BASE" --head "$HEAD" --out "$RUNNER_TEMP/review.md"
+            --base "$(git rev-parse HEAD)" --head "$HEAD" --out "$RUNNER_TEMP/review.md"
           cat "$RUNNER_TEMP/review.md" >> "$GITHUB_STEP_SUMMARY"
 
       # Один комментарий на запрос: повторный запуск обновляет его по метке первой строки.
