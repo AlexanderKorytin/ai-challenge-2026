@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import config
+
 DEFAULT_FILENAME = "myharness-journal.jsonl"
 
 
@@ -26,7 +28,8 @@ def path() -> Path:
 
 def append(entry: dict[str, Any]) -> str | None:
     """Дописывает запись. Возвращает текст ошибки — журнал никогда не роняет harness."""
-    record = {"ts": datetime.now(UTC).isoformat(timespec="seconds"), **entry}
+    # Каким ключом сделан прогон: удобно разбирать счета, когда ключей несколько.
+    record = {"ts": datetime.now(UTC).isoformat(timespec="seconds"), "api_key": config.load().api_key, **entry}
     target = path()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
