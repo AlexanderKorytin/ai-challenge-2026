@@ -97,10 +97,11 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: rag/review.sqlite
-          key: review-index-${{ hashFiles('README.md', 'docs/**', 'openspec/specs/**', '**/*.py', '.github/workflows/review.yml') }}
+          # Версия службы стоит в приставке: векторы другой версии в досчёт не наследуются.
+          key: review-index-${{ env.OLLAMA_VERSION }}-${{ hashFiles('README.md', 'docs/**', 'openspec/specs/**', '**/*.py', '.github/workflows/review.yml') }}
           # Неточное попадание отдаёт ближайший прошлый индекс: сборка берёт из него векторы
           # неизменённых кусков и считает только новые.
-          restore-keys: review-index-
+          restore-keys: review-index-${{ env.OLLAMA_VERSION }}-
 
       # Окружение проекта agents/review: в нём нет sentence-transformers, а сборке он не нужен.
       - name: Собрать индекс основы
@@ -136,7 +137,8 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- просмотр-кода -->"))) | .id' | head -n 1)
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- просмотр-кода -->"))) | .id')
+          id=${id%%$'\n'*}
           if [ -n "$id" ]; then
             gh api --method PATCH "repos/$REPO/issues/comments/$id" -F "body=@$RUNNER_TEMP/review.md" --jq .html_url
           else
