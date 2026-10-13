@@ -98,6 +98,9 @@ jobs:
         with:
           path: rag/review.sqlite
           key: review-index-${{ hashFiles('README.md', 'docs/**', 'openspec/specs/**', '**/*.py', '.github/workflows/review.yml') }}
+          # Неточное попадание отдаёт ближайший прошлый индекс: сборка берёт из него векторы
+          # неизменённых кусков и считает только новые.
+          restore-keys: review-index-
 
       # Окружение проекта agents/review: в нём нет sentence-transformers, а сборке он не нужен.
       - name: Собрать индекс основы

@@ -89,8 +89,25 @@ def собрать(strategy: str, куски: list[ч.Кусок], индекс:
             из_git: bool = True) -> dict:
     """Эмбеддинги по файлам (одна просьба на файл) и запись сборки стратегии в индекс.
 
-    `из_git` ложь — корпус лежит вне репозитория: `commit_hash` и `dirty` сборки остаются `NULL`."""
+    `из_git` ложь — корпус лежит вне репозитория: `commit_hash` и `dirty` сборки остаются `NULL`.
+
+    Вектор куска берётся из прежней сборки той же стратегии и той же модели, если его текст не
+    изменился: модель считает только новое. На исполнителе без видеоядра полная сборка индекса
+    просмотра шла 58 минут. Полная сборка заново — удалить файл индекса."""
     начало = time.monotonic()
+    прежние: dict[str, np.ndarray] = {}
+    if индекс.is_file() and store.стратегии(индекс).get(strategy, {}).get("model") == эм.МОДЕЛЬ:
+        прежние = dict(zip((к.text for к in store.куски(индекс, strategy)[0]), store.куски(индекс, strategy)[1]))
+    посчитано = 0
+
+    def с_прежними(тексты: list[str]) -> np.ndarray:
+        nonlocal посчитано
+        новые = list(dict.fromkeys(т for т in тексты if т not in прежние))
+        if новые:
+            # Отказ модели (переполнение окна) уходит наружу раньше записи в словарь.
+            прежние.update(zip(новые, считать(новые)))
+            посчитано += len(новые)
+        return np.stack([прежние[т] for т in тексты])
     по_файлам: dict[str, list[ч.Кусок]] = {}
     for к in куски:
         по_файлам.setdefault(к.source, []).append(к)
@@ -98,7 +115,7 @@ def собрать(strategy: str, куски: list[ч.Кусок], индекс:
     все_векторы = []
     for номер, (source, свои) in enumerate(по_файлам.items(), 1):
         print(f"\r{strategy}: файл {номер}/{len(по_файлам)}", end="", file=sys.stderr, flush=True)
-        готовые, матрица = векторы(свои, считать)
+        готовые, матрица = векторы(свои, с_прежними)
         все_куски += готовые
         все_векторы.append(матрица)
     print(file=sys.stderr)
@@ -109,7 +126,7 @@ def собрать(strategy: str, куски: list[ч.Кусок], индекс:
                 "built_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
                 "seconds": round(time.monotonic() - начало, 1), "chunks": len(все_куски), "fixed_size": fixed_size}
     store.записать(индекс, strategy, все_куски, матрица, сведения)
-    return сведения
+    return {**сведения, "посчитано": посчитано}
 
 
 def команда_index(доводы, считать=эм.эмбеддинги) -> None:
@@ -122,7 +139,7 @@ def команда_index(доводы, считать=эм.эмбеддинги)
             raise ValueError(f"в каталоге {доводы.corpus} нет файлов .py")
         с = собрать("code", [к for source, текст in код for к in ч.нарезать_code(source, текст)],
                     доводы.index, None, считать, False)
-        print(f"code: {с['chunks']} кусков за {с['seconds']} с")
+        print(f"code: {с['chunks']} кусков, из них посчитано {с['посчитано']}, за {с['seconds']} с")
         return
     корпус = ч.корпус(КОРЕНЬ) if свой else ч.корпус_каталога(доводы.corpus, getattr(доводы, "include", None), getattr(доводы, "exclude", None))
     if not корпус:
@@ -131,11 +148,11 @@ def команда_index(доводы, считать=эм.эмбеддинги)
     размер = ч.размер_fixed(structure)
     if доводы.strategy in ("structure", "all"):
         с = собрать("structure", structure, доводы.index, None, считать, свой)
-        print(f"structure: {с['chunks']} кусков за {с['seconds']} с")
+        print(f"structure: {с['chunks']} кусков, из них посчитано {с['посчитано']}, за {с['seconds']} с")
     if доводы.strategy in ("fixed", "all"):
         fixed = [к for source, текст in корпус for к in ч.нарезать_fixed(source, текст, размер)]
         с = собрать("fixed", fixed, доводы.index, размер, считать, свой)
-        print(f"fixed (окно {размер}): {с['chunks']} кусков за {с['seconds']} с")
+        print(f"fixed (окно {размер}): {с['chunks']} кусков, из них посчитано {с['посчитано']}, за {с['seconds']} с")
 
 
 def команда_search(доводы) -> None:
