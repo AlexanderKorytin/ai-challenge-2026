@@ -168,7 +168,7 @@ def нарезать_fixed(source: str, текст: str, размер: int) -> l
 
 
 def размер_fixed(куски_structure: list[Кусок]) -> int:
-    """Медиана длины кусков structure, округлённая вниз."""
+    """Медиана длины кусков structure в символах, округлённая вниз."""
     return int(statistics.median(len(к.text) for к in куски_structure))
 
 
