@@ -1,6 +1,7 @@
 {
  "permissions": {
   "allow": [
+   "mcp__rag__search",
    "mcp__support__get_ticket",
    "mcp__support__find_user",
    "mcp__support__list_tickets"

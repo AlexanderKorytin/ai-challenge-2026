@@ -2,7 +2,6 @@
  "name": "поддержка",
  "description": "ассистент поддержки myharness: отвечает по FAQ и требованиям с учётом пользователя и тикета",
  "system_file": "поддержка.md",
- "rag": "rag",
  "keep_history": true,
  "thinking": {
   "type": "disabled"
