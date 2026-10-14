@@ -1,0 +1,9 @@
+[project]
+name = "support-mcp"
+version = "0.1.0"
+description = "MCP-сервер поддержки: пользователи и тикеты myharness из файла JSON, только чтение"
+requires-python = ">=3.11"
+dependencies = [
+    # Та же граница, что у клиента myharness и серверов cbr и pipeline: следующая крупная версия ломает молча.
+    "mcp>=2.2,<3",
+]

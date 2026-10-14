@@ -1,0 +1,133 @@
+{
+  "users": [
+    {
+      "user_id": "U-01",
+      "name": "Анна Смирнова",
+      "email": "anna@example.com",
+      "registered": "2026-09-02",
+      "os": "macOS 15.6",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "env": {},
+      "mcp_servers": []
+    },
+    {
+      "user_id": "U-02",
+      "name": "Борис Петров",
+      "email": "boris@example.com",
+      "registered": "2026-10-06",
+      "os": "macOS 15.6",
+      "provider": "ollama",
+      "model": "ollama/qwen3.5:9b-q4_K_M-32k",
+      "env": {
+        "OLLAMA_HOST": "не задан",
+        "OLLAMA_API_KEY": "не задан"
+      },
+      "mcp_servers": []
+    },
+    {
+      "user_id": "U-03",
+      "name": "Вера Козлова",
+      "email": "vera@example.com",
+      "registered": "2026-10-09",
+      "os": "Ubuntu 24.04",
+      "provider": "ollama",
+      "model": "ollama/qwen3.5:9b-q4_K_M-32k",
+      "env": {
+        "OLLAMA_HOST": "https://gpu.example.com:443",
+        "OLLAMA_API_KEY": "не задан"
+      },
+      "mcp_servers": [
+        "rag"
+      ]
+    },
+    {
+      "user_id": "U-04",
+      "name": "Глеб Орлов",
+      "email": "gleb@example.com",
+      "registered": "2026-09-21",
+      "os": "Ubuntu 24.04",
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "env": {},
+      "mcp_servers": [
+        "git",
+        "cbr"
+      ]
+    },
+    {
+      "user_id": "U-05",
+      "name": "Дина Захарова",
+      "email": "dina@example.com",
+      "registered": "2026-09-10",
+      "os": "macOS 15.6",
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "env": {},
+      "mcp_servers": []
+    }
+  ],
+  "tickets": [
+    {
+      "ticket_id": "T-1001",
+      "user_id": "U-01",
+      "created": "2026-10-13T09:40",
+      "status": "открыт",
+      "subject": "Не работает авторизация",
+      "text": "Вчера всё работало, сегодня myharness не пускает. Ключ вставила заново через /auth — то же самое.",
+      "error": "ключ не принят DeepSeek API (проверьте правильность)",
+      "resolution": "",
+      "messages": []
+    },
+    {
+      "ticket_id": "T-1002",
+      "user_id": "U-02",
+      "created": "2026-10-13T18:05",
+      "status": "открыт",
+      "subject": "Не работает авторизация",
+      "text": "Выбрал местную модель командой /model, а myharness не подключается. Думаю, не прошла авторизация.",
+      "error": "Ollama не отвечает по адресу http://127.0.0.1:11434 — проверьте, что служба запущена",
+      "resolution": "",
+      "messages": []
+    },
+    {
+      "ticket_id": "T-1003",
+      "user_id": "U-03",
+      "created": "2026-10-10T11:20",
+      "status": "закрыт",
+      "subject": "Шлюз не пускает к модели",
+      "text": "Модель стоит на сервере за шлюзом, адрес прописала в OLLAMA_HOST. Шлюз отвечает отказом.",
+      "error": "нет токена либо токен неверен",
+      "resolution": "Закрыт без решения: клиент не ответил на уточняющий вопрос.",
+      "messages": [
+        {
+          "author": "поддержка",
+          "at": "2026-10-10T12:00",
+          "text": "Уточните, выдал ли администратор шлюза вам токен?"
+        }
+      ]
+    },
+    {
+      "ticket_id": "T-1004",
+      "user_id": "U-04",
+      "created": "2026-10-12T14:30",
+      "status": "открыт",
+      "subject": "Сервер MCP не отвечает",
+      "text": "Команда /mcp показывает ошибку у сервера cbr, git работает.",
+      "error": "сервер не ответил за 30 с",
+      "resolution": "",
+      "messages": []
+    },
+    {
+      "ticket_id": "T-1005",
+      "user_id": "U-05",
+      "created": "2026-10-11T10:15",
+      "status": "открыт",
+      "subject": "Предупреждение про окно модели",
+      "text": "После долгого разговора myharness пишет предупреждение и не отправляет вопрос.",
+      "error": "запрос не влезет в окно модели: 1 049 870 из 1 048 576 (включая 32 768 на ответ) — очистите историю командой /clear или задайте вопрос короче",
+      "resolution": "",
+      "messages": []
+    }
+  ]
+}

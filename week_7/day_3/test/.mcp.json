@@ -1,0 +1,22 @@
+{
+ "mcpServers": {
+  "rag": {
+   "type": "stdio",
+   "command": "uv",
+   "args": ["run", "--project", "/Users/aleksandrkorytin/challenge/w7d3/rag", "/Users/aleksandrkorytin/challenge/w7d3/rag/server.py"],
+   "env": {
+    "RAG_INDEX": "/Users/aleksandrkorytin/challenge/w7d3/week_7/day_3/support.sqlite",
+    "RAG_MODE": "heuristic",
+    "RAG_REWRITE": "0",
+    "RAG_K1": "50",
+    "RAG_K2": "5",
+    "RAG_THRESHOLD": "0.50"
+   }
+  },
+  "support": {
+   "type": "stdio",
+   "command": "uv",
+   "args": ["run", "--project", "/Users/aleksandrkorytin/challenge/w7d3/week_7/day_3/support", "/Users/aleksandrkorytin/challenge/w7d3/week_7/day_3/support/server.py"]
+  }
+ }
+}
