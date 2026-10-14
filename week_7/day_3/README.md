@@ -103,3 +103,8 @@ cd week_7/day_3/test
   идёт в окне.
 - Сервер `rag` с доводом `context` сам зовёт DeepSeek, чтобы переписать вопрос. Инструкция
   запрещает модели передавать `context`: запрос составляет модель.
+
+## Ссылки
+
+- Видеоотчёт: https://drive.google.com/open?id=1_ILzEvQWhIQ56panoJX4k1g7OlcldAy_
+- Код дня: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w7d3/week_7/day_3
