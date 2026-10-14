@@ -3,7 +3,12 @@
   "rag": {
    "type": "stdio",
    "command": "uv",
-   "args": ["run", "--project", "/Users/aleksandrkorytin/challenge/w7d3/rag", "/Users/aleksandrkorytin/challenge/w7d3/rag/server.py"],
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/w7d3/rag",
+    "/Users/aleksandrkorytin/challenge/w7d3/rag/server.py"
+   ],
    "env": {
     "RAG_INDEX": "/Users/aleksandrkorytin/challenge/w7d3/week_7/day_3/support.sqlite",
     "RAG_MODE": "heuristic",
@@ -16,7 +21,15 @@
   "support": {
    "type": "stdio",
    "command": "uv",
-   "args": ["run", "--project", "/Users/aleksandrkorytin/challenge/w7d3/week_7/day_3/support", "/Users/aleksandrkorytin/challenge/w7d3/week_7/day_3/support/server.py"]
+   "args": [
+    "run",
+    "--project",
+    "/Users/aleksandrkorytin/challenge/w7d3/week_7/day_3/support",
+    "/Users/aleksandrkorytin/challenge/w7d3/week_7/day_3/support/server.py"
+   ],
+   "env": {
+    "SUPPORT_USER": "${SUPPORT_USER}"
+   }
   }
  }
 }

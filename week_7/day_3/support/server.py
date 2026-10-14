@@ -6,6 +6,12 @@
   (`find_user`, `list_tickets`);
 - контекст тикета — один случай: текст ошибки, статус, переписка (`get_ticket`).
 
+Кто спрашивает, называет запуск, а не модель: переменная `SUPPORT_USER` (номер вошедшего
+пользователя, `.mcp.json` передаёт её как `${SUPPORT_USER}`). У инструментов нет доводов
+о личности — модели нечем спросить о другом человеке. Без переменной сервер отказывает во всём.
+Причина — живой прогон 2026-10-14: местная модель на вопрос без почты и тикета сама подставила
+`U-01` и выдала незнакомому человеку чужой тикет.
+
 Сервер только читает. Данные лежат в `данные.json` рядом с сервером, путь переопределяет
 `SUPPORT_DATA`. Файл читается при каждом вызове: правка данных видна без перезапуска сеанса.
 Настоящей CRM нет: условие дня разрешает JSON, а выдуманные данные пришлось бы заливать и туда.
@@ -25,6 +31,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 ПЕРЕМЕННАЯ_ДАННЫХ = "SUPPORT_DATA"
+ПЕРЕМЕННАЯ_ВХОДА = "SUPPORT_USER"
 ДАННЫЕ_ПО_УМОЛЧАНИЮ = Path(__file__).parent / "данные.json"
 
 
@@ -80,9 +87,15 @@ def _данные() -> dict[str, Any]:
         raise ToolError(f"файл данных {путь} не читается: {type(exc).__name__}") from None
 
 
-def _пользователь(данные: dict[str, Any], user_id: str) -> dict[str, Any] | None:
-    ключ = user_id.strip().upper()
-    return next((п for п in данные["users"] if п["user_id"].upper() == ключ), None)
+def _вошедший(данные: dict[str, Any]) -> dict[str, Any]:
+    """Пользователь, под которым запущен ассистент. Читается при каждом вызове, как и данные."""
+    номер = os.environ.get(ПЕРЕМЕННАЯ_ВХОДА, "").strip().upper()
+    if not номер:
+        raise ToolError(f"вход не выполнен: {ПЕРЕМЕННАЯ_ВХОДА} не задан")
+    найден = next((п for п in данные["users"] if п["user_id"].upper() == номер), None)
+    if найден is None:
+        raise ToolError(f"вход не выполнен: пользователь {номер} не найден")
+    return найден
 
 
 # --- сервер и инструменты ------------------------------------------------------------------
@@ -91,9 +104,9 @@ def _пользователь(данные: dict[str, Any], user_id: str) -> dic
 srv = MCPServer(
     "support",
     instructions=(
-        "Пользователи и тикеты поддержки myharness, только чтение. get_ticket — тикет по номеру, "
-        "find_user — пользователь и его окружение по user_id или почте, list_tickets — все "
-        "тикеты пользователя."
+        "Данные вошедшего пользователя myharness, только чтение. find_user — пользователь и его "
+        "окружение, list_tickets — его тикеты, get_ticket — его тикет по номеру. Данных других "
+        "пользователей сервер не отдаёт."
     ),
 )
 
@@ -102,45 +115,31 @@ srv = MCPServer(
 def get_ticket(
     ticket_id: Annotated[str, Field(description="Номер тикета, например T-1001")],
 ) -> Ticket:
-    """Тикет по номеру: тема, текст клиента, статус, текст ошибки, переписка и автор (user_id).
-
-    Окружение автора отдаёт find_user по user_id тикета."""
+    """Тикет вошедшего пользователя по номеру: тема, текст клиента, статус, текст ошибки,
+    переписка. Чужой тикет не отдаётся."""
+    данные = _данные()
+    вошедший = _вошедший(данные)
     ключ = ticket_id.strip().upper()
-    for т in _данные()["tickets"]:
+    for т in данные["tickets"]:
         if т["ticket_id"].upper() == ключ:
+            if т["user_id"] != вошедший["user_id"]:
+                raise ToolError(f"тикет {ticket_id.strip()} не ваш")
             return Ticket(**т)
     raise ToolError(f"тикет {ticket_id.strip()} не найден")
 
 
 @srv.tool()
-def find_user(
-    user_id: Annotated[str, Field(description="Номер пользователя, например U-01")] = "",
-    email: Annotated[str, Field(description="Почта пользователя")] = "",
-) -> User:
-    """Пользователь и его постоянное окружение: система, поставщик и модель, переменные
-    окружения, серверы MCP. Нужен user_id или email."""
-    if not user_id.strip() and not email.strip():
-        raise ToolError("нужен user_id или email")
-    данные = _данные()
-    if user_id.strip():
-        найден = _пользователь(данные, user_id)
-    else:
-        почта = email.strip().lower()
-        найден = next((п for п in данные["users"] if п["email"].lower() == почта), None)
-    if найден is None:
-        raise ToolError(f"пользователь {user_id.strip() or email.strip()} не найден")
-    return User(**найден)
+def find_user() -> User:
+    """Вошедший пользователь и его постоянное окружение: система, поставщик и модель,
+    переменные окружения, серверы MCP."""
+    return User(**_вошедший(_данные()))
 
 
 @srv.tool()
-def list_tickets(
-    user_id: Annotated[str, Field(description="Номер пользователя, например U-01")],
-) -> TicketList:
-    """Все тикеты пользователя, новые первыми: прежние обращения и чем они кончились."""
+def list_tickets() -> TicketList:
+    """Все тикеты вошедшего пользователя, новые первыми: прежние обращения и чем они кончились."""
     данные = _данные()
-    найден = _пользователь(данные, user_id)
-    if найден is None:
-        raise ToolError(f"пользователь {user_id.strip()} не найден")
+    найден = _вошедший(данные)
     свои = [Ticket(**т) for т in данные["tickets"] if т["user_id"] == найден["user_id"]]
     свои.sort(key=lambda т: т.created, reverse=True)
     return TicketList(user_id=найден["user_id"], tickets=свои)
