@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Поддержка myharness</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #e2e5eb;
+    --accent: #2f6fde; --accent-text: #ffffff; --me: #e8f0fd; --tool: #8a91a2;
+    --ok: #2e8b57; --wait: #c27c0e; --closed: #6b7385; --err: #c0392b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --panel: #1c2028; --text: #e4e7ee; --muted: #9098a9; --line: #2c313c;
+      --accent: #5b8ff0; --accent-text: #0e1116; --me: #22314d; --tool: #7f8799;
+      --ok: #5cc28c; --wait: #e0a43a; --closed: #8a91a2; --err: #ef6f61;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 16px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  button, input, select { font: inherit; }
+  button { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+  button.main { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px; padding: 8px 10px; }
+
+  #login { max-width: 360px; margin: 18vh auto 0; padding: 0 16px; }
+  #login h1 { font-size: 24px; margin: 0 0 4px; }
+  #login p { color: var(--muted); margin: 0 0 20px; }
+  #login form { display: flex; gap: 8px; }
+  #login input { flex: 1; }
+  #login .note { font-size: 13px; margin-top: 12px; }
+
+  #app { display: none; height: 100%; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+  header .who { font-weight: 600; }
+  header .id { color: var(--muted); }
+  header .grow { flex: 1; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #log { flex: 1; overflow-y: auto; padding: 16px; }
+  .msg { max-width: 760px; margin: 0 auto 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.me { background: var(--me); border-radius: 10px; padding: 8px 12px; width: fit-content; margin-left: auto; margin-right: max(0px, calc((100% - 760px) / 2)); }
+  .msg.bot { padding: 0 2px; }
+  .tool { max-width: 760px; margin: 0 auto 4px; color: var(--tool); font-size: 13px; }
+  .tool.bad { color: var(--err); }
+  .err { color: var(--err); }
+  #ask { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+  #ask input { flex: 1; min-width: 0; }
+  aside { width: 300px; border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 12px 16px; }
+  aside h2 { font-size: 15px; margin: 0 0 10px; }
+  .ticket { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; font-size: 14px; }
+  .ticket .head { display: flex; justify-content: space-between; gap: 8px; }
+  .ticket .num { font-weight: 600; }
+  .ticket .st { font-size: 12px; font-weight: 600; }
+  .st.открыт { color: var(--ok); } .st.ждёт { color: var(--wait); } .st.закрыт { color: var(--closed); }
+  .ticket .sub { margin-top: 2px; }
+  .ticket .res { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .empty { color: var(--muted); font-size: 14px; }
+  @media (max-width: 760px) {
+    main { flex-direction: column; }
+    aside { width: auto; border-left: 0; border-top: 1px solid var(--line); max-height: 30vh; }
+  }
+</style>
+</head>
+<body>
+<section id="login">
+  <h1>Поддержка myharness</h1>
+  <p>Ассистент ответит по документации и заведёт тикет, если нужно.</p>
+  <form id="loginForm">
+    <input id="name" placeholder="Ваше имя" autocomplete="name" autofocus>
+    <button class="main">Войти</button>
+  </form>
+  <p class="note">Учебный вход без пароля: новое имя заводит нового пользователя.</p>
+  <p id="loginErr" class="err"></p>
+</section>
+
+<section id="app">
+  <header>
+    <span class="who" id="who"></span><span class="id" id="uid"></span>
+    <span class="grow"></span>
+    <select id="model" title="Модель"></select>
+    <button id="newChat">Новый разговор</button>
+    <button id="logout">Выйти</button>
+  </header>
+  <main>
+    <div id="chat">
+      <div id="log"></div>
+      <form id="ask">
+        <input id="text" placeholder="Опишите проблему или задайте вопрос" autocomplete="off">
+        <button class="main" id="send">Отправить</button>
+      </form>
+    </div>
+    <aside>
+      <h2>Мои тикеты</h2>
+      <div id="tickets"></div>
+    </aside>
+  </main>
+</section>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// Вызов инструмента → строка для человека. Имя приходит полным: mcp__<сервер>__<инструмент>.
+function toolLine(name, args) {
+  const short = name.split("__").pop();
+  let a = {};
+  try { a = JSON.parse(args || "{}"); } catch {}
+  switch (short) {
+    case "get_ticket": return `открыл тикет ${a.ticket_id || ""}`;
+    case "find_user": return "посмотрел ваши данные";
+    case "list_tickets": return "посмотрел ваши тикеты";
+    case "search": return `искал в документации: «${a.query || ""}»`;
+    case "create_ticket": return `завёл тикет «${a.subject || ""}»`;
+    case "add_message": return `дописал ответ в тикет ${a.ticket_id || ""}`;
+    case "set_status": return `поставил тикету ${a.ticket_id || ""} статус «${a.status || ""}»`;
+    default: return short;
+  }
+}
+
+function add(cls, text) {
+  const el = document.createElement("div");
+  el.className = cls;
+  el.textContent = text;  // текст, а не HTML: ответ модели и тикеты — чужие данные
+  $("log").appendChild(el);
+  $("log").scrollTop = $("log").scrollHeight;
+  return el;
+}
+
+async function loadTickets() {
+  const r = await fetch("/api/tickets");
+  if (r.status === 401) return showLogin();
+  const { tickets } = await r.json();
+  const box = $("tickets");
+  box.replaceChildren();
+  if (!tickets.length) { box.innerHTML = '<p class="empty">Тикетов нет</p>'; return; }
+  for (const t of tickets) {
+    const el = document.createElement("div");
+    el.className = "ticket";
+    const head = document.createElement("div"); head.className = "head";
+    const num = document.createElement("span"); num.className = "num"; num.textContent = t.ticket_id;
+    const st = document.createElement("span"); st.className = "st " + t.status.split(" ")[0]; st.textContent = t.status;
+    head.append(num, st);
+    const sub = document.createElement("div"); sub.className = "sub"; sub.textContent = t.subject;
+    el.append(head, sub);
+    if (t.resolution) { const res = document.createElement("div"); res.className = "res"; res.textContent = t.resolution; el.append(res); }
+    box.appendChild(el);
+  }
+}
+
+function showLogin() {
+  $("app").style.display = "none";
+  $("login").style.display = "block";
+  $("name").focus();
+}
+
+function showApp(data) {
+  $("login").style.display = "none";
+  $("app").style.display = "flex";
+  $("who").textContent = data.user.name;
+  $("uid").textContent = data.user.user_id;
+  const sel = $("model");
+  sel.replaceChildren(...data.models.map((m) => new Option(m === "deepseek-v4-flash" ? "DeepSeek" : "местная " + m.split("/").pop(), m)));
+  $("log").replaceChildren();
+  for (const [q, a] of data.history) { add("msg me", q); add("msg bot", a); }
+  if (!data.history.length) add("msg bot", `Здравствуйте, ${data.user.name}! Чем помочь?`);
+  loadTickets();
+  $("text").focus();
+}
+
+$("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  $("loginErr").textContent = "";
+  const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: $("name").value }) });
+  const data = await r.json();
+  if (!r.ok) { $("loginErr").textContent = data.error; return; }
+  showApp(data);
+};
+
+$("logout").onclick = async () => {
+  await fetch("/api/logout", { method: "POST" });
+  $("name").value = "";
+  showLogin();
+};
+
+$("newChat").onclick = async () => {
+  const r = await fetch("/api/new", { method: "POST" });
+  if (r.status === 401) return showLogin();
+  $("log").replaceChildren();
+  add("msg bot", "Новый разговор. Чем помочь?");
+};
+
+$("ask").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = $("text").value.trim();
+  if (!text) return;
+  $("text").value = "";
+  $("send").disabled = true;
+  add("msg me", text);
+  try {
+    await ask(text);
+  } catch (err) {
+    add("msg err", "Связь оборвалась: " + err.message);
+  } finally {
+    $("send").disabled = false;
+    $("text").focus();
+    loadTickets();
+  }
+};
+
+async function ask(text) {
+  const r = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, model: $("model").value }) });
+  if (!r.ok) {
+    if (r.status === 401) return showLogin();
+    add("msg err", (await r.json()).error);
+    return;
+  }
+  // Ответ — поток NDJSON: строка на событие.
+  let bot = null, buf = "";
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const ev = JSON.parse(buf.slice(0, i));
+      buf = buf.slice(i + 1);
+      if (ev.kind === "content") {
+        if (!bot) bot = add("msg bot", "");
+        bot.textContent += ev.text;
+        $("log").scrollTop = $("log").scrollHeight;
+      } else if (ev.kind === "tool") {
+        bot = null;  // текст после вызова — новым абзацем под строкой вызова
+        add("tool", "· " + toolLine(ev.name, ev.args));
+      } else if (ev.kind === "tool_result" && !ev.ok) {
+        add("tool bad", "· не удалось: " + toolLine(ev.name, ""));
+      } else if (ev.kind === "done" && ev.status !== "ok") {
+        add("msg err", "Ответ не получен: " + (ev.error || ev.status));
+      }
+    }
+  }
+}
+</script>
+</body>
+</html>

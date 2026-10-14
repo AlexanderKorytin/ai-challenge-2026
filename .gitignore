@@ -24,3 +24,11 @@ myharness-journal.jsonl
 rag/index.sqlite
 rag/assistant.sqlite
 rag/review.sqlite
+
+# Веб-чат дня 33 — рабочие данные, сеансы, разговоры и журнал, не код
+week_7/day_3/web/данные.json
+week_7/day_3/web/данные.json.lock
+week_7/day_3/web/сеансы/
+week_7/day_3/web/state/
+week_7/day_3/web/журнал.jsonl
+week_7/day_3/web/данные.json*.tmp
