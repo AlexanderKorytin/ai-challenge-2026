@@ -15,14 +15,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sys
 from contextlib import suppress
+from pathlib import Path
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.filters import Condition
 
 from . import archivist, background, keys
 from . import layout as layout_mod
-from . import profiles, ui
+from . import profiles, trust, ui
 from .api import Clients
 from .config import load as load_config
 from .conversation import restore_conversation, поднять_слои
@@ -159,5 +161,19 @@ async def _main(args: argparse.Namespace) -> None:
 
 
 def main(args: argparse.Namespace) -> None:
+    # Доверие папке — до окна, обычным вводом: окна ещё нет, и чужой `.mcp.json` не запустится.
+    if not trust.доверена(Path.cwd()):
+        # Ввод не терминал (`printf 1 | myharness`, скрипт): вопрос никто не читает, и доверие
+        # с такого ввода выдавалось бы молча и навсегда. Claude Code в таком запуске диалога не
+        # показывает — здесь окна без доверия нет, поэтому выход с объяснением.
+        if not sys.stdin.isatty():
+            print(
+                f"Папке {trust.ключ(Path.cwd())} не доверяли. Запустите myharness в терминале и ответьте "
+                "на вопрос о доверии; наряд (--batch) вопроса не задаёт.",
+                file=sys.stderr,
+            )
+            return
+        if not trust.спросить(Path.cwd()):
+            return
     with suppress(KeyboardInterrupt):
         asyncio.run(_main(args))

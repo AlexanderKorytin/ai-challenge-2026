@@ -26,7 +26,7 @@ os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
 os.environ.pop("MYHARNESS_FILE_READ_MAX_OUTPUT_TOKENS", None)
 os.environ.pop("MYHARNESS_DISALLOWED_TOOLS", None)
 
-from myharness import files_tools, tool_output  # noqa: E402
+from myharness import config as config_mod, files_tools, tool_output, trust  # noqa: E402
 from myharness.agent import Инструменты  # noqa: E402
 
 МОДЕЛЬ = "deepseek-v4-flash"
@@ -53,6 +53,7 @@ def хранилище(имя):
     корень = tmp / имя
     корень.mkdir()
     subprocess.run(["git", "init", "-q", str(корень)], check=True)
+    trust.доверить(корень)
     return корень
 
 
@@ -82,8 +83,8 @@ check("Read: двоичный файл — отказ", вызов(набор, "
 check("Read: ../ наружу — отказ", "вне рабочего каталога" in вызов(набор, "Read", file_path="../снаружи.txt"))
 check("Read: символическая ссылка наружу — отказ", "вне рабочего каталога" in вызов(набор, "Read", file_path="ссылка.txt"))
 check("Read: абсолютный путь наружу — отказ", "вне рабочего каталога" in вызов(набор, "Read", file_path=str(tmp / "снаружи.txt")))
-(tmp / "config").mkdir()
-(tmp / "config" / "config.json").write_text('{"api_key": "sk-x"}', encoding="utf-8")
+данные_настроек = json.loads((tmp / "config" / "config.json").read_text(encoding="utf-8"))
+(tmp / "config" / "config.json").write_text(json.dumps({**данные_настроек, "api_key": "sk-x"}), encoding="utf-8")
 check(
     "Read: каталог настроек закрыт даже внутри корня",
     "каталог настроек" in вызов(собрать(tmp), "Read", file_path="config/config.json"),
@@ -163,15 +164,15 @@ del os.environ["MYHARNESS_FILE_READ_MAX_OUTPUT_TOKENS"]
 print("\n# Файловые инструменты: разрешения")
 вне_git = tmp / "вне"
 вне_git.mkdir()
-check("вне git — только чтение", sorted(имена(собрать(вне_git))) == ["Glob", "Grep", "Read"], str(имена(собрать(вне_git))))
+check("папка без доверия — только чтение", sorted(имена(собрать(вне_git))) == ["Glob", "Grep", "Read"], str(имена(собрать(вне_git))))
 (вне_git / ".claude").mkdir()
 правила = вне_git / ".claude" / "settings.json"
 правила.write_text(json.dumps({"permissions": {"allow": ["Edit"]}}), encoding="utf-8")
-check("вне git с allow Edit — запись есть", {"Edit", "Write"} <= set(имена(собрать(вне_git))), str(имена(собрать(вне_git))))
+check("без доверия с allow Edit — запись есть", {"Edit", "Write"} <= set(имена(собрать(вне_git))), str(имена(собрать(вне_git))))
 (проект / ".claude").mkdir(exist_ok=True)
 правила_проекта = проект / ".claude" / "settings.json"
 правила_проекта.write_text(json.dumps({"permissions": {"deny": ["Edit"]}}), encoding="utf-8")
-check("в git с deny Edit — записи нет", sorted(имена(собрать(проект))) == ["Glob", "Grep", "Read"], str(имена(собрать(проект))))
+check("доверенная папка с deny Edit — записи нет", sorted(имена(собрать(проект))) == ["Glob", "Grep", "Read"], str(имена(собрать(проект))))
 правила_проекта.write_text(json.dumps({"permissions": {"deny": ["Read(./.env)"]}}), encoding="utf-8")
 с_путём = собрать(проект)
 check(
@@ -323,6 +324,69 @@ check("после /clear: Write поверх прочитанного до оч�
 малое_окно = собрать(проект, свободно=lambda: 300)
 check("Read: свободное место окна меньше предела — PARTIAL view", "[PARTIAL view" in вызов(малое_окно, "Read", file_path="big.txt"))
 check("Read: свободного места хватает — без PARTIAL view", "[PARTIAL view" not in вызов(собрать(проект, свободно=lambda: 10**6), "Read", file_path="a.py"))
+
+print("\n# Доверие папке")
+новая = tmp / "новая" / "под"
+новая.mkdir(parents=True)
+check("недоверенная папка вне git — три схемы", sorted(имена(собрать(новая))) == ["Glob", "Grep", "Read"])
+вывод_вопроса = []
+check("вопрос: «2» — не доверено", trust.спросить(новая, ввод=lambda _: "2", вывод=вывод_вопроса.append) is False and not trust.доверена(новая))
+check("вопрос называет папку и правку файлов", str(новая.resolve()) in вывод_вопроса[0] and "править файлы" in вывод_вопроса[0])
+def _eof(_):
+    raise EOFError
+check("вопрос: конец ввода — не доверено", trust.спросить(новая, ввод=_eof, вывод=lambda _: None) is False)
+ответы = iter(["x", "1"])
+check("вопрос: «1» после неверного ответа — доверено", trust.спросить(новая, ввод=lambda _: next(ответы), вывод=lambda _: None) is True)
+check("доверенная папка вне git — пять схем", sorted(имена(собрать(новая))) == sorted(files_tools.ИМЕНА))
+путь_настроек = tmp / "config" / "config.json"
+check("доверие записано в config.json с правами 600", str(новая.resolve()) in json.loads(путь_настроек.read_text(encoding="utf-8"))["trusted_dirs"] and oct(путь_настроек.stat().st_mode & 0o777) == "0o600")
+вложенная = новая / "глубже"
+вложенная.mkdir()
+check("подпапка доверенной папки — доверена", trust.доверена(вложенная))
+check("родитель доверенной папки — не доверен", not trust.доверена(новая.parent))
+окно_а = config_mod.load()
+trust.доверить(tmp / "новая")
+окно_а.model = "deepseek-v4-pro"
+config_mod.save(окно_а)
+check("сохранение второго окна не стирает доверие первого", str((tmp / "новая").resolve()) in config_mod.load().trusted_dirs)
+прежний_home = os.environ["HOME"]
+os.environ["HOME"] = str(tmp / "дом")
+(tmp / "дом").mkdir()
+предупреждение = trust.доверить(tmp / "дом")
+check("домашний каталог — доверие на сеанс, в файл не пишется", "сеанс" in (предупреждение or "") and trust.доверена(tmp / "дом") and str((tmp / "дом").resolve()) not in config_mod.load().trusted_dirs)
+os.environ["HOME"] = прежний_home
+испорченный = путь_настроек.read_text(encoding="utf-8")
+путь_настроек.write_text("{испорчен", encoding="utf-8")
+(tmp / "третья").mkdir()
+предупреждение = trust.доверить(tmp / "третья")
+check("испорченный файл настроек не переписывается, доверие на сеанс", путь_настроек.read_text(encoding="utf-8") == "{испорчен" and "испорчен" in (предупреждение or ""))
+путь_настроек.write_text(испорченный, encoding="utf-8")
+trust.доверить(tmp)
+ответ = вызов(собрать(tmp), "Write", file_path="config/config.json", content="{}")
+check("Write в config.json доверенным корнем — отказ «каталог настроек»", "каталог настроек" in ответ, ответ)
+for пустой_файл in ("[]", "\udcff"):
+    путь_настроек.write_bytes(b"[]" if пустой_файл == "[]" else b"\xff\xfe")
+    check(f"испорченный файл {пустой_файл!r}: load — умолчания, доверие — нет", config_mod.load().trusted_dirs == [] and not trust.доверена(новая))
+путь_настроек.write_text(испорченный, encoding="utf-8")
+окно_б = config_mod.load()
+окно_в = config_mod.load()
+окно_б.api_key = "sk-новый"
+config_mod.save(окно_б)
+окно_в.model = "deepseek-v4-pro"
+config_mod.save(окно_в)
+итог = config_mod.load()
+check("второе окно не возвращает старый ключ: своя правка модели, чужая правка ключа", итог.api_key == "sk-новый" and итог.model == "deepseek-v4-pro", f"{итог.api_key} {итог.model}")
+check("после сохранения временного файла не осталось, права 600", not list((tmp / "config").glob(".*.tmp")) and oct(путь_настроек.stat().st_mode & 0o777) == "0o600")
+узел = путь_настроек.stat().st_ino
+жёсткая_проверка = tmp / "жёсткая-настроек.json"
+os.link(путь_настроек, жёсткая_проверка)
+окно_г = config_mod.load()
+окно_г.model = "deepseek-v4-flash"
+config_mod.save(окно_г)
+check("файл настроек с жёсткой ссылкой пишется на месте — узел тот же", путь_настроек.stat().st_ino == узел)
+check("жёсткая ссылка на настройки после сохранения всё равно закрыта", "каталог настроек" in вызов(собрать(tmp), "Read", file_path="жёсткая-настроек.json"))
+жёсткая_проверка.unlink()
+trust._СЕАНС.clear()
 
 print("\n# Подключение: наряд и главный агент")
 from myharness import api, batch, ui  # noqa: E402

@@ -30,7 +30,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config, mcp_tools, memory, tokens
+from . import config, mcp_tools, memory, tokens, trust
 from .agent import Agent, Инструменты
 
 ИМЕНА = ("Read", "Write", "Edit", "Glob", "Grep")
@@ -129,13 +129,14 @@ def права(корень: Path) -> tuple[tuple[str, ...], str | None]:
     if запуск:
         разрешения = mcp_tools.Разрешения(разрешения.allow, (*разрешения.deny, *запуск))
     с_путём = [п for п in разрешения.deny if "(" in п and п.split("(", 1)[0] in (*ИМЕНА,)]
-    запись_в_git = в_git(корень)
+    # Запись — доверием папке (способность `files`, «Доверие папке»), как в режиме `acceptEdits`.
+    запись_доверена = trust.доверена(корень)
     доступны = []
     for имя in ИМЕНА:
         решение = разрешения.встроенный(имя)
         if решение is False:
             continue
-        if имя in ЗАПИСЬ and решение is None and not запись_в_git:
+        if имя in ЗАПИСЬ and решение is None and not запись_доверена:
             continue
         доступны.append(имя)
     жалоба_путей = None

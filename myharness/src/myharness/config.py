@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +41,11 @@ class Config:
     #
     # Умолчание — включено: память свойство инструмента, а не то, что каждый раз включают.
     remember: bool = True
+    # Папки, которым человек доверил чтение и правку файлов (способность `files`, «Доверие
+    # папке»). Не тайна: пути, а не ключи. Список только растёт — команды удаления нет.
+    trusted_dirs: list[str] = field(default_factory=list)
+    # Поля на миг `load` — по ним `save` отличает свою правку от чужой (см. `save`).
+    _исходное: dict | None = field(default=None, repr=False, compare=False)
 
     @property
     def is_authorized(self) -> bool:
@@ -56,24 +61,94 @@ def _flag(value: Any, default: bool) -> bool:
     return value if isinstance(value, bool) else default
 
 
-def load() -> Config:
+_ПОЛЯ = ("api_key", "model", "profile", "remember")
+
+
+def _прочитать() -> dict | None:
+    """Объект файла настроек; `None` — файла нет либо он не читается как объект JSON.
+
+    Одно определение «испорчен» на весь модуль: `[]` и неверный UTF-8 иначе роняли бы запуск
+    ещё до окна (вопрос о доверии читает настройки первым)."""
     path = config_path()
     if not path.exists():
-        return Config()
+        return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return Config()
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _из_данных(data: dict) -> Config:
     return Config(
         api_key=data.get("api_key"),
         model=data.get("model", DEFAULT_MODEL),
         profile=data.get("profile", DEFAULT_PROFILE),
         remember=_flag(data.get("remember"), True),
+        trusted_dirs=_пути(data.get("trusted_dirs")),
     )
 
 
+def _снимок(config: Config) -> dict:
+    return {поле: getattr(config, поле) for поле in _ПОЛЯ}
+
+
+def load() -> Config:
+    data = _прочитать()
+    config = _из_данных(data) if data is not None else Config()
+    config._исходное = _снимок(config)
+    return config
+
+
+def _пути(value: Any) -> list[str]:
+    return [п for п in value if isinstance(п, str)] if isinstance(value, list) else []
+
+
+def испорчен() -> bool:
+    """Файл настроек есть, но не читается как объект JSON."""
+    return config_path().exists() and _прочитать() is None
+
+
 def save(config: Config) -> None:
+    """Записать настройки, не стирая чужих изменений.
+
+    Второе окно держит в памяти настройки на миг своего запуска. Пиши оно их целиком — его
+    `/model` вернул бы в файл старый ключ после `/auth` в первом окне и стёр бы папку, которой
+    доверили там. Поэтому поле, которое это окно не меняло с `load`, берётся из файла, а список
+    доверия объединяется. Запись — во временный файл с правами 600 и `os.replace`: читатель не
+    увидит обрезанного файла."""
     path = config_path()
+    data = _прочитать()
+    исходное = config._исходное
+    if data is not None:
+        на_диске = _из_данных(data)
+        for поле in _ПОЛЯ:
+            if исходное is not None and getattr(config, поле) == исходное[поле]:
+                setattr(config, поле, getattr(на_диске, поле))
+        config.trusted_dirs = на_диске.trusted_dirs + [
+            п for п in config.trusted_dirs if п not in на_диске.trusted_dirs
+        ]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
-    os.chmod(path, 0o600)
+    текст = json.dumps({**_снимок(config), "trusted_dirs": config.trusted_dirs}, ensure_ascii=False, indent=2)
+    # Символическая ссылка — пишем в её цель: `os.replace` иначе подменил бы саму ссылку.
+    path = path.resolve()
+    if path.exists() and path.stat().st_nlink > 1:
+        # Жёсткая ссылка — на месте: новый узел оставил бы ключ в старом, и сверка по тождеству
+        # (способность `files`) перестала бы узнавать ссылку в рабочем каталоге.
+        дескриптор = os.open(path, os.O_WRONLY | os.O_TRUNC)
+        with os.fdopen(дескриптор, "w", encoding="utf-8") as файл:
+            файл.write(текст)
+        os.chmod(path, 0o600)
+        config._исходное = _снимок(config)
+        return
+    временный = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    дескриптор = os.open(временный, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(дескриптор, "w", encoding="utf-8") as файл:
+            файл.write(текст)
+        os.chmod(временный, 0o600)
+        os.replace(временный, path)
+    except BaseException:
+        временный.unlink(missing_ok=True)
+        raise
+    config._исходное = _снимок(config)
