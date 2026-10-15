@@ -235,6 +235,34 @@ check("Write в каталог выгрузки — отказ", "ОТКАЗ" in
 (tmp / "state" / "projects" / "разговор.jsonl").write_text("{}", encoding="utf-8")
 check("Read: прочий каталог состояния закрыт", "каталог состояния" in вызов(собрать(tmp), "Read", file_path="state/projects/разговор.jsonl"))
 
+(проект / "строки40.txt").write_text("".join(f"{i:06d} " + "word " * 7 + "\n" for i in range(2000)), encoding="utf-8")
+обёрнут = tool_output.с_выгрузкой(собрать(проект), каталог, lambda: МОДЕЛЬ)
+ответ = asyncio.run(обёрнут.исполнить("Read", json.dumps({"file_path": "строки40.txt"})))
+check("Read в выгрузку не идёт: 80 000 знаков — строки, а не путь к файлу", "сохранён в" not in ответ and len(ответ) > 50_000, str(len(ответ)))
+from myharness import assistant  # noqa: E402
+
+
+class _Соединения:
+    async def набор(self, каталог):
+        return None
+
+
+class _Состояние:
+    mcp = _Соединения()
+    поиск = None
+
+
+прежний = Path.cwd()
+os.chdir(проект)
+try:
+    помощник, _ = assistant.агент(_Состояние())
+    набор_помощника, _ = asyncio.run(помощник._набор_инструментов())
+finally:
+    os.chdir(прежний)
+check("помощник /help: один Read", имена(набор_помощника) == ["Read"], str(имена(набор_помощника)))
+check("помощник: Read файла проекта — отказ", "ОТКАЗ" in вызов(набор_помощника, "Read", file_path=str(проект / "a.py")))
+check("помощник: Read файла выгрузки — строки", вызов(набор_помощника, "Read", file_path=str(файлы[0]), limit=1).startswith("     1\t"))
+
 print("\n# Находки просмотра: обходы и порча")
 check("Write в .mcp.jſon (длинная s) — отказ", "закрыта" in вызов(набор, "Write", file_path=".mcp.j\u017fon", content="{}") and not (проект / ".mcp.json").exists())
 check("Write в .mcp.json/x — отказ", "закрыта" in вызов(набор, "Write", file_path=".mcp.json/x", content="{}"))

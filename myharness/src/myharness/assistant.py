@@ -21,8 +21,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import profiles, tool_output
-from .agent import Agent
+from . import files_tools, profiles, tool_output
+from .agent import Agent, соединить
 from .profiles import Profile
 
 if TYPE_CHECKING:
@@ -99,13 +99,18 @@ def агент(state: State) -> tuple[Agent, list[str]]:
 
     ячейка: list[Agent] = []
 
+    учёт = files_tools.Учёт()
+
     async def набор():
         # Большой результат MCP — в файл: беда дня 31 (3,8 МБ и отказ 400) случилась у помощника.
+        # Дочитать файл помощник может одним `Read`, корень которого — сам каталог выгрузки:
+        # файлов проекта он не читает и не правит.
         корень = Path.cwd()
-        return tool_output.с_выгрузкой(
-            await state.mcp.набор(корень),
-            tool_output.каталог_выгрузки(корень),
-            lambda: ячейка[0].модель_обмена if ячейка else "",
+        выгрузка = tool_output.каталог_выгрузки(корень)
+        модель = lambda: ячейка[0].модель_обмена if ячейка else ""  # noqa: E731
+        return соединить(
+            files_tools.набор(выгрузка, модель, lambda: None, учёт, выгрузка, только=("Read",)),
+            tool_output.с_выгрузкой(await state.mcp.набор(корень), выгрузка, модель),
         )
 
     агент_помощника = Agent(
