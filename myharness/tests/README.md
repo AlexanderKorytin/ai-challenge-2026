@@ -10,6 +10,7 @@ cd myharness
 uv run python tests/check_units.py   # профили, журнал, параметры, панель, дополнения
 uv run python tests/check_app.py     # приложение целиком: клавиши, панели, ответ, журнал
 uv run python tests/check_layers.py  # слои памяти через настоящую точку входа cli.repl
+uv run python tests/check_files.py   # файловые инструменты, выгрузка большого результата, наряд
 ```
 
 `check_layers.py` отличается от двух других тем, что НЕ собирает состояние руками: он поднимает

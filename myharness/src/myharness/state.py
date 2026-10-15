@@ -33,12 +33,14 @@ from . import (
     api,
     background,
     context_strategy,
+    files_tools,
     invariants,
     machine,
     mcp_tools,
     memory,
     project_card,
     tokens,
+    tool_output,
     workspace,
 )
 from . import screens as screens_mod
@@ -588,13 +590,31 @@ def главный_агент(state: State, profile: Profile) -> Agent:
     разрешённых серверов MCP (`mcp_tools`) идут в тот же набор: один круг вызовов, один показ,
     один журнал.
     """
+    учёт = files_tools.Учёт()
+    ячейка: list[Agent] = []
+
     async def набор_главного() -> Инструменты | None:
         # Инструменты MCP от автомата не зависят (карта, задача, пауза). У `branching` их нет
         # по построению: главный экран всегда standard (`__post_init__`), а агенты экрана
         # ветвления заводит `strategies` без поставщика — звенья круга там не хранятся.
-        return соединить(machine.набор(state, profile), await state.mcp.набор(Path.cwd()))
+        # Файловые инструменты и MCP идут через выгрузку большого результата; автомат — нет:
+        # ответы консилиума показываются по своему тексту.
+        корень = Path.cwd()
+        выгрузка = tool_output.каталог_выгрузки(корень)
+        файлы = files_tools.набор(корень, модель, свободно, учёт, выгрузка)
+        return соединить(
+            tool_output.с_выгрузкой(файлы, выгрузка, модель),
+            machine.набор(state, profile),
+            tool_output.с_выгрузкой(await state.mcp.набор(корень), выгрузка, модель),
+        )
 
-    return Agent(
+    def модель() -> str:
+        return ячейка[0].модель_обмена if ячейка else ""
+
+    def свободно() -> int | None:
+        return files_tools.свободное_место(ячейка[0] if ячейка else None)
+
+    агент = Agent(
         screens_mod.MAIN_KEY,
         profile,
         facts=user_facts,
@@ -605,3 +625,5 @@ def главный_агент(state: State, profile: Profile) -> Agent:
         проверка=проверить_ответ(state, profile),
         поиск=поставщик_поиска(state, profile),
     )
+    ячейка.append(агент)
+    return агент

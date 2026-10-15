@@ -21,7 +21,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import profiles
+from . import profiles, tool_output
 from .agent import Agent
 from .profiles import Profile
 
@@ -97,15 +97,22 @@ def агент(state: State) -> tuple[Agent, list[str]]:
 
     свой, предупреждения = профиль()
 
-    async def набор():
-        return await state.mcp.набор(Path.cwd())
+    ячейка: list[Agent] = []
 
-    return (
-        Agent(
-            ИМЯ_ПОМОЩНИКА,
-            свой,
-            инструменты=набор,
-            поиск=state_mod.поставщик_поиска(state, свой),
-        ),
-        предупреждения,
+    async def набор():
+        # Большой результат MCP — в файл: беда дня 31 (3,8 МБ и отказ 400) случилась у помощника.
+        корень = Path.cwd()
+        return tool_output.с_выгрузкой(
+            await state.mcp.набор(корень),
+            tool_output.каталог_выгрузки(корень),
+            lambda: ячейка[0].модель_обмена if ячейка else "",
+        )
+
+    агент_помощника = Agent(
+        ИМЯ_ПОМОЩНИКА,
+        свой,
+        инструменты=набор,
+        поиск=state_mod.поставщик_поиска(state, свой),
     )
+    ячейка.append(агент_помощника)
+    return агент_помощника, предупреждения

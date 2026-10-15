@@ -21,6 +21,10 @@ os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
 # Каталог состояния — туда же: разговоры и глобальные факты пишутся между запусками,
 # и без переопределения проверки замусорили бы настоящий ~/.local/state пользователя.
 os.environ["MYHARNESS_STATE_DIR"] = str(tmp / "state")
+# Файловые инструменты модели — выключены: проверки идут из каталога в хранилище `git`, где
+# запись разрешена по умолчанию, а поддельные клиенты и счёт инструментов писаны без них. Свои
+# проверки у них в `check_files.py`.
+os.environ["MYHARNESS_DISALLOWED_TOOLS"] = "Read,Edit"
 (tmp / "profiles").mkdir(parents=True)
 
 from prompt_toolkit.application import create_app_session  # noqa: E402

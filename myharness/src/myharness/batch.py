@@ -34,12 +34,13 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from . import api, config, context_strategy, mcp_tools, profiles, providers
+from . import api, config, context_strategy, files_tools, mcp_tools, profiles, providers, tool_output
 from .agent import Agent, Turn, usage_tokens
 from .profiles import Profile, Substitution
 
@@ -256,15 +257,37 @@ async def run_order(order: Order, client, *, on_line) -> list[Turn]:
     # Соединение с сервером поиска режима RAG — одно на наряд: задания с полем `rag` ищут по нему
     # одновременно, закрывается по концу наряда.
     поиск = mcp_tools.Поиск()
+    # Большие результаты файловых инструментов — во временный каталог на время наряда.
+    временный = tempfile.TemporaryDirectory(prefix="myharness-tool-results-")
+    выгрузка = Path(временный.name)
 
     async def one(position: int, task: Task) -> Turn:
         async with gate:
             profile = task.prepared if task.prepared is not None else profiles.builtin_default()
+            учёт = files_tools.Учёт()
+            ячейка: list[Agent] = []
+
+            def модель() -> str:
+                return ячейка[0].модель_обмена if ячейка else ""
+
+            def инструменты():
+                # Файловые инструменты наряда; выгрузка — во временный каталог наряда: прогон
+                # наряда не пишет в каталог состояния (требование «Наряд не пишет состояние»).
+                return tool_output.с_выгрузкой(
+                    files_tools.набор(
+                        Path.cwd(), модель, lambda: files_tools.свободное_место(ячейка[0] if ячейка else None), учёт, выгрузка
+                    ),
+                    выгрузка,
+                    модель,
+                )
+
             agent = Agent(
                 task.agent,
                 profile,
                 поиск=(lambda вопрос, контекст: поиск.найти(Path.cwd(), profile.rag, вопрос, контекст)) if profile.rag else None,
+                инструменты=инструменты,
             )
+            ячейка.append(agent)
             # Реплики идут одному собеседнику: что он помнит, решает профиль (`keep_history`,
             # стратегия, окно) — хранилища у него нет, разговор живёт в памяти процесса.
             реплик = len(task.asks)
@@ -329,6 +352,7 @@ async def run_order(order: Order, client, *, on_line) -> list[Turn]:
     finally:
         # Процесс местного сервера поиска не должен пережить наряд.
         await поиск.закрыть()
+        временный.cleanup()
     turns: list[Turn] = []
     for result in results:
         if isinstance(result, BaseException):

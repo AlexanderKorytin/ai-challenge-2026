@@ -43,6 +43,10 @@ os.environ["MYHARNESS_JOURNAL"] = str(tmp / "journal.jsonl")
 # Каталог состояния — туда же: разговоры и глобальные факты пишутся между запусками,
 # и без переопределения проверки замусорили бы настоящий ~/.local/state пользователя.
 os.environ["MYHARNESS_STATE_DIR"] = str(tmp / "state")
+# Файловые инструменты модели — выключены: проверки идут из каталога в хранилище `git`, где
+# запись разрешена по умолчанию, а поддельные клиенты и счёт инструментов писаны без них. Свои
+# проверки у них в `check_files.py`.
+os.environ["MYHARNESS_DISALLOWED_TOOLS"] = "Read,Edit"
 
 from myharness import api, journal, memory, params as params_mod, picker as picker_mod, profiles, ui  # noqa: E402
 from myharness import archivist, background, compact, config as config_mod  # noqa: E402
@@ -17261,8 +17265,8 @@ class _ПодставныеСоединения:
 агент_набора, _ = assistant.агент(состояние_набора)
 полученный_набор, жалоба_набора = asyncio.run(агент_набора._набор_инструментов())
 check(
-    "помощник: получает набор MCP как есть, без инструментов автомата",
-    полученный_набор is набор_mcp and жалоба_набора is None,
+    "помощник: получает набор MCP (с выгрузкой большого результата), без инструментов автомата",
+    полученный_набор is not None and полученный_набор.схемы == набор_mcp.схемы and жалоба_набора is None,
     f"{полученный_набор!r} / {жалоба_набора}",
 )
 

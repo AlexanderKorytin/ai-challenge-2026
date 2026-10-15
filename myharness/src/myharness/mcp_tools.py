@@ -78,6 +78,18 @@ class Разрешения:
             return False
         return any(_подходит(п, полное_имя) for п in self.allow)
 
+    def встроенный(self, имя: str) -> bool | None:
+        """Решение правил о встроенном инструменте: `True` — разрешён, `False` — запрещён, `None` — правила нет.
+
+        Запрет с путём (`Read(./.env)`) запрещает весь род: путей правил здесь нет, и молча
+        пропущенный запрет открыл бы закрытое для Claude Code. Разрешение с путём пропускается."""
+        род = ВСТРОЕННЫЕ_РОДЫ[имя]
+        if any(п in (имя, род) or ("(" in п and ВСТРОЕННЫЕ_РОДЫ.get(п.split("(", 1)[0]) == род) for п in self.deny):
+            return False
+        if any(п in (имя, род) for п in self.allow):
+            return True
+        return None
+
     def сервер_возможен(self, сервер: str) -> bool:
         """Может ли у сервера оказаться хоть один разрешённый инструмент.
 
@@ -88,6 +100,15 @@ class Разрешения:
         if весь in self.deny or f"{весь}__*" in self.deny:
             return False
         return any(п == весь or п.startswith(весь + "__") for п in self.allow)
+
+
+# Имена встроенных файловых инструментов (`files_tools`) и правила их рода, как у Claude Code:
+# `Read` покрывает `Read`, `Glob`, `Grep`; `Edit` — `Edit`, `Write`.
+ВСТРОЕННЫЕ_РОДЫ = {"Read": "Read", "Glob": "Read", "Grep": "Read", "Edit": "Edit", "Write": "Edit"}
+
+
+def _встроенное(правило: str) -> bool:
+    return правило.split("(", 1)[0] in ВСТРОЕННЫЕ_РОДЫ
 
 
 def прочитать_разрешения(каталог: Path) -> tuple[Разрешения, str | None]:
@@ -120,7 +141,7 @@ def прочитать_разрешения(каталог: Path) -> tuple[Ра�
             if not isinstance(значение, list) or not all(isinstance(п, str) for п in значение):
                 жалобы.append(f"{путь}: permissions.{ключ} — не список строк")
                 break
-            годные.append([п for п in значение if п.startswith("mcp__")])
+            годные.append([п for п in значение if п.startswith("mcp__") or _встроенное(п)])
         else:
             allow.extend(годные[0])
             deny.extend(годные[1])
