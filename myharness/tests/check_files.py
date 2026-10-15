@@ -307,6 +307,23 @@ async def отмена_перебора():
 отзыв, снятие = asyncio.run(отмена_перебора())
 check("Grep с перебором не держит цикл событий, отмена снимает сразу", отзыв < 1 and снятие < 2, f"{отзыв:.1f} с / {снятие:.1f} с")
 
+print("\n# Находки итогового просмотра")
+метка = tmp / "ВЗЛОМ"
+(проект / "json.py").write_text(f"open({str(метка)!r}, 'w').write('x')\nfrom importlib import import_module as _i\n", encoding="utf-8")
+вызов(собрать(проект), "Grep", pattern="load")
+check("Grep не исполняет json.py рабочего каталога", not метка.exists())
+(проект / "json.py").unlink()
+поколение = [0]
+учёт_поколений = files_tools.Учёт(поколение=lambda: поколение[0])
+с_поколением = собрать(проект, учёт_поколений)
+вызов(с_поколением, "Read", file_path="b.py")
+check("до /clear: Write поверх прочитанного проходит", "ОТКАЗ" not in вызов(с_поколением, "Write", file_path="b.py", content="до\n"))
+поколение[0] += 1
+check("после /clear: Write поверх прочитанного до очистки — отказ", "сначала прочитай" in вызов(с_поколением, "Write", file_path="b.py", content="после\n"))
+малое_окно = собрать(проект, свободно=lambda: 300)
+check("Read: свободное место окна меньше предела — PARTIAL view", "[PARTIAL view" in вызов(малое_окно, "Read", file_path="big.txt"))
+check("Read: свободного места хватает — без PARTIAL view", "[PARTIAL view" not in вызов(собрать(проект, свободно=lambda: 10**6), "Read", file_path="a.py"))
+
 print("\n# Подключение: наряд и главный агент")
 from myharness import api, batch, ui  # noqa: E402
 

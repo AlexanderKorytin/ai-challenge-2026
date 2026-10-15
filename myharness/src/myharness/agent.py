@@ -1413,6 +1413,11 @@ class Agent:
         return self._вес_запроса
 
     @property
+    def поколение(self) -> int:
+        """Поколение разговора: `forget` (`/clear`, смена профиля) его меняет."""
+        return self._generation
+
+    @property
     def модель_обмена(self) -> str:
         """Модель последнего обмена; пустая строка — обмена не было (счёт `tokens` берёт DeepSeek)."""
         return self._модель_обмена
