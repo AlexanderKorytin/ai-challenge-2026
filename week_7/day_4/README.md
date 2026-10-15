@@ -75,6 +75,8 @@ test/
 | 2-3 | Glob 2, Grep 4, Read 11, Edit 2 | `storage.py`, `report.py` | 38,1 с | итоговый код: 4 из 4 |
 | 3-3 | Glob 1, Read 9, Write 2 | `README.md`, `CHANGELOG.md` | 27,0 с | итоговый код: `done` описана |
 
+| 2-4 | (на записи ролика) | `storage.py`, `report.py` | — | 4 из 4 |
+
 \* Первая попытка 3-1 оборвалась на сети DeepSeek через 120 с и перегнана; журнал несёт обе.
 
 Повторяемость: набор найденных мест (сценарий 1), набор закрытых нарушений (сценарий 2) и набор
@@ -104,3 +106,10 @@ cat итоги/2-3.diff
 - Модель может писать `profiles/*.json`, `Makefile`, `.githooks` рабочего каталога.
 - Запретные признаки инвариантов и судья не видят текста, записанного `Write`/`Edit`.
 - `diff` большого `Write` уходит на экран целиком.
+
+## Ссылки
+
+- Видео: https://drive.google.com/open?id=1q5-BoT9FSpY-aTjnKhUit9Klk6n-6dP1
+- Код дня: https://github.com/AlexanderKorytin/ai-challenge-2026/tree/w7d4/week_7/day_4
+- Код инструмента (`main`): `myharness/src/myharness/files_tools.py`, `tool_output.py`, `trust.py`;
+  требования — `openspec/specs/files/spec.md`
