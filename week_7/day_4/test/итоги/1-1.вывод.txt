@@ -1,0 +1,12 @@
+Using CPython 3.11.15
+Creating virtual environment at: /Users/aleksandrkorytin/challenge/w7d4/myharness/.venv
+   Building myharness @ file:///Users/aleksandrkorytin/challenge/w7d4/myharness
+      Built myharness @ file:///Users/aleksandrkorytin/challenge/w7d4/myharness
+Downloading openai (1.6MiB)
+ Downloaded openai
+Installed 45 packages in 59ms
+[1/1] использование → deepseek-v4-flash: Найди все места, где проект обращается к хранилищу задач, и сохрани отчёт в файл ИСПОЛЬЗОВАНИЕ.md: по каждому месту — файл:строка и что там делается.
+[1/1] использование: готово за 23.8 с
+Наряд: модель deepseek-v4-flash, заданий 1, одновременно 8
+  использование  ок      23.8 с   18936 токенов
+Итог: ответили 1 из 1, израсходовано 18936 токенов

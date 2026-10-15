@@ -1,0 +1,116 @@
+diff --git a/tasks/cli.py b/tasks/cli.py
+index e7b284c..4b3bdf8 100644
+--- a/tasks/cli.py
++++ b/tasks/cli.py
+@@ -4,12 +4,20 @@ import sys
+ 
+ from tasks.models import Task
+ from tasks.report import summary
+-from tasks.storage import load_tasks, save_tasks
++from tasks.storage import CorruptedTasksFile, load_tasks, save_tasks
++
++
++def _load() -> list[Task]:
++    try:
++        return load_tasks()
++    except CorruptedTasksFile:
++        print("файл задач испорчен, начинаю с пустого списка")
++        return []
+ 
+ 
+ def add(title: str) -> None:
+     """Добавить задачу с новым номером."""
+-    tasks = load_tasks()
++    tasks = _load()
+     next_id = max((task.id for task in tasks), default=0) + 1
+     tasks.append(Task(next_id, title))
+     save_tasks(tasks)
+@@ -18,14 +26,14 @@ def add(title: str) -> None:
+ 
+ def show() -> None:
+     """Напечатать все задачи."""
+-    for task in load_tasks():
++    for task in _load():
+         mark = "x" if task.done else " "
+         print(f"[{mark}] {task.id}. {task.title}")
+ 
+ 
+ def done(task_id: int) -> bool:
+     """Отметить задачу выполненной; False — задачи с таким номером нет."""
+-    tasks = load_tasks()
++    tasks = _load()
+     for task in tasks:
+         if task.id == task_id:
+             task.done = True
+@@ -45,7 +53,7 @@ def main(argv: list[str]) -> int:
+             print(f"задачи {argv[1]} нет")
+             return 1
+     elif argv == ["report"]:
+-        print(summary())
++        print(summary(_load()))
+     else:
+         print("команды: add <текст>, list, done <номер>, report")
+         return 1
+diff --git a/tasks/report.py b/tasks/report.py
+index 2e89840..23c4dea 100644
+--- a/tasks/report.py
++++ b/tasks/report.py
+@@ -1,17 +1,17 @@
+ """Сводка по задачам."""
+ 
+ import json
+-from pathlib import Path
+ 
+-from tasks.storage import load_tasks
++from tasks.models import Task
++from tasks.storage import tasks_path
+ 
+ 
+-def summary() -> str:
+-    tasks = load_tasks()
++def summary(tasks: list[Task]) -> str:
++    """Сводка: сколько всего задач, сколько сделано и сколько осталось."""
+     done = sum(1 for task in tasks if task.done)
+     return f"всего {len(tasks)}, сделано {done}, осталось {len(tasks) - done}"
+ 
+ 
+ def raw_count() -> int:
+     """Число записей в файле без разбора в задачи."""
+-    return len(json.loads(Path("tasks.json").read_text(encoding="utf-8")))
++    return len(json.loads(tasks_path().read_text(encoding="utf-8")))
+diff --git a/tasks/storage.py b/tasks/storage.py
+index 408d1f8..01df56a 100644
+--- a/tasks/storage.py
++++ b/tasks/storage.py
+@@ -7,21 +7,27 @@ from pathlib import Path
+ from tasks.models import Task
+ 
+ 
++class CorruptedTasksFile(Exception):
++    """Файл задач не удалось разобрать как JSON."""
++
++
+ def tasks_path() -> Path:
+     """Путь к файлу задач: TASKS_FILE либо tasks.json в текущем каталоге."""
+     return Path(os.environ.get("TASKS_FILE", "tasks.json"))
+ 
+ 
+ def load_tasks() -> list[Task]:
+-    """Прочитать все задачи; файла нет — пустой список."""
++    """Прочитать все задачи; файла нет — пустой список.
++
++    Испорченный файл — исключение CorruptedTasksFile.
++    """
+     path = tasks_path()
+     if not path.exists():
+         return []
+     try:
+         raw = json.loads(path.read_text(encoding="utf-8"))
+-    except:
+-        print("файл задач испорчен, начинаю с пустого списка")
+-        return []
++    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
++        raise CorruptedTasksFile(str(path)) from exc
+     return [Task(**item) for item in raw]
+ 
+ 
