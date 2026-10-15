@@ -1,0 +1,67 @@
+diff --git a/ИСПОЛЬЗОВАНИЕ.md b/ИСПОЛЬЗОВАНИЕ.md
+new file mode 100644
+index 0000000..c7d69d9
+--- /dev/null
++++ b/ИСПОЛЬЗОВАНИЕ.md
+@@ -0,0 +1,61 @@
++# Использование хранилища задач
++
++Отчёт о всех местах в проекте, где код обращается к хранилищу задач (файл JSON).
++Хранилищем заведует `tasks/storage.py`: остальные модули ходят туда через `load_tasks()` и `save_tasks()`, за одним исключением (см. `tasks/report.py:17`).
++
++## Само хранилище: `tasks/storage.py`
++
++| Место | Что делается |
++|---|---|
++| `tasks/storage.py:1` | Строка документации модуля: объявляет, что хранилище — файл JSON, путь задаёт `TASKS_FILE` |
++| `tasks/storage.py:3` | Подключение `json` — разбор и сериализация содержимого файла |
++| `tasks/storage.py:4` | Подключение `os` — нужно для чтения переменной `TASKS_FILE` |
++| `tasks/storage.py:5` | Подключение `pathlib.Path` — тип пути и файловые операции |
++| `tasks/storage.py:10-12` | `tasks_path()` — единственное место, где вычисляется путь: `TASKS_FILE` либо `tasks.json` из текущего каталога |
++| `tasks/storage.py:12` | `os.environ.get("TASKS_FILE", "tasks.json")` — выбор пути из окружения с запасным значением |
++| `tasks/storage.py:17` | `load_tasks()` — получает путь вызовом `tasks_path()` |
++| `tasks/storage.py:18` | Проверка `path.exists()` — есть ли файл |
++| `tasks/storage.py:19` | Файла нет — возврат пустого списка, без создания файла |
++| `tasks/storage.py:21` | Чтение содержимого: `path.read_text(encoding="utf-8")` + `json.loads` — разбор всего файла целиком |
++| `tasks/storage.py:22-24` | Перехват ошибки разбора на битом файле: печать сообщения в консоль и возврат пустого списка (см. замечания) |
++| `tasks/storage.py:25` | Сборка объектов `Task` из записей файла: `[Task(**item) for item in raw]` |
++| `tasks/storage.py:30` | `save_tasks()` — превращение задач в словари: `task.__dict__` |
++| `tasks/storage.py:31` | Запись всего списка поверх файла: `tasks_path().write_text(json.dumps(...))`, UTF-8, отступ 2 |
++
++## Потребители: `tasks/cli.py`
++
++| Место | Что делается |
++|---|---|
++| `tasks/cli.py:7` | Импорт точки доступа: `from tasks.storage import load_tasks, save_tasks` |
++| `tasks/cli.py:12` | `add()` — читает текущий список через `load_tasks()` |
++| `tasks/cli.py:15` | `add()` — записывает список с новой задачей через `save_tasks(tasks)` |
++| `tasks/cli.py:21` | `show()` — читает список через `load_tasks()` и печатает его |
++| `tasks/cli.py:28` | `done()` — читает список через `load_tasks()` |
++| `tasks/cli.py:32` | `done()` — записывает список с изменённой отметкой через `save_tasks(tasks)` |
++
++## Потребители: `tasks/report.py`
++
++| Место | Что делается |
++|---|---|
++| `tasks/report.py:6` | Импорт `load_tasks` из хранилища |
++| `tasks/report.py:10` | `summary()` — читает список через `load_tasks()` для подсчёта сводки |
++| `tasks/report.py:17` | `raw_count()` — **читает файл в обход хранилища**: сам открывает `Path("tasks.json")` и разбирает JSON (см. замечания) |
++
++## Тесты: `tests/test_storage.py`
++
++| Место | Что делается |
++|---|---|
++| `tests/test_storage.py:4` | Импорт `load_tasks` и `save_tasks` из хранилища |
++| `tests/test_storage.py:9` | `monkeypatch.setenv("TASKS_FILE", ...)` — подмена пути на временный файл, чтобы не трогать рабочий `tasks.json` |
++| `tests/test_storage.py:10` | Запись задачи через `save_tasks(...)` |
++| `tests/test_storage.py:11` | Чтение обратно через `load_tasks()` и сверка с исходной задачей |
++
++## Замечания
++
++Найденные обращения противоречат правилам проекта в трёх местах:
++
++1. **`tasks/report.py:17`** — нарушение правила 3 (`ПРАВИЛА.md:5`): путь `tasks.json` задан здесь повторно, в обход `tasks_path()`. Поэтому `raw_count()` не учитывает переменную `TASKS_FILE` и читает не тот файл, чем остальная программа. Кандидат на переписывание через `tasks_path()`.
++2. **`tasks/storage.py:22`** — нарушение правила 4 (`ПРАВИЛА.md:6`): голый `except:`, который ловит в том числе `KeyboardInterrupt` и ошибки программиста. Нужен явный `except (json.JSONDecodeError, OSError):`.
++3. **`tasks/storage.py:23`** — нарушение правила 2 (`ПРАВИЛА.md:4`): печать на экран из модуля хранилища, а печатать должен только `tasks/cli.py`.
++
++Отдельно: `tasks/models.py` к хранилищу не обращается — только описывает `Task`, формат которого хранилище и использует на строках `storage.py:25` и `storage.py:30`.

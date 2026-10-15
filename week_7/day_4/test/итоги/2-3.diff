@@ -1,0 +1,46 @@
+diff --git a/tasks/report.py b/tasks/report.py
+index 2e89840..7fa5fd9 100644
+--- a/tasks/report.py
++++ b/tasks/report.py
+@@ -1,12 +1,12 @@
+ """Сводка по задачам."""
+ 
+ import json
+-from pathlib import Path
+ 
+-from tasks.storage import load_tasks
++from tasks.storage import load_tasks, tasks_path
+ 
+ 
+ def summary() -> str:
++    """Строка со сводкой: всего, сделано и осталось."""
+     tasks = load_tasks()
+     done = sum(1 for task in tasks if task.done)
+     return f"всего {len(tasks)}, сделано {done}, осталось {len(tasks) - done}"
+@@ -14,4 +14,4 @@ def summary() -> str:
+ 
+ def raw_count() -> int:
+     """Число записей в файле без разбора в задачи."""
+-    return len(json.loads(Path("tasks.json").read_text(encoding="utf-8")))
++    return len(json.loads(tasks_path().read_text(encoding="utf-8")))
+diff --git a/tasks/storage.py b/tasks/storage.py
+index 408d1f8..d8bd202 100644
+--- a/tasks/storage.py
++++ b/tasks/storage.py
+@@ -13,14 +13,13 @@ def tasks_path() -> Path:
+ 
+ 
+ def load_tasks() -> list[Task]:
+-    """Прочитать все задачи; файла нет — пустой список."""
++    """Прочитать все задачи; файла нет или файл испорчен — пустой список."""
+     path = tasks_path()
+     if not path.exists():
+         return []
+     try:
+         raw = json.loads(path.read_text(encoding="utf-8"))
+-    except:
+-        print("файл задач испорчен, начинаю с пустого списка")
++    except json.JSONDecodeError:
+         return []
+     return [Task(**item) for item in raw]
+ 
