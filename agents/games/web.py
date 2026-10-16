@@ -238,6 +238,9 @@ async def состояние(request: Request) -> Response:
             "опрос_пройден": taste.опрос_пройден(каталог()),
             "мастер_пройден": bool(games_db.отметка(с, "мастер_пройден")),
             "черновик_знакомства": _черновик(с),
+            # Вкус записан, но человек его ещё не прочёл и не подтвердил — экран проверки; службы
+            # и задания ждут подтверждения (живой сценарий пользователя).
+            "вкус_подтверждён": bool(games_db.отметка(с, "вкус_подтверждён")),
             "сверка_нужна": _сверка_нужна(с),
             "вкус": _вкус(),
             "запреты": _запреты(),
@@ -248,7 +251,10 @@ async def состояние(request: Request) -> Response:
             "лента": games_db.лента(с),
             "задания_идут": sorted(р for р, з in ПРИЛОЖЕНИЕ.задания.items() if not з.done()),
             # Догоняющий запуск — для значка: опрос не пройден — заданий нет вовсе.
-            "догнать": [р for р in ("week", "day") if taste.опрос_пройден(каталог()) and jobs.нужен_догоняющий(с, р)],
+            "догнать": [
+                р for р in ("week", "day")
+                if taste.опрос_пройден(каталог()) and games_db.отметка(с, "вкус_подтверждён") and jobs.нужен_догоняющий(с, р)
+            ],
             "разговор": [{"вопрос": в, "ответ": о} for в, о in ПРИЛОЖЕНИЕ.пары],
         }
     finally:
@@ -406,6 +412,15 @@ def _черновик(с) -> dict[str, Any]:
         return json.loads(games_db.отметка(с, "черновик_знакомства") or "{}")
     except ValueError:
         return {}
+
+
+async def вкус_подтвердить(request: Request) -> Response:
+    с = games_db.открыть()
+    try:
+        games_db.поставить_отметку(с, "вкус_подтверждён", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    finally:
+        с.close()
+    return JSONResponse({"итог": "вкус подтверждён — начинаю подбор"})
 
 
 async def черновик_знакомства(request: Request) -> Response:
@@ -733,6 +748,12 @@ async def пересобрать(request: Request) -> Response:
     await ПРИЛОЖЕНИЕ.метки_магазина()
     async with ПРИЛОЖЕНИЕ.замок:
         await ПРИЛОЖЕНИЕ.поднять(новый=True)
+    # Новый вкус снова проходит экран проверки.
+    с = games_db.открыть()
+    try:
+        games_db.поставить_отметку(с, "вкус_подтверждён", "")
+    finally:
+        с.close()
     return JSONResponse({"приветствие": ПРИВЕТСТВИЕ_ПЕРЕСБОРКИ})
 
 
@@ -853,6 +874,7 @@ app = Starlette(
         Route("/api/logout", выйти_из_steam, methods=["POST"]),
         Route("/api/setup/done", мастер_готов, methods=["POST"]),
         Route("/api/intro/draft", черновик_знакомства, methods=["POST"]),
+        Route("/api/taste/confirm", вкус_подтвердить, methods=["POST"]),
         Route("/api/ask", вопрос, methods=["POST"]),
         Route("/api/rate", оценка, methods=["POST"]),
         Route("/api/played", уже_играл, methods=["POST"]),

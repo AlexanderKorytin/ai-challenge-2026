@@ -202,3 +202,9 @@ def test_смена_облачного_ключа_поднимает_совет�
     клиент.post("/api/keys", json={"deepseek": "sk-проба"})
     клиент.post("/api/keys", json={"deepseek": ""})
     assert len(поднято) == 2
+
+
+def test_вкус_ждёт_подтверждения(клиент):
+    assert клиент.get("/api/state").json()["вкус_подтверждён"] is False
+    assert клиент.post("/api/taste/confirm", json={}).status_code == 200
+    assert клиент.get("/api/state").json()["вкус_подтверждён"] is True
