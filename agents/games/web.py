@@ -48,6 +48,7 @@ from myharness.mcp_tools import Соединения
 import advisor
 import jobs
 import judge
+import models
 import similar
 import taste
 
@@ -60,8 +61,6 @@ import taste
 # запрос на 127.0.0.1 (разбор рисков): записи принимаются только своими страницами.
 СВОИ = {f"http://127.0.0.1:{ПОРТ}", f"http://localhost:{ПОРТ}"}
 ПРИВЕТСТВИЕ_ПЕРЕСБОРКИ = "Хочу пересобрать вкус заново: спроси меня о любимых играх с начала."
-# Модели, без которых агент не работает: местный отбор и векторы RAG.
-МЕСТНЫЕ_МОДЕЛИ = (judge.МОДЕЛЬ.removeprefix("ollama/"), "bge-m3")
 
 
 def каталог() -> Path:
@@ -81,6 +80,8 @@ class Приложение:
         self.замок = asyncio.Lock()
         self.метки: list[ss.Метка] = []
         self.задания: dict[str, asyncio.Task] = {}
+        # Загрузка модели — одна за раз: две загрузки разом делили бы канал и диск.
+        self.загрузка = asyncio.Lock()
         self.задачи: set[asyncio.Task] = set()
         # Повтор перехваченного ответа OpenID: однажды принятая метка ответа второй раз не
         # принимается. Живёт в памяти процесса — на 127.0.0.1 этого довольно.
@@ -95,8 +96,14 @@ class Приложение:
     def клиент(self) -> api.Clients:
         ключ = secrets_store.загрузить().deepseek_ключ
         if self._клиент is None or ключ != self._ключ_клиента:
+            прежний = self._клиент
             self._клиент = api.Clients(ключ)
             self._ключ_клиента = ключ
+            if прежний is not None:
+                # Смена ключа — обычный путь мастера: прежние соединения закрываются, а не текут.
+                задача = asyncio.create_task(прежний.aclose())
+                self.задачи.add(задача)
+                задача.add_done_callback(self.задачи.discard)
         return self._клиент
 
     async def метки_магазина(self) -> list[ss.Метка]:
@@ -180,16 +187,29 @@ def _с_оценкой(записи: list[dict]) -> list[dict]:
 
 
 async def _ollama() -> dict[str, Any]:
-    хост = os.environ.get("OLLAMA_HOST") or "127.0.0.1:11434"
-    адрес = хост if "://" in хост else f"http://{хост}"
+    """Служба Ollama и модели агента: сборки на выбор с пометкой по памяти Мака, выбранная,
+    векторы `bge-m3`, вариант для разговора."""
+    с = games_db.открыть()
     try:
-        async with httpx2.AsyncClient(timeout=5) as к:
-            ответ = await к.get(f"{адрес}/api/tags")
-        есть = {м.get("name", "") for м in ответ.json().get("models", [])}
-    except (httpx2.HTTPError, ValueError):
-        return {"служба": False, "модели": {м: False for м in МЕСТНЫЕ_МОДЕЛИ}}
-    # `bge-m3` в списке службы называется `bge-m3:latest`.
-    return {"служба": True, "модели": {м: м in есть or f"{м}:latest" in есть for м in МЕСТНЫЕ_МОДЕЛИ}}
+        выбрана = models.выбрана(с)
+    finally:
+        с.close()
+    async with httpx2.AsyncClient(timeout=5) as к:
+        есть = await models.есть(к)
+    память = models.память_мака()
+    return {
+        "служба": есть is not None,
+        "память": память,
+        "выбрана": выбрана,
+        "выбрана_есть": bool(есть) and выбрана in есть,
+        "векторы": bool(есть) and models.ВЕКТОРЫ in есть,
+        "вариант": bool(есть) and models.ВАРИАНТ in есть,
+        "сборки": [
+            {"имя": с_.имя, "гб": с_.гб, "память": с_.память, "заметка": с_.заметка,
+             "подходит": память == 0 or память >= с_.память, "есть": bool(есть) and с_.имя in есть}
+            for с_ in models.ВЫБОР
+        ],
+    }
 
 
 def _сверка_нужна(с) -> bool:
@@ -361,6 +381,13 @@ async def ключи(request: Request) -> Response:
         for поле, ключ in принятые.items():
             setattr(тайны, поле, ключ)
         secrets_store.сохранить(тайны)
+    if "deepseek_ключ" in принятые and ПРИЛОЖЕНИЕ.агент is not None:
+        # Облачный ключ появился или ушёл — советник поднимается заново: профиль (рассуждения)
+        # снимается при подъёме, а модель выбирается на каждом обмене, и без подъёма они
+        # разошлись бы до перезапуска службы (просмотр шагов 18–19). Разговор тот же: имя
+        # профиля одно на обе модели.
+        async with ПРИЛОЖЕНИЕ.замок:
+            await ПРИЛОЖЕНИЕ.поднять()
     if принятые.get("steam_ключ"):
         await _синхронизировать_сейчас()
     return JSONResponse({"итоги": {к: secrets_store.скрыть(т, тайны) for к, т in итоги.items()}})
@@ -400,8 +427,6 @@ async def вопрос(request: Request) -> Response:
         return _ошибка("пустая реплика")
     if ПРИЛОЖЕНИЕ.замок.locked():
         return _ошибка("идёт ответ", 409)
-    if not secrets_store.загрузить().deepseek_ключ:
-        return _ошибка("нет ключа DeepSeek: введите его в настройках", 412)
     try:
         await ПРИЛОЖЕНИЕ.метки_магазина()
     except ss.ОшибкаМагазина as exc:
@@ -478,8 +503,6 @@ async def _в_индекс(игра: ss.Игра, отметка: str) -> None:
 
 
 async def _пересмотр(игра: ss.Игра, причина: str, род: str) -> dict[str, Any]:
-    if not secrets_store.загрузить().deepseek_ключ:
-        return {"вкус_записан": False, "пересмотр": "нет ключа DeepSeek: вкус не пересмотрен"}
     метки = await ПРИЛОЖЕНИЕ.метки_магазина()
     async with ПРИЛОЖЕНИЕ.замок:
         записан, ответ = await advisor.пересмотреть(ПРИЛОЖЕНИЕ.клиент(), каталог(), игра, причина, метки, род)
@@ -559,6 +582,71 @@ async def снять_запрет(request: Request) -> Response:
     finally:
         с.close()
     return JSONResponse({"итог": f"запрет снят: {текст}"})
+
+
+# ---- местные модели ----
+
+
+async def модель_скачать(request: Request) -> Response:
+    """Загрузка модели из веба: поток хода от службы Ollama. Сборка из списка — после загрузки
+    становится выбранной, и под неё собирается вариант для разговора; `bge-m3` — только загрузка."""
+    try:
+        имя = str((await _тело(request)).get("имя") or "")
+    except ValueError as exc:
+        return _ошибка(str(exc))
+    сборки = {с_.имя for с_ in models.ВЫБОР}
+    if имя not in сборки | {models.ВЕКТОРЫ}:
+        return _ошибка(f"модели {имя} нет в списке")
+    if ПРИЛОЖЕНИЕ.загрузка.locked():
+        return _ошибка("уже идёт загрузка другой модели", 409)
+
+    async def поток():
+        async with ПРИЛОЖЕНИЕ.загрузка:
+            ошибка = None
+            try:
+                async with httpx2.AsyncClient() as к:
+                    async for шаг in models.скачать(к, имя):
+                        ошибка = шаг.get("error") or ошибка
+                        yield json.dumps(шаг, ensure_ascii=False) + "\n"
+                    if ошибка is None and имя in сборки:
+                        yield json.dumps({"status": "собираю вариант для разговора"}, ensure_ascii=False) + "\n"
+                        await models.вариант_для_разговора(к, имя)  # не собрался — выбор прежний
+                        с = games_db.открыть()
+                        try:
+                            models.выбрать(с, имя)
+                        finally:
+                            с.close()
+            except Exception as exc:  # noqa: BLE001 — причина уходит на страницу
+                ошибка = f"{type(exc).__name__}: {exc}"
+            yield json.dumps({"status": "готово" if ошибка is None else "ошибка", "error": ошибка}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(поток(), media_type="application/x-ndjson")
+
+
+async def модель_выбрать(request: Request) -> Response:
+    """Выбор уже скачанной сборки либо пересборка варианта выбранной. Сначала вариант, потом
+    отметка: не собрался вариант — выбор прежний, и отбор с советником не расходятся. Под замком
+    загрузки: конец идущей загрузки иначе перезаписал бы выбор."""
+    try:
+        имя = str((await _тело(request)).get("имя") or "")
+    except ValueError as exc:
+        return _ошибка(str(exc))
+    if имя not in {с_.имя for с_ in models.ВЫБОР}:
+        return _ошибка(f"сборки {имя} нет в списке")
+    if ПРИЛОЖЕНИЕ.загрузка.locked():
+        return _ошибка("идёт загрузка модели — дождитесь её конца", 409)
+    async with ПРИЛОЖЕНИЕ.загрузка:
+        try:
+            async with httpx2.AsyncClient() as к:
+                await models.вариант_для_разговора(к, имя)
+        except Exception as exc:  # noqa: BLE001
+            return _ошибка(f"вариант для разговора не собран, выбор не изменён: {exc}", 502)
+        с = games_db.открыть()
+        try:
+            models.выбрать(с, имя)
+        finally:
+            с.close()
+    return JSONResponse({"итог": f"выбрана {имя}, вариант для разговора собран"})
 
 
 # ---- задания, пересборка, сверка ----
@@ -708,6 +796,8 @@ app = Starlette(
         Route("/auth/steam/start", вход_начать),
         Route("/auth/steam", вход_вернуться),
         Route("/api/keys", ключи, methods=["POST"]),
+        Route("/api/models/pull", модель_скачать, methods=["POST"]),
+        Route("/api/models/choose", модель_выбрать, methods=["POST"]),
         Route("/api/logout", выйти_из_steam, methods=["POST"]),
         Route("/api/ask", вопрос, methods=["POST"]),
         Route("/api/rate", оценка, methods=["POST"]),

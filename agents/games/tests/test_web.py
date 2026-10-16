@@ -20,7 +20,8 @@ def клиент(monkeypatch):
         return None
 
     async def ollama():
-        return {"служба": True, "модели": {м: True for м in web.МЕСТНЫЕ_МОДЕЛИ}}
+        return {"служба": True, "память": 18, "выбрана": "qwen3.5:9b-q4_K_M", "выбрана_есть": True,
+                "векторы": True, "вариант": True, "сборки": []}
 
     async def пересмотр(игра, причина, род):
         return {"вкус_записан": True, "пересмотр": "поправил"}
@@ -153,3 +154,44 @@ def test_кнопка_задания(клиент, monkeypatch):
         time.sleep(0.02)
     else:
         raise AssertionError("строки «уже идёт» в ленте нет")
+
+
+def test_пути_моделей(клиент, monkeypatch):
+    import models
+
+    assert клиент.post("/api/models/pull", json={"имя": "чужая:модель"}).status_code == 400
+    assert клиент.post("/api/models/choose", json={"имя": "чужая:модель"}).status_code == 400
+    assert клиент.post("/api/models/choose", json={"имя": models.ПО_УМОЛЧАНИЮ}, headers={"Origin": "https://evil.example"}).status_code == 403
+
+    async def не_собрался(к, имя):
+        raise RuntimeError("нет места на диске")
+
+    monkeypatch.setattr(models, "вариант_для_разговора", не_собрался)
+    ответ = клиент.post("/api/models/choose", json={"имя": models.ПО_УМОЛЧАНИЮ})
+    assert ответ.status_code == 502 and "выбор не изменён" in ответ.json()["error"]
+    с = games_db.открыть()
+    assert games_db.отметка(с, models.ОТМЕТКА) is None
+
+    async def собрался(к, имя):
+        return None
+
+    monkeypatch.setattr(models, "вариант_для_разговора", собрался)
+    assert клиент.post("/api/models/choose", json={"имя": models.ПО_УМОЛЧАНИЮ}).status_code == 200
+    assert games_db.отметка(с, models.ОТМЕТКА) == models.ПО_УМОЛЧАНИЮ
+
+
+def test_смена_облачного_ключа_поднимает_советника(клиент, monkeypatch):
+    поднято = []
+
+    async def поднять(**к):
+        поднято.append(1)
+
+    async def годен(ключ):
+        return None
+
+    monkeypatch.setattr(web.ПРИЛОЖЕНИЕ, "агент", object())
+    monkeypatch.setattr(web.ПРИЛОЖЕНИЕ, "поднять", поднять)
+    monkeypatch.setattr(web, "_проверить_deepseek", годен)
+    клиент.post("/api/keys", json={"deepseek": "sk-проба"})
+    клиент.post("/api/keys", json={"deepseek": ""})
+    assert len(поднято) == 2

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -32,7 +33,14 @@ from steam_store import Игра, Метка
 
 
 def модель() -> str:
-    return config.DEFAULT_MODEL
+    """Облачный ключ есть — DeepSeek; нет — местный вариант для разговора (окно 32 768). Так
+    решил пользователь 2026-10-16: без облачного ключа агент работает целиком местно."""
+    import models
+    import secrets_store
+
+    if secrets_store.загрузить().deepseek_ключ:
+        return config.DEFAULT_MODEL
+    return "ollama/" + models.ВАРИАНТ
 
 
 def подготовить_каталог(каталог: Path) -> None:
@@ -56,9 +64,15 @@ def подготовить_каталог(каталог: Path) -> None:
 
 
 def профиль() -> profiles.Profile:
+    """Профиль советника. На местной модели рассуждения выключены: с ними модель после вызова
+    инструмента отдавала пустой ответ (замер 2026-10-16 на 2b и 9b), без них 9b за 29 с сама
+    берёт библиотеку и ведёт опрос. Имя профиля одно на обе модели: разговор `myharness`
+    привязан к имени, и появление облачного ключа не должно терять начатый опрос."""
     найден, предупреждения = profiles.load(ПРОФИЛЬ)
     if найден.source is None:
         raise RuntimeError(f"профиль {ПРОФИЛЬ} не загружен: {'; '.join(предупреждения)}")
+    if модель().startswith("ollama/"):
+        найден = dataclasses.replace(найден, params={**найден.params, "thinking": {"type": "disabled"}})
     return найден
 
 
