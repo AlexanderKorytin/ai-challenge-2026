@@ -16,7 +16,13 @@ CODE="$(cd "$(dirname "$0")/.." && pwd)"
 LOGS="$HOME/Library/Logs/games-agent"
 AGENTS="$HOME/Library/LaunchAgents"
 APP="$HOME/Applications/Игровой агент.app"
-UV="$(command -v uv)"
+UV="$(command -v uv || true)"
+if [[ -z "$UV" ]]; then
+  echo "Нужен uv — менеджер окружений Python. Поставьте его командой:" >&2
+  echo "  curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+  echo "затем откройте новое окно Терминала и запустите установку снова." >&2
+  exit 1
+fi
 SEARCH_PATH="$(dirname "$UV"):/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 DOMAIN="gui/$(id -u)"
 SERVICES=(web menubar week day)
@@ -55,6 +61,7 @@ PY
 services() {
   mkdir -p "$LOGS" "$AGENTS"
   (cd "$CODE" && "$UV" sync -q)
+  (cd "$CODE/../../mcp_servers/steam" && "$UV" sync -q)
   for s in "${SERVICES[@]}"; do remove_service "$s"; done
   KEEP="  <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -69,11 +76,16 @@ services() {
 " "  <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
 "
+  # Первые предложения — сразу, а не в 11:00 завтра (итоговый просмотр): задание дня само
+  # собирает RAG, если его ещё нет; неделя — календарь будущих выпусков.
+  launchctl kickstart "$DOMAIN/local.games-agent.day" 2>/dev/null || true
+  launchctl kickstart "$DOMAIN/local.games-agent.week" 2>/dev/null || true
   echo "службы поставлены; веб — http://127.0.0.1:8791, журналы — $LOGS"
 }
 
 make_app() {
   (cd "$CODE" && "$UV" sync -q)
+  (cd "$CODE/../../mcp_servers/steam" && "$UV" sync -q)
   rm -rf "$APP"
   mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$LOGS"
   cat > "$APP/Contents/Info.plist" <<PLIST

@@ -248,3 +248,15 @@ def test_замок_задания(среда):
     finally:
         замок.close()
     jobs._замок("day").close()
+
+
+def test_первый_день_собирает_rag(среда, tmp_path):
+    import numpy as np
+    import similar
+
+    tmp, _, _ = среда
+    индекс = similar.Индекс(lambda тексты: np.ones((len(тексты), 3), np.float32), tmp_path / "s.sqlite")
+    с = games_db.открыть()
+    games_db.обновить_библиотеку(с, [SimpleNamespace(номер=3, имя="своя", часы=10.0, часы_2нед=0.0, последний_запуск=None)])
+    asyncio.run(jobs.день(tmp, магазин({}), судья([]), индекс=индекс))
+    assert индекс.размер() == 1
