@@ -40,6 +40,11 @@ main { padding: 16px; max-width: 980px; margin: 0 auto; }
 .пусто { color: var(--тихий); padding: 24px 0; }
 .игра { cursor: pointer; } .игра:hover { border-color: var(--акцент); }
 .оценка { font-weight: 700; }
+.выбор { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.выбор label { background: var(--лист); border: 2px solid var(--рамка); border-radius: 10px; overflow: hidden; cursor: pointer; display: block; }
+.выбор label.отмечена { border-color: var(--плюс); }
+.выбор img { width: 100%; aspect-ratio: 460 / 215; object-fit: cover; display: block; background: var(--фон); }
+.выбор .подпись { padding: 6px 8px; font-size: 13px; display: flex; gap: 6px; align-items: flex-start; }
 .обложка { width: calc(100% + 24px); margin: -12px -12px 4px; aspect-ratio: 460 / 215; object-fit: cover;
   border-radius: 12px 12px 0 0; background: var(--фон); display: block; }
 .плашка { background: var(--лист); border: 1px solid var(--скидка); border-radius: 12px; padding: 12px; margin-bottom: 12px;
@@ -56,6 +61,8 @@ code { background: var(--фон); padding: 1px 5px; border-radius: 5px; }
 .агент { align-self: flex-start; background: var(--лист); border: 1px solid var(--рамка); }
 .инструмент { align-self: flex-start; color: var(--тихий); font-size: 12px; }
 form.ввод { display: flex; gap: 8px; margin-top: 12px; }
+#место > div > textarea { width: 100%; font: inherit; padding: 8px 10px; border-radius: 10px; min-height: 54px;
+  border: 1px solid var(--рамка); background: var(--лист); color: var(--текст); }
 form.ввод textarea { flex: 1; font: inherit; padding: 8px 10px; border-radius: 10px; min-height: 44px;
   border: 1px solid var(--рамка); background: var(--лист); color: var(--текст); resize: vertical; }
 .месяц { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
@@ -112,7 +119,7 @@ async function послать(путь, тело) {
   if (!о.ok) throw new Error(д.error || ("HTTP " + о.status));
   return д;
 }
-let таймер = null, к_настройкам = false, начато = false;
+let таймер = null, к_настройкам = false, начато = false, отмеченные = new Set();
 async function обновить() {
   // Одна цепочка опроса: кнопки зовут `обновить()` сами, и прежний таймер снимается.
   clearTimeout(таймер);
@@ -316,6 +323,36 @@ async function выбрать_модель(имя) {
   try { весть((await послать("/api/models/choose", { имя })).итог); } catch (e) { весть(e.message); }
   обновить();
 }
+function выбор_любимых() {
+  // Любимые отмечаются на странице флажками, а не репликами по одной игре (решение пользователя).
+  const ещё = $("textarea", { placeholder: "Например: stardew valley, Disco Elysium, Ведьмак 3 на PS5 — можно с опечатками, агент исправит" });
+  const не_нравится = $("textarea", { placeholder: "Например: хорроры, онлайн-шутеры, слишком сложные бои" });
+  const карточки = с.библиотека.map(и => {
+    const флажок = $("input", { type: "checkbox", checked: отмеченные.has(и.номер) });
+    const метка = $("label", { класс: отмеченные.has(и.номер) ? "отмечена" : "" },
+      $("img", { loading: "lazy", alt: "", src: `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${Number(и.номер)}/header.jpg`, onerror: е => { е.target.style.visibility = "hidden"; } }),
+      $("div", { класс: "подпись" }, флажок, $("span", {}, $("b", {}, и.имя), $("br"), $("span", { класс: "тихо" }, `${Math.round(и.часы)} ч`))));
+    флажок.onchange = () => { флажок.checked ? отмеченные.add(и.номер) : отмеченные.delete(и.номер); метка.className = флажок.checked ? "отмечена" : ""; };
+    return метка;
+  });
+  const дальше = () => {
+    const любимые = с.библиотека.filter(и => отмеченные.has(и.номер)).map(и => `${и.имя} (${и.номер}), ${Math.round(и.часы)} ч`);
+    const части = [
+      "Любимые игры из моей библиотеки Steam: " + (любимые.length ? любимые.join("; ") : "не отметил ни одной") + ".",
+      "Остальные игры библиотеки — не любимые, про них не спрашивай.",
+    ];
+    if (ещё.value.trim()) части.push("Ещё люблю (вне Steam или не купленные, названия могут быть с ошибками): " + ещё.value.trim() + ".");
+    if (не_нравится.value.trim()) части.push("Не нравится: " + не_нравится.value.trim() + ".");
+    сказать(части.join("\n"));
+  };
+  return $("div", {},
+    $("h2", {}, "Знакомство: отметьте любимые игры"),
+    $("p", { класс: "тихо" }, "Ваша библиотека Steam, больше часов — выше. Отметьте игры, которые по-настоящему нравятся."),
+    $("div", { класс: "выбор" }, карточки),
+    $("h2", {}, "Ещё любимые игры"), ещё,
+    $("h2", {}, "Что не нравится"), не_нравится,
+    $("div", { класс: "кнопки" }, $("button", { класс: "плюс", textContent: "Дальше →", onclick: дальше })));
+}
 function лента() {
   return с.лента.length ? $("ul", { класс: "лента" }, с.лента.map(з => $("li", { класс: "род-" + з.род },
     $("div", { класс: "тихо" }, `${з.род} · ${new Date(з.время).toLocaleString("ru-RU")}`), з.текст)))
@@ -374,8 +411,9 @@ function рисовать() {
   if (!с.опрос_пройден) {
     // До конца опроса вкладок нет — вернуться к ключам и модели можно этой кнопкой (вопрос пользователя).
     место.append($("div", { класс: "кнопки" }, $("button", { textContent: "← Настройки", onclick: () => { к_настройкам = true; рисовать(); } })));
+    if (!черновик.length && с.библиотека.length) { место.append(выбор_любимых()); return; }
     место.append($("h2", {}, "Знакомство"), разговор("Смотрю вашу библиотеку Steam — сейчас задам первый вопрос."));
-    // Агент начинает сам: пустое поле с просьбой «напишите начнём» сбивало (живой сценарий).
+    // Библиотеки нет — агент начинает сам: пустое поле с просьбой «напишите начнём» сбивало.
     if (!черновик.length && !идёт_ответ && !начато) { начато = true; setTimeout(() => сказать("Привет, начнём"), 0); }
     return;
   }
