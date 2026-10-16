@@ -236,6 +236,7 @@ async def состояние(request: Request) -> Response:
                 "ollama": await _ollama(),
             },
             "опрос_пройден": taste.опрос_пройден(каталог()),
+            "мастер_пройден": bool(games_db.отметка(с, "мастер_пройден")),
             "сверка_нужна": _сверка_нужна(с),
             "вкус": _вкус(),
             "запреты": _запреты(),
@@ -269,6 +270,10 @@ async def вход_вернуться(request: Request) -> Response:
     доводы = dict(request.query_params)
     вход = доводы.pop("state", "")
     if вход not in ПРИЛОЖЕНИЕ.ожидающие_входы:
+        if secrets_store.загрузить().steamid:
+            # Уже вошли, а браузер вернулся «Назад» на прежний ответ Steam: вход не повторяется,
+            # человек просто попадает на главную (живой сценарий пользователя).
+            return RedirectResponse("/", status_code=302)
         return Response("Вход отклонён: этот браузер вход не начинал. Нажмите «Войти через Steam» ещё раз.", status_code=403)
     ПРИЛОЖЕНИЕ.ожидающие_входы.discard(вход)
     метка = доводы.get("openid.response_nonce", "")
@@ -391,6 +396,15 @@ async def ключи(request: Request) -> Response:
     if принятые.get("steam_ключ"):
         await _синхронизировать_сейчас()
     return JSONResponse({"итоги": {к: secrets_store.скрыть(т, тайны) for к, т in итоги.items()}})
+
+
+async def мастер_готов(request: Request) -> Response:
+    с = games_db.открыть()
+    try:
+        games_db.поставить_отметку(с, "мастер_пройден", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    finally:
+        с.close()
+    return JSONResponse({"итог": "настройка пройдена"})
 
 
 async def выйти_из_steam(request: Request) -> Response:
@@ -802,6 +816,7 @@ app = Starlette(
         Route("/api/models/pull", модель_скачать, methods=["POST"]),
         Route("/api/models/choose", модель_выбрать, methods=["POST"]),
         Route("/api/logout", выйти_из_steam, methods=["POST"]),
+        Route("/api/setup/done", мастер_готов, methods=["POST"]),
         Route("/api/ask", вопрос, methods=["POST"]),
         Route("/api/rate", оценка, methods=["POST"]),
         Route("/api/played", уже_играл, methods=["POST"]),

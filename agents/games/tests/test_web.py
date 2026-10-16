@@ -103,8 +103,15 @@ def test_вход_подделка_и_повтор(клиент, monkeypatch):
     метка = начать()
     assert клиент.get("/auth/steam", params={"state": метка, "openid.response_nonce": "2", "openid.sig": "годна"}, follow_redirects=False).status_code == 302
     assert secrets_store.загрузить().steamid == "76561197960287930"
-    # Та же метка входа второй раз — отказ.
-    assert клиент.get("/auth/steam", params={"state": метка, "openid.response_nonce": "3", "openid.sig": "годна"}, follow_redirects=False).status_code == 403
+    # Та же метка второй раз, человек уже вошёл («Назад» в браузере) — на главную, без входа.
+    async def чужой(к, доводы, возврат):
+        return "76561190000000000"
+
+    monkeypatch.setattr(steam_account, "проверить_вход", чужой)
+    ответ = клиент.get("/auth/steam", params={"state": метка, "openid.response_nonce": "3", "openid.sig": "годна"}, follow_redirects=False)
+    assert ответ.status_code == 302 and ответ.headers["location"] == "/"
+    assert secrets_store.загрузить().steamid == "76561197960287930"
+    monkeypatch.setattr(steam_account, "проверить_вход", проверить)
     # Тот же ответ Steam с новой меткой — отказ: перехваченный ответ не входит повторно.
     assert клиент.get("/auth/steam", params={"state": начать(), "openid.response_nonce": "2", "openid.sig": "годна"}, follow_redirects=False).status_code == 400
 

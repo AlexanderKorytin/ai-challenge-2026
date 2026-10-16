@@ -100,15 +100,23 @@ make_app() {
   <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
-  # Запуск: службы стоят — открыть веб (значок держит launchd); иначе — значок с вебом.
+  # Запускающая программа не живёт долго: macOS уже запущенное приложение лишь «активирует», и
+  # второй щелчок ничего бы не делал (живой сценарий пользователя). Поэтому каждый щелчок —
+  # новый короткий запуск: веб отвечает — открыть его; иначе поднять значок отдельно и выйти.
   cat > "$APP/Contents/MacOS/games-agent" <<SH
 #!/bin/bash
+export PATH="$SEARCH_PATH"
+if curl -s -m 2 -o /dev/null http://127.0.0.1:8791/api/state; then exec open http://127.0.0.1:8791; fi
 if [[ -f "$AGENTS/local.games-agent.menubar.plist" ]]; then
+  launchctl kickstart "$DOMAIN/local.games-agent.web" 2>/dev/null || true
   launchctl kickstart "$DOMAIN/local.games-agent.menubar" 2>/dev/null || true
+  for _ in \$(seq 40); do curl -s -m 1 -o /dev/null http://127.0.0.1:8791/api/state && break; sleep 0.5; done
   exec open http://127.0.0.1:8791
 fi
-export PATH="$SEARCH_PATH"
-exec "$UV" run --project "$CODE" python "$CODE/menubar.py" --open >>"$LOGS/app.log" 2>&1
+if ! pgrep -f "$CODE/menubar.py" >/dev/null; then
+  nohup "$UV" run --project "$CODE" python "$CODE/menubar.py" --open >>"$LOGS/app.log" 2>&1 &
+fi
+exit 0
 SH
   chmod +x "$APP/Contents/MacOS/games-agent"
   "$UV" run --project "$CODE" python "$CODE/deploy/значок.py" "$APP/Contents/Resources/значок.icns"
