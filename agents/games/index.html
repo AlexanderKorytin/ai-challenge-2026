@@ -164,7 +164,7 @@ function цена(и) {
   return ск ? $("span", { класс: "скидка" }, `−${ск} % · ${рубли(ц, и.валюта)}`) : рубли(ц, и.валюта);
 }
 function карточка(и, оценивать = true) {
-  const причина = $("input", { placeholder: "Почему нет? (необязательно)", onclick: е => е.stopPropagation(), onkeydown: е => е.stopPropagation() });
+  const причина = $("input", { placeholder: "Почему нет?", title: "Причина — по желанию: агент учтёт её во вкусе", onclick: е => е.stopPropagation(), onkeydown: е => е.stopPropagation() });
   const стоп = f => е => { е.stopPropagation(); f(); };
   const сыграл = $("span", { style: "display:none;gap:6px" },
     $("button", { textContent: "понравилась", onclick: стоп(() => играл(и, true, причина.value)) }),
