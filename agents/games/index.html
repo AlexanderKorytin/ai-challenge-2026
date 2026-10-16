@@ -381,7 +381,7 @@ function лента() {
     : $("div", { класс: "пусто" }, "Лента пуста.");
 }
 function разговор(приветствие) {
-  const поле = $("textarea", { placeholder: "Отвечайте агенту своими словами: «да, добавь», «нет», названия любимых игр — опечатки он исправит. Enter — отправить.", onkeydown: е => { if (е.key === "Enter" && !е.shiftKey) { е.preventDefault(); форма.requestSubmit(); } } });
+  const поле = $("textarea", { placeholder: "Ответьте агенту на вопрос выше. Enter — отправить, Shift+Enter — новая строка.", onkeydown: е => { if (е.key === "Enter" && !е.shiftKey) { е.preventDefault(); форма.requestSubmit(); } } });
   const форма = $("form", { класс: "ввод", onsubmit: е => { е.preventDefault(); сказать(поле.value); поле.value = ""; } },
     поле, $("button", { textContent: "Отправить", disabled: идёт_ответ }));
   const реплики = черновик.filter(([кто, т]) => кто !== "инструмент" && !(кто === "агент" && !т));
