@@ -3,6 +3,9 @@
 <plist version="1.0">
 <dict>
   <key>Label</key><string>@ИМЯ@</string>
+  <!-- Связь с «Игровой агент.app»: в «Фоновой активности» macOS службы видны одним пунктом
+       с именем и значком приложения, а не как четыре «uv» (живой сценарий пользователя). -->
+  <key>AssociatedBundleIdentifiers</key><array><string>local.games-agent</string></array>
   <key>ProgramArguments</key>
   <array>
     <string>@UV@</string><string>run</string><string>--project</string><string>@КОД@</string>
