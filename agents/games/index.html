@@ -45,6 +45,11 @@ main { padding: 16px; max-width: 980px; margin: 0 auto; }
 .выбор label.отмечена { border-color: var(--плюс); }
 .выбор img { width: 100%; aspect-ratio: 460 / 215; object-fit: cover; display: block; background: var(--фон); }
 .выбор .подпись { padding: 6px 8px; font-size: 13px; display: flex; gap: 6px; align-items: flex-start; }
+.ход-агента { align-self: flex-start; display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-radius: 12px;
+  background: var(--лист); border: 1px solid var(--рамка); color: var(--тихий); }
+.крутилка { width: 16px; height: 16px; border: 2px solid var(--рамка); border-top-color: var(--акцент); border-radius: 50%;
+  animation: вращение 0.8s linear infinite; flex: none; }
+@keyframes вращение { to { transform: rotate(360deg); } }
 .обложка { width: calc(100% + 24px); margin: -12px -12px 4px; aspect-ratio: 460 / 215; object-fit: cover;
   border-radius: 12px 12px 0 0; background: var(--фон); display: block; }
 .плашка { background: var(--лист); border: 1px solid var(--скидка); border-radius: 12px; padding: 12px; margin-bottom: 12px;
@@ -119,7 +124,20 @@ async function послать(путь, тело) {
   if (!о.ok) throw new Error(д.error || ("HTTP " + о.status));
   return д;
 }
-let таймер = null, к_настройкам = false, начато = false, отмеченные = new Set();
+let таймер = null, к_настройкам = false, начато = false, отмеченные = null, ход_агента = { шаг: "", шагов: 0 };
+// Строка хода — человеческими словами вместо имён инструментов (живой сценарий пользователя).
+function шаг_словами(имя, доводы) {
+  let д = {}; try { д = JSON.parse(доводы || "{}"); } catch (e) {}
+  const к = имя.replace(/^mcp__steam__/, "");
+  return ({
+    list_library: "Смотрю вашу библиотеку",
+    steam_find: `Ищу «${д.name || "игру"}» в магазине`,
+    steam_tags: "Подбираю метки магазина под ваш вкус",
+    steam_search: "Ищу игры по метке",
+    steam_game: "Смотрю сведения об игре",
+    save_taste: "Записываю ваш вкус",
+  })[к] || "Работаю";
+}
 async function обновить() {
   // Одна цепочка опроса: кнопки зовут `обновить()` сами, и прежний таймер снимается.
   clearTimeout(таймер);
@@ -325,8 +343,11 @@ async function выбрать_модель(имя) {
 }
 function выбор_любимых() {
   // Любимые отмечаются на странице флажками, а не репликами по одной игре (решение пользователя).
-  const ещё = $("textarea", { placeholder: "Например: stardew valley, Disco Elysium, Ведьмак 3 на PS5 — можно с опечатками, агент исправит" });
-  const не_нравится = $("textarea", { placeholder: "Например: хорроры, онлайн-шутеры, слишком сложные бои" });
+  // Прежние ответы — из черновика в хранилище: перезапуск знакомства их не теряет.
+  const ч = с.черновик_знакомства || {};
+  if (отмеченные === null) отмеченные = new Set(ч.отмеченные || []);
+  const ещё = $("textarea", { value: ч.ещё || "", placeholder: "Например: stardew valley, Disco Elysium, Ведьмак 3 на PS5 — можно с опечатками, агент исправит" });
+  const не_нравится = $("textarea", { value: ч.не_нравится || "", placeholder: "Например: хорроры, онлайн-шутеры, слишком сложные бои" });
   const карточки = с.библиотека.map(и => {
     const флажок = $("input", { type: "checkbox", checked: отмеченные.has(и.номер) });
     const метка = $("label", { класс: отмеченные.has(и.номер) ? "отмечена" : "" },
@@ -343,6 +364,7 @@ function выбор_любимых() {
     ];
     if (ещё.value.trim()) части.push("Ещё люблю (вне Steam или не купленные, названия могут быть с ошибками): " + ещё.value.trim() + ".");
     if (не_нравится.value.trim()) части.push("Не нравится: " + не_нравится.value.trim() + ".");
+    послать("/api/intro/draft", { отмеченные: [...отмеченные], ещё: ещё.value, не_нравится: не_нравится.value }).catch(() => {});
     сказать(части.join("\n"));
   };
   return $("div", {},
@@ -362,15 +384,20 @@ function разговор(приветствие) {
   const поле = $("textarea", { placeholder: "Отвечайте агенту своими словами: «да, добавь», «нет», названия любимых игр — опечатки он исправит. Enter — отправить.", onkeydown: е => { if (е.key === "Enter" && !е.shiftKey) { е.preventDefault(); форма.requestSubmit(); } } });
   const форма = $("form", { класс: "ввод", onsubmit: е => { е.preventDefault(); сказать(поле.value); поле.value = ""; } },
     поле, $("button", { textContent: "Отправить", disabled: идёт_ответ }));
+  const реплики = черновик.filter(([кто, т]) => кто !== "инструмент" && !(кто === "агент" && !т));
   const лист = $("div", { id: "разговор" },
     приветствие && !черновик.length ? $("div", { класс: "реплика агент" }, приветствие) : null,
-    черновик.map(([кто, т]) => $("div", { класс: "реплика " + кто }, т)));
+    реплики.map(([кто, т]) => $("div", { класс: "реплика " + кто }, т)),
+    // Пока агент работает — одна строка хода, поля ввода нет: вводить ещё нечего.
+    идёт_ответ ? $("div", { класс: "ход-агента" }, $("div", { класс: "крутилка" }),
+      `${ход_агента.шаг || "Думаю"}…` + (ход_агента.шагов > 1 ? ` (шаг ${ход_агента.шагов})` : "")) : null);
+  if (идёт_ответ) return $("div", {}, лист);
   setTimeout(() => поле.focus(), 0);
   return $("div", {}, лист, форма);
 }
 async function сказать(текст) {
   текст = текст.trim(); if (!текст || идёт_ответ) return;
-  идёт_ответ = true; черновик.push(["человек", текст], ["агент", ""]); рисовать();
+  идёт_ответ = true; ход_агента = { шаг: "", шагов: 0 }; черновик.push(["человек", текст], ["агент", ""]); рисовать();
   try {
     const о = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: текст }) });
     if (!о.ok) throw new Error((await о.json().catch(() => ({}))).error || "HTTP " + о.status);
@@ -382,7 +409,7 @@ async function сказать(текст) {
       for (const с_ of строки) {
         if (!с_) continue; const е = JSON.parse(с_);
         if (е.kind === "content") черновик[черновик.length - 1][1] += е.text;
-        else if (е.kind === "tool") черновик.splice(черновик.length - 1, 0, ["инструмент", "→ " + е.name]);
+        else if (е.kind === "tool") { ход_агента = { шаг: шаг_словами(е.name, е.args), шагов: ход_агента.шагов + 1 }; }
         else if (е.kind === "done" && е.error) черновик[черновик.length - 1][1] += "\n[ошибка: " + е.error + "]";
         рисовать();
       }

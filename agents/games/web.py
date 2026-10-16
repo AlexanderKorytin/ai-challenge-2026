@@ -237,6 +237,7 @@ async def состояние(request: Request) -> Response:
             },
             "опрос_пройден": taste.опрос_пройден(каталог()),
             "мастер_пройден": bool(games_db.отметка(с, "мастер_пройден")),
+            "черновик_знакомства": _черновик(с),
             "сверка_нужна": _сверка_нужна(с),
             "вкус": _вкус(),
             "запреты": _запреты(),
@@ -400,6 +401,33 @@ async def ключи(request: Request) -> Response:
     return JSONResponse({"итоги": {к: secrets_store.скрыть(т, тайны) for к, т in итоги.items()}})
 
 
+def _черновик(с) -> dict[str, Any]:
+    try:
+        return json.loads(games_db.отметка(с, "черновик_знакомства") or "{}")
+    except ValueError:
+        return {}
+
+
+async def черновик_знакомства(request: Request) -> Response:
+    """Выбор страницы знакомства — флажки и тексты — лежит в хранилище: перезапуск знакомства
+    открывает форму с прежними ответами, а не пустой (решение пользователя)."""
+    try:
+        тело = await _тело(request)
+    except ValueError as exc:
+        return _ошибка(str(exc))
+    черновик = {
+        "отмеченные": [int(н) for н in тело.get("отмеченные") or [] if str(н).isdigit()],
+        "ещё": str(тело.get("ещё") or ""),
+        "не_нравится": str(тело.get("не_нравится") or ""),
+    }
+    с = games_db.открыть()
+    try:
+        games_db.поставить_отметку(с, "черновик_знакомства", json.dumps(черновик, ensure_ascii=False))
+    finally:
+        с.close()
+    return JSONResponse({"итог": "сохранено"})
+
+
 async def мастер_готов(request: Request) -> Response:
     с = games_db.открыть()
     try:
@@ -426,7 +454,12 @@ def _событие(событие: api.StreamEvent) -> list[dict[str, Any]]:
     if событие.kind == "content" and событие.text:
         return [{"kind": "content", "text": событие.text}]
     if событие.kind == "tool_calls":
-        return [{"kind": "tool", "name": (в.get("function") or {}).get("name", "")} for в in событие.calls]
+        return [
+            {"kind": "tool", "name": (в.get("function") or {}).get("name", ""),
+             # Доводы — для строки хода на странице («ищу «X» в магазине»); ключей в них нет.
+             "args": (в.get("function") or {}).get("arguments", "")}
+            for в in событие.calls
+        ]
     if событие.kind == "tool_result":
         имя = ((событие.calls or [{}])[0].get("function") or {}).get("name", "")
         return [{"kind": "tool_result", "name": имя, "ok": not событие.text.startswith("ошибка инструмента")}]
@@ -819,6 +852,7 @@ app = Starlette(
         Route("/api/models/choose", модель_выбрать, methods=["POST"]),
         Route("/api/logout", выйти_из_steam, methods=["POST"]),
         Route("/api/setup/done", мастер_готов, methods=["POST"]),
+        Route("/api/intro/draft", черновик_знакомства, methods=["POST"]),
         Route("/api/ask", вопрос, methods=["POST"]),
         Route("/api/rate", оценка, methods=["POST"]),
         Route("/api/played", уже_играл, methods=["POST"]),
