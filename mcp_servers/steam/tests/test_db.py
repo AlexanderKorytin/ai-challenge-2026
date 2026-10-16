@@ -34,7 +34,7 @@ def test_файл_и_режим(с, каталог):
     assert с.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
     assert с.execute(
         "SELECT значение FROM meta WHERE ключ = 'версия_схемы'"
-    ).fetchone()[0] == "2"
+    ).fetchone()[0] == str(db.ВЕРСИЯ_СХЕМЫ)
 
 
 def test_пара_скидки(с):
@@ -259,7 +259,7 @@ def test_переход_с_версии_1(каталог):
         assert [и["номер"] for и in db.предложения(с)] == [42]
         assert с.execute(
             "SELECT значение FROM meta WHERE ключ = 'версия_схемы'"
-        ).fetchone()[0] == "2"
+        ).fetchone()[0] == str(db.ВЕРСИЯ_СХЕМЫ)
     finally:
         с.close()
     # Повторное открытие перехода не повторяет.
@@ -357,3 +357,18 @@ def test_отметки(с):
     db.поставить_отметку(с, "последняя_сверка", "2026-10-16")
     db.поставить_отметку(с, "последняя_сверка", "2027-04-16")
     assert db.отметка(с, "последняя_сверка") == "2027-04-16"
+
+
+def test_переход_2_в_3_и_обложка(tmp_path, monkeypatch):
+    import sqlite3
+    monkeypatch.setenv("GAMES_DATA_DIR", str(tmp_path))
+    с = db.открыть()
+    db.запомнить_игру(с, Игра(номер=7, имя="семь"))
+    # Откатываем файл к версии 2: без столбца обложки, с данными.
+    с.execute("BEGIN IMMEDIATE"); с.execute("ALTER TABLE games DROP COLUMN обложка")
+    с.execute("UPDATE meta SET значение = '2' WHERE ключ = 'версия_схемы'"); с.execute("COMMIT"); с.close()
+    с = db.открыть()
+    assert db.игра(с, 7)["имя"] == "семь" and db.игра(с, 7)["обложка"] is None
+    db.запомнить_игру(с, Игра(номер=7, имя="семь", обложка="https://x/header.jpg"))
+    db.запомнить_игру(с, Игра(номер=7, имя="семь"))  # без адреса — прежний не стирается
+    assert db.игра(с, 7)["обложка"] == "https://x/header.jpg"

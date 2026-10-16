@@ -51,6 +51,8 @@ main { padding: 16px; max-width: 980px; margin: 0 auto; }
 .крутилка { width: 16px; height: 16px; border: 2px solid var(--рамка); border-top-color: var(--акцент); border-radius: 50%;
   animation: вращение 0.8s linear infinite; flex: none; }
 @keyframes вращение { to { transform: rotate(360deg); } }
+.заглушка { display: flex; align-items: center; justify-content: center; color: var(--тихий); font-weight: 600;
+  text-align: center; padding: 8px; background: linear-gradient(135deg, var(--рамка), var(--фон)); }
 .обложка { width: calc(100% + 24px); margin: -12px -12px 4px; aspect-ratio: 460 / 215; object-fit: cover;
   border-radius: 12px 12px 0 0; background: var(--фон); display: block; }
 .плашка { background: var(--лист); border: 1px solid var(--скидка); border-radius: 12px; padding: 12px; margin-bottom: 12px;
@@ -145,7 +147,12 @@ function шаг_словами(имя, доводы) {
 async function обновить() {
   // Одна цепочка опроса: кнопки зовут `обновить()` сами, и прежний таймер снимается.
   clearTimeout(таймер);
-  const новое = await (await fetch("/api/state")).json();
+  const сырое = await (await fetch("/api/state")).text();
+  const новое = JSON.parse(сырое);
+  // Состояние не изменилось — страницу не перерисовываем: иначе картинки грузятся заново и
+  // карточки прыгают каждые 5 секунд (живой сценарий пользователя).
+  if (сырое === обновить.прежнее && !идёт_ответ) { if (с.задания_идут.length || (!с.опрос_пройден && !с.мастер_пройден)) таймер = setTimeout(обновить, 5000); return; }
+  обновить.прежнее = сырое;
   const пишет = [...document.querySelectorAll("#место input, #место textarea")].some(п => п.value || п === document.activeElement);
   с = новое;
   // Человек вводит ключ или реплику — состояние обновлено, страница не перерисовывается и
@@ -163,6 +170,14 @@ function цена(и) {
   if (ц == null) return и.вышла === false ? "ещё не продаётся" : "";
   return ск ? $("span", { класс: "скидка" }, `−${ск} % · ${рубли(ц, и.валюта)}`) : рубли(ц, и.валюта);
 }
+// Обложка: адрес из магазина (у новых игр путь с хешем), иначе — по номеру. Нет картинки —
+// заглушка того же размера: карточка не меняет высоту и не прыгает (живой сценарий).
+function обложка(и) {
+  const адрес = и.обложка || `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${Number(и.номер)}/header.jpg`;
+  const картинка = $("img", { класс: "обложка", loading: "lazy", alt: "", src: адрес });
+  картинка.onerror = () => картинка.replaceWith($("div", { класс: "обложка заглушка" }, и.имя || ""));
+  return картинка;
+}
 function карточка(и, оценивать = true) {
   const причина = $("input", { placeholder: "Почему нет?", title: "Причина — по желанию: агент учтёт её во вкусе", onclick: е => е.stopPropagation(), onkeydown: е => е.stopPropagation() });
   const стоп = f => е => { е.stopPropagation(); f(); };
@@ -179,9 +194,7 @@ function карточка(и, оценивать = true) {
       $("button", { класс: "минус", textContent: "👎 Нет", onclick: стоп(() => оценить(и, false, причина.value)) }))) : null;
   // Нажатие на плашку открывает игру в клиенте Steam (решение пользователя).
   return $("div", { класс: "игра", title: "Открыть в клиенте Steam", onclick: () => { location.href = "steam://store/" + и.номер; } },
-    // Обложка Steam: адрес строится из номера игры. Нет картинки — элемент прячется.
-    $("img", { класс: "обложка", loading: "lazy", alt: "", src: `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${Number(и.номер)}/header.jpg`,
-      onerror: е => { е.target.style.display = "none"; } }),
+    обложка(и),
     $("div", {}, $("b", { style: "font-size:16px" }, и.имя || ("игра " + и.номер)), " ",
       $("a", { href: и.ссылка, target: "_blank", rel: "noopener", класс: "тихо", textContent: "в браузере", onclick: е => е.stopPropagation() })),
     $("div", { класс: "тихо" }, (и.жанры || []).join(", ")),
