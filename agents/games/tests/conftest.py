@@ -15,6 +15,8 @@ import pytest
 def каталоги(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("MYHARNESS_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("MYHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    # Файл ключей агента (`secrets_store`): без увода проверки веба писали бы настоящие ключи.
+    monkeypatch.setenv("GAMES_CONFIG_DIR", str(tmp_path / "games-config"))
     данные = tmp_path / "games"
     данные.mkdir()
     monkeypatch.setenv("GAMES_DATA_DIR", str(данные))

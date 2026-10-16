@@ -1,0 +1,24 @@
+{
+ "_источник": "Собран по описанию CWishlist_GetWishlist_Response (SteamDatabase/Protobufs, webui/service_wishlist.proto): items[] с appid, priority, date_added. Не живой: открытого непустого списка не нашлось.",
+ "ответ": {
+  "response": {
+   "items": [
+    {
+     "appid": 1145360,
+     "priority": 2,
+     "date_added": 1700000000
+    },
+    {
+     "appid": 413150,
+     "priority": 0,
+     "date_added": 1690000000
+    },
+    {
+     "appid": 1086940,
+     "priority": 1,
+     "date_added": 1710000000
+    }
+   ]
+  }
+ }
+}

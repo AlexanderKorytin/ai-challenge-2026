@@ -1,59 +1,111 @@
 #!/bin/bash
-# Ставит три службы launchd игрового агента: веб (держится живым), задание недели
-# (понедельник 10:00) и задание дня (каждый день 11:00). Пропущенный за сон Мака запуск по
-# календарю launchd делает при пробуждении. Повторный запуск программы переставляет службы.
+# Установка игрового агента на Мак.
 #
-#   agents/games/deploy/установить.sh          — поставить или переставить
-#   agents/games/deploy/установить.sh снять    — снять все три
+#   установить.sh приложение — «Игровой агент.app» в ~/Applications. Первый запуск приложения
+#                              поднимает значок и веб; после опроса вкуса значок сам вызывает
+#                              режим «службы».
+#   установить.sh службы     — четыре службы launchd: веб и значок (держатся живыми, стартуют при
+#                              входе в систему), задание недели (понедельник 10:00) и задание
+#                              дня (каждый день 11:00). Пропущенный за сон Мака запуск по
+#                              календарю launchd делает при пробуждении. Повтор переставляет.
+#   установить.sh снять      — снять службы и приложение.
 set -euo pipefail
+# Имена переменных и функций — латиницей: bash 3.2 на macOS не принимает иных.
 
-КОД="$(cd "$(dirname "$0")/.." && pwd)"
-ДАННЫЕ="${GAMES_DATA_DIR:-$HOME/.local/share/games-agent}"
-ЖУРНАЛЫ="$HOME/Library/Logs/games-agent"
-АГЕНТЫ="$HOME/Library/LaunchAgents"
+CODE="$(cd "$(dirname "$0")/.." && pwd)"
+LOGS="$HOME/Library/Logs/games-agent"
+AGENTS="$HOME/Library/LaunchAgents"
+APP="$HOME/Applications/Игровой агент.app"
 UV="$(command -v uv)"
-ПУТЬ="$(dirname "$UV"):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-ДОМЕН="gui/$(id -u)"
+SEARCH_PATH="$(dirname "$UV"):/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+DOMAIN="gui/$(id -u)"
+SERVICES=(web menubar week day)
 
-снять() {
-  for к in web week day; do
-    launchctl bootout "$ДОМЕН/local.games-agent.$к" 2>/dev/null || true
-    rm -f "$АГЕНТЫ/local.games-agent.$к.plist"
+remove_service() {
+  launchctl bootout "$DOMAIN/local.games-agent.$1" 2>/dev/null || true
+  # bootout возвращается раньше, чем служба снята, и bootstrap сразу после него отвечает
+  # «Input/output error» (находка просмотра). Ждём, пока launchd её забудет — до 10 с.
+  for _ in $(seq 50); do
+    launchctl print "$DOMAIN/local.games-agent.$1" >/dev/null 2>&1 || break
+    sleep 0.2
   done
+  rm -f "$AGENTS/local.games-agent.$1.plist"
 }
 
-if [[ "${1:-}" == "снять" ]]; then снять; echo "службы сняты"; exit 0; fi
-
-mkdir -p "$ДАННЫЕ" "$ЖУРНАЛЫ" "$АГЕНТЫ"
-(cd "$КОД" && "$UV" sync -q)
-снять
-
-собрать() {  # кратко программа доводы расписание
-  local кратко="$1" файл="$АГЕНТЫ/local.games-agent.$1.plist"
-  python3 - "$КОД/deploy/служба.plist.in" "$файл" <<PY
+install_service() {  # имя программа доводы расписание
+  local file="$AGENTS/local.games-agent.$1.plist"
+  "$UV" run --project "$CODE" python - "$CODE/deploy/служба.plist.in" "$file" "$1" "$2" "$3" "$4" "$UV" "$CODE" "$SEARCH_PATH" "$LOGS" <<'PY'
 import sys
-шаблон = open(sys.argv[1], encoding="utf-8").read()
+from xml.sax.saxutils import escape
+шаблон, файл, имя, программа, доводы, расписание, uv, код, путь, журналы = sys.argv[1:]
+текст = open(шаблон, encoding="utf-8").read()
+# Пути экранируются: `&` или `<` в имени каталога сломали бы файл службы.
 for ключ, значение in {
-    "@ИМЯ@": "local.games-agent.$кратко", "@UV@": "$UV", "@КОД@": "$КОД",
-    "@ПРОГРАММА@": "$2", "@ДОВОДЫ@": """$3""", "@ДАННЫЕ@": "$ДАННЫЕ", "@ПУТЬ@": "$ПУТЬ",
-    "@ЖУРНАЛЫ@": "$ЖУРНАЛЫ", "@КОРОТКО@": "$кратко", "@РАСПИСАНИЕ@": """$4""",
+    "@ИМЯ@": escape("local.games-agent." + имя), "@UV@": escape(uv), "@КОД@": escape(код),
+    "@ПРОГРАММА@": escape(программа), "@ПУТЬ@": escape(путь), "@ЖУРНАЛЫ@": escape(журналы),
+    "@КОРОТКО@": escape(имя), "@ДОВОДЫ@": доводы, "@РАСПИСАНИЕ@": расписание,
 }.items():
-    шаблон = шаблон.replace(ключ, значение)
-open(sys.argv[2], "w", encoding="utf-8").write(шаблон)
+    текст = текст.replace(ключ, значение)
+open(файл, "w", encoding="utf-8").write(текст)
 PY
-  plutil -lint "$файл" >/dev/null
-  launchctl bootstrap "$ДОМЕН" "$файл"
+  plutil -lint "$file" >/dev/null
+  launchctl bootstrap "$DOMAIN" "$file"
 }
 
-собрать web web.py "" "  <key>RunAtLoad</key><true/>
+services() {
+  mkdir -p "$LOGS" "$AGENTS"
+  (cd "$CODE" && "$UV" sync -q)
+  for s in "${SERVICES[@]}"; do remove_service "$s"; done
+  KEEP="  <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 "
-собрать week jobs.py "    <string>week</string>
+  install_service web web.py "" "$KEEP"
+  install_service menubar menubar.py "" "$KEEP"
+  install_service week jobs.py "    <string>week</string>
 " "  <key>StartCalendarInterval</key>
   <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
 "
-собрать day jobs.py "    <string>day</string>
+  install_service day jobs.py "    <string>day</string>
 " "  <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
 "
-echo "службы поставлены; веб — http://127.0.0.1:8791, журналы — $ЖУРНАЛЫ"
+  echo "службы поставлены; веб — http://127.0.0.1:8791, журналы — $LOGS"
+}
+
+make_app() {
+  (cd "$CODE" && "$UV" sync -q)
+  rm -rf "$APP"
+  mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$LOGS"
+  cat > "$APP/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>Игровой агент</string>
+  <key>CFBundleIdentifier</key><string>local.games-agent</string>
+  <key>CFBundleExecutable</key><string>games-agent</string>
+  <key>CFBundleIconFile</key><string>значок</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSUIElement</key><true/>
+</dict></plist>
+PLIST
+  # Запуск: службы стоят — открыть веб (значок держит launchd); иначе — значок с вебом.
+  cat > "$APP/Contents/MacOS/games-agent" <<SH
+#!/bin/bash
+if [[ -f "$AGENTS/local.games-agent.menubar.plist" ]]; then
+  launchctl kickstart "$DOMAIN/local.games-agent.menubar" 2>/dev/null || true
+  exec open http://127.0.0.1:8791
+fi
+export PATH="$SEARCH_PATH"
+exec "$UV" run --project "$CODE" python "$CODE/menubar.py" --open >>"$LOGS/app.log" 2>&1
+SH
+  chmod +x "$APP/Contents/MacOS/games-agent"
+  "$UV" run --project "$CODE" python "$CODE/deploy/значок.py" "$APP/Contents/Resources/значок.icns"
+  echo "приложение: $APP"
+}
+
+case "${1:-}" in
+  приложение) make_app ;;
+  службы) services ;;
+  снять) for s in "${SERVICES[@]}"; do remove_service "$s"; done; rm -rf "$APP"; echo "сняты службы и приложение" ;;
+  *) echo "запуск: установить.sh приложение|службы|снять" >&2; exit 2 ;;
+esac

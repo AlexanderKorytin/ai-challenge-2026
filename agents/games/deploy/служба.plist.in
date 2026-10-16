@@ -8,11 +8,9 @@
     <string>@UV@</string><string>run</string><string>--project</string><string>@КОД@</string>
     <string>python</string><string>@КОД@/@ПРОГРАММА@</string>
 @ДОВОДЫ@  </array>
-  <key>WorkingDirectory</key><string>@ДАННЫЕ@</string>
+  <key>WorkingDirectory</key><string>@КОД@</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>GAMES_DATA_DIR</key><string>@ДАННЫЕ@</string>
-    <key>MYHARNESS_PROFILES</key><string>@КОД@/profiles</string>
     <key>PATH</key><string>@ПУТЬ@</string>
     <key>PYTHONUNBUFFERED</key><string>1</string>
   </dict>

@@ -7,12 +7,12 @@ from mcp import Client
 import server
 
 ИМЕНА = {
-    "steam_tags", "steam_search", "steam_game",
-    "list_suggestions", "list_wishlist", "list_calendar", "list_feed",
+    "steam_tags", "steam_search", "steam_find", "steam_game",
+    "list_suggestions", "list_wishlist", "list_calendar", "list_library", "list_feed",
 }
 
 
-def test_семь_инструментов_и_пустое_хранилище(tmp_path, monkeypatch):
+def test_девять_инструментов_и_пустое_хранилище(tmp_path, monkeypatch):
     monkeypatch.setenv("GAMES_DATA_DIR", str(tmp_path))
 
     async def прогон():

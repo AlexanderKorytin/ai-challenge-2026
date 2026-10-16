@@ -17,7 +17,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["steam_store.py", "games_db.py", "server.py"]
+only-include = ["steam_store.py", "games_db.py", "server.py", "steam_account.py", "itad.py", "secrets_store.py"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -1,0 +1,31 @@
+{
+ "_источник": "Собран по описанию GetOwnedGames (Steamworks Web API, IPlayerService): playtime в минутах, rtime_last_played в секундах Unix. Не живой: живой требует ключа.",
+ "ответ": {
+  "response": {
+   "game_count": 3,
+   "games": [
+    {
+     "appid": 1145360,
+     "name": "Hades",
+     "playtime_forever": 7200,
+     "playtime_2weeks": 90,
+     "rtime_last_played": 1760000000,
+     "img_icon_url": "",
+     "has_community_visible_stats": true
+    },
+    {
+     "appid": 413150,
+     "name": "Stardew Valley",
+     "playtime_forever": 45,
+     "rtime_last_played": 1600000000
+    },
+    {
+     "appid": 238320,
+     "name": "Outlast",
+     "playtime_forever": 0,
+     "rtime_last_played": 0
+    }
+   ]
+  }
+ }
+}

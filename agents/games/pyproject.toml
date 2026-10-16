@@ -11,6 +11,10 @@ dependencies = [
     # Веб-приложение агента: страница с подборкой и кнопками оценки.
     "starlette>=0.40",
     "uvicorn>=0.30",
+    # Векторы RAG (`similar.py`).
+    "numpy>=2,<3",
+    # Значок в строке меню (`menubar.py`): NSStatusItem из AppKit.
+    "pyobjc-framework-Cocoa>=11",
 ]
 
 [tool.uv.sources]

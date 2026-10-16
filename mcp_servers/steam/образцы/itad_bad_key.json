@@ -1,0 +1,7 @@
+{
+ "_источник": "Живой ответ 2026-10-16: GET /games/lookup/v1 с выдуманным ключом, HTTP 403.",
+ "ответ": {
+  "status_code": 403,
+  "reason_phrase": "Invalid or expired api key"
+ }
+}

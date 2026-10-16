@@ -1,0 +1,15 @@
+{
+ "_источник": "Собран по OpenID 2.0 (п. 10.1) и виду ответа Steam: поля id_res, подписанные op_endpoint, claimed_id, identity, return_to. Подпись выдумана — годность подтверждает только ответ check_authentication.",
+ "ответ": {
+  "openid.ns": "http://specs.openid.net/auth/2.0",
+  "openid.mode": "id_res",
+  "openid.op_endpoint": "https://steamcommunity.com/openid/login",
+  "openid.claimed_id": "https://steamcommunity.com/openid/id/76561197960287930",
+  "openid.identity": "https://steamcommunity.com/openid/id/76561197960287930",
+  "openid.return_to": "http://127.0.0.1:8791/auth/steam",
+  "openid.response_nonce": "2026-10-16T12:00:00ZAbCdEf0123456789",
+  "openid.assoc_handle": "1234567890",
+  "openid.signed": "signed,op_endpoint,claimed_id,identity,return_to,response_nonce,assoc_handle",
+  "openid.sig": "W0dhbWVzQWdlbnRUZXN0U2lnbmF0dXJlXQ="
+ }
+}

@@ -38,6 +38,18 @@ main { padding: 16px; max-width: 980px; margin: 0 auto; }
 .кнопки input { flex: 1; min-width: 120px; font: inherit; padding: 5px 8px; border-radius: 8px;
   border: 1px solid var(--рамка); background: var(--фон); color: var(--текст); }
 .пусто { color: var(--тихий); padding: 24px 0; }
+.игра { cursor: pointer; } .игра:hover { border-color: var(--акцент); }
+.оценка { font-weight: 700; }
+.обложка { width: calc(100% + 24px); margin: -12px -12px 4px; aspect-ratio: 460 / 215; object-fit: cover;
+  border-radius: 12px 12px 0 0; background: var(--фон); display: block; }
+.плашка { background: var(--лист); border: 1px solid var(--скидка); border-radius: 12px; padding: 12px; margin-bottom: 12px;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.шаг { background: var(--лист); border: 1px solid var(--рамка); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+.шаг h3 { margin: 0 0 6px; font-size: 15px; } .шаг ol { margin: 6px 0; padding-left: 20px; }
+.шаг input { width: 100%; font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--рамка);
+  background: var(--фон); color: var(--текст); margin: 6px 0; }
+.готово { color: var(--плюс); font-weight: 600; } .нет { color: var(--минус); font-weight: 600; }
+code { background: var(--фон); padding: 1px 5px; border-radius: 5px; }
 #разговор { display: flex; flex-direction: column; gap: 10px; }
 .реплика { max-width: 85%; padding: 10px 12px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word; }
 .человек { align-self: flex-end; background: var(--акцент); color: #fff; }
@@ -77,7 +89,7 @@ h2 { font-size: 16px; margin: 18px 0 8px; }
 <div id="весть"></div>
 <script>
 const ВКЛАДКИ = [["предложения", "Предложения"], ["желаемое", "Желаемое"], ["календарь", "Календарь"],
-  ["вкус", "Вкус и запреты"], ["лента", "Лента"], ["разговор", "Разговор"]];
+  ["библиотека", "Библиотека"], ["вкус", "Вкус и запреты"], ["лента", "Лента"], ["разговор", "Разговор"], ["настройки", "Настройки"]];
 const МЕСЯЦЫ = ["январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"];
 let с = null, вкладка = "предложения", месяц = new Date(), идёт_ответ = false, черновик = [];
 try { вкладка = localStorage.getItem("вкладка") || вкладка; } catch (e) {}
@@ -100,33 +112,62 @@ async function послать(путь, тело) {
   if (!о.ok) throw new Error(д.error || ("HTTP " + о.status));
   return д;
 }
+let таймер = null;
 async function обновить() {
-  с = await (await fetch("/api/state")).json();
+  // Одна цепочка опроса: кнопки зовут `обновить()` сами, и прежний таймер снимается.
+  clearTimeout(таймер);
+  const новое = await (await fetch("/api/state")).json();
+  const пишет = [...document.querySelectorAll("#место input, #место textarea")].some(п => п.value || п === document.activeElement);
+  с = новое;
+  // Человек вводит ключ или реплику — состояние обновлено, страница не перерисовывается и
+  // введённое не стирается (повторный просмотр).
+  if (пишет && !с.опрос_пройден && !настройка_готова() && !идёт_ответ) { таймер = setTimeout(обновить, 5000); return; }
   if (!идёт_ответ) черновик = с.разговор.flatMap(п => [["человек", п.вопрос], ["агент", п.ответ]]);
   рисовать();
-  if (с.задания_идут.length) setTimeout(обновить, 5000);
+  // Задание идёт или мастер ждёт местную модель — страница сама опрашивает состояние.
+  if (с.задания_идут.length || (!с.опрос_пройден && !настройка_готова())) таймер = setTimeout(обновить, 5000);
 }
-function рубли(к) { return к == null ? "" : Math.round(к / 100).toLocaleString("ru-RU") + " ₽"; }
+function рубли(к, в) { if (к == null) return ""; return в && в !== "RUB" ? (к / 100).toFixed(2) + " " + в : Math.round(к / 100).toLocaleString("ru-RU") + " ₽"; }
 function цена(и) {
   if (и.бесплатна) return "бесплатно";
   const ц = и.последняя_цена ?? и.цена, ск = и.последняя_скидка ?? и.скидка;
   if (ц == null) return и.вышла === false ? "ещё не продаётся" : "";
-  return ск ? $("span", { класс: "скидка" }, `−${ск} % · ${рубли(ц)}`) : рубли(ц);
+  return ск ? $("span", { класс: "скидка" }, `−${ск} % · ${рубли(ц, и.валюта)}`) : рубли(ц, и.валюта);
 }
 function карточка(и, оценивать = true) {
-  const причина = $("input", { placeholder: "почему нет (можно пусто)" });
+  const причина = $("input", { placeholder: "почему нет (можно пусто)", onclick: е => е.stopPropagation() });
+  const стоп = f => е => { е.stopPropagation(); f(); };
+  const сыграл = $("span", { style: "display:none;gap:6px" },
+    $("button", { textContent: "понравилась", onclick: стоп(() => играл(и, true, причина.value)) }),
+    $("button", { textContent: "не понравилась", onclick: стоп(() => играл(и, false, причина.value)) }));
   const кнопки = оценивать ? $("div", { класс: "кнопки" },
-    $("button", { класс: "плюс", textContent: "👍 Хочу", onclick: () => оценить(и, true, "") }),
+    $("button", { класс: "плюс", textContent: "👍 Хочу", onclick: стоп(() => оценить(и, true, "")) }),
     причина,
-    $("button", { класс: "минус", textContent: "👎 Нет", onclick: () => оценить(и, false, причина.value) })) : null;
-  return $("div", { класс: "игра" },
-    $("a", { href: и.ссылка, target: "_blank", rel: "noopener", textContent: и.имя || ("игра " + и.номер) }),
+    $("button", { класс: "минус", textContent: "👎 Нет", onclick: стоп(() => оценить(и, false, причина.value)) }),
+    $("button", { textContent: "Уже играл", onclick: стоп(() => { сыграл.style.display = "inline-flex"; }) }),
+    сыграл) : null;
+  // Нажатие на плашку открывает игру в клиенте Steam (решение пользователя).
+  return $("div", { класс: "игра", title: "Открыть в клиенте Steam", onclick: () => { location.href = "steam://store/" + и.номер; } },
+    // Обложка Steam: адрес строится из номера игры. Нет картинки — элемент прячется.
+    $("img", { класс: "обложка", loading: "lazy", alt: "", src: `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${Number(и.номер)}/header.jpg`,
+      onerror: е => { е.target.style.display = "none"; } }),
+    $("div", {}, $("b", { style: "font-size:16px" }, и.имя || ("игра " + и.номер)), " ",
+      $("a", { href: и.ссылка, target: "_blank", rel: "noopener", класс: "тихо", textContent: "в браузере", onclick: е => е.stopPropagation() })),
     $("div", { класс: "тихо" }, (и.жанры || []).join(", ")),
-    $("div", {}, "Пользователи Steam: ", $("b", {}, и.отзывы || "отзывов нет")),
+    $("div", {}, и.оценка_steamdb != null ? $("span", { класс: "оценка" }, `оценка ${и.оценка_steamdb} % · `) : null,
+      "пользователи Steam: ", $("b", {}, и.отзывы || "отзывов нет")),
     $("div", { класс: "тихо" }, и.вышла === false ? `Выход: ${и.дата_текст || "не объявлен"}` : ""),
-    $("div", {}, цена(и)),
+    $("div", {}, цена(и), и.источник === "steam" ? $("span", { класс: "тихо" }, " · из списка желаемого Steam") : null),
     и.причина ? $("div", { класс: "тихо" }, "Почему: " + и.причина) : null,
     кнопки);
+}
+async function играл(и, понравилась, причина) {
+  try {
+    весть(`Отмечаю «${и.имя}» и пересматриваю вкус…`);
+    const д = await послать("/api/played", { номер: и.номер, понравилась, причина });
+    весть(д.итог + (д.пересмотр ? "\n\n" + д.пересмотр : ""));
+  } catch (e) { весть("Не вышло: " + e.message); }
+  обновить();
 }
 async function оценить(и, плюс, причина) {
   try {
@@ -176,6 +217,58 @@ function вкус() {
         обновить(); } }) : null)))
       : $("div", { класс: "тихо" }, "Запретов нет."));
 }
+function библиотека() {
+  return с.библиотека.length ? $("ul", { класс: "лента" }, с.библиотека.map(и => $("li", { style: "cursor:pointer", onclick: () => { location.href = "steam://store/" + и.номер; } },
+    $("b", {}, и.имя), " — ", `${Math.round(и.часы)} ч`, и.часы_2нед ? $("span", { класс: "тихо" }, ` · ${Math.round(и.часы_2нед)} ч за две недели`) : null)))
+    : $("div", { класс: "пусто" }, "Библиотека пуста: нужен ключ Steam (вкладка «Настройки»), затем задание дня.");
+}
+function отметка(есть) { return $("span", { класс: есть ? "готово" : "нет" }, есть ? "✓ готово" : "— нет"); }
+function поле_ключа(имя, заголовок, обязателен, шаги) {
+  const п = $("input", { type: "password", placeholder: с.настройка.ключи[имя] ? "ключ сохранён — вставьте новый, чтобы заменить" : "вставьте ключ" });
+  return $("div", { класс: "шаг" },
+    $("h3", {}, заголовок, " ", отметка(с.настройка.ключи[имя]), обязателен ? "" : $("span", { класс: "тихо" }, " (по желанию)")),
+    $("ol", {}, шаги.map(ш => $("li", {}, ...ш))),
+    п,
+    $("div", { класс: "кнопки" },
+      $("button", { textContent: "Сохранить и проверить", onclick: async () => {
+        try { const д = await послать("/api/keys", { [имя]: п.value }); весть(`${заголовок}: ${д.итоги[имя]}`); } catch (e) { весть(e.message); }
+        обновить(); } }),
+      с.настройка.ключи[имя] ? $("button", { textContent: "Удалить", onclick: async () => { await послать("/api/keys", { [имя]: "" }); обновить(); } }) : null));
+}
+const ссылка = (адрес, текст) => $("a", { href: адрес, target: "_blank", rel: "noopener", textContent: текст || адрес });
+function настройки(мастер) {
+  const н = с.настройка, ол = н.ollama;
+  return $("div", {},
+    мастер ? $("p", {}, "Агенту нужны вход в Steam, два ключа и местная модель. Ключи хранятся только на этом Маке, в файле с правами 600.") : null,
+    $("div", { класс: "шаг" },
+      $("h3", {}, "1. Вход через Steam ", отметка(н.вошёл)),
+      $("p", { класс: "тихо" }, "Вход идёт на странице самого Steam: пароль агент не видит. Агент получает только номер учётной записи."),
+      н.вошёл ? $("div", {}, "SteamID: ", $("code", {}, н.steamid), " ", $("button", { textContent: "Выйти", onclick: async () => { await послать("/api/logout"); обновить(); } }))
+        : $("a", { href: "/auth/steam/start" }, $("button", { textContent: "Войти через Steam" }))),
+    поле_ключа("steam", "2. Ключ Steam Web API", true, [
+      ["Откройте ", ссылка("https://steamcommunity.com/dev/apikey"), " и войдите в Steam."],
+      ["В поле «Domain Name» впишите ", $("code", {}, "localhost"), ", согласитесь с условиями и нажмите «Register»."],
+      ["Скопируйте показанный ключ и вставьте ниже."],
+      ["Если агент скажет, что библиотека закрыта: Steam → Профиль → Изменить профиль → Приватность → «Сведения об играх» — «Открытые»."]]),
+    поле_ключа("deepseek", "3. Ключ DeepSeek", true, [
+      ["Откройте ", ссылка("https://platform.deepseek.com/api_keys"), " и войдите."],
+      ["Пополните баланс, если он нулевой: опрос и пересмотр вкуса стоят копейки."],
+      ["Нажмите «Create new API key», скопируйте ключ и вставьте ниже."]]),
+    поле_ключа("itad", "4. Ключ IsThereAnyDeal", false, [
+      ["Нужен для исторического минимума цены в уведомлениях о скидке."],
+      ["Откройте ", ссылка("https://isthereanydeal.com/apps/my/"), ", войдите и создайте приложение."],
+      ["Скопируйте «API key» и вставьте ниже."]]),
+    $("div", { класс: "шаг" },
+      $("h3", {}, "5. Местная модель ", отметка(ол.служба && Object.values(ол.модели).every(Boolean))),
+      ол.служба ? null : $("p", {}, "Служба Ollama не отвечает. Поставьте её с ", ссылка("https://ollama.com/download"), " и запустите."),
+      $("ul", {}, Object.entries(ол.модели).map(([м, есть]) => $("li", {}, $("code", {}, м), " ", отметка(есть),
+        есть ? null : [" — в Терминале: ", $("code", {}, "ollama pull " + м)])))),
+    мастер ? $("p", { класс: "тихо" }, "Когда всё обязательное готово, страница сама перейдёт к знакомству.") : null);
+}
+function настройка_готова() {
+  const н = с.настройка;
+  return н.вошёл && н.ключи.steam && н.ключи.deepseek && н.ollama.служба && Object.values(н.ollama.модели).every(Boolean);
+}
 function лента() {
   return с.лента.length ? $("ul", { класс: "лента" }, с.лента.map(з => $("li", { класс: "род-" + з.род },
     $("div", { класс: "тихо" }, `${з.род} · ${new Date(з.время).toLocaleString("ru-RU")}`), з.текст)))
@@ -220,10 +313,17 @@ function рисовать() {
     к.disabled = идёт || !с.опрос_пройден; к.textContent = (р === "день" ? "Задание дня" : "Задание недели") + (идёт ? " — идёт…" : "");
   }
   вкладки.replaceChildren(); место.replaceChildren();
-  if (!с.опрос_пройден) {
-    место.append($("h2", {}, "Знакомство"), разговор("Привет! Я подберу вам игры в Steam. Расскажите, какие игры вы любите и что в них цепляет?"));
+  if (!настройка_готова() && !с.опрос_пройден) {
+    место.append($("h2", {}, "Настройка"), настройки(true));
     return;
   }
+  if (!с.опрос_пройден) {
+    место.append($("h2", {}, "Знакомство"), разговор("Привет! Я посмотрю вашу библиотеку Steam и подберу игры. Напишите «начнём»."));
+    return;
+  }
+  if (с.сверка_нужна) место.append($("div", { класс: "плашка" }, "Прошло полгода — пора сверить вкус.",
+    $("button", { textContent: "Сверить", onclick: async () => { const д = await послать("/api/review/start"); вкладка = "разговор"; рисовать(); сказать(д.приветствие); } }),
+    $("button", { textContent: "Сверка готова", onclick: async () => { весть((await послать("/api/review/done")).итог); обновить(); } })));
   for (const [ключ, имя] of ВКЛАДКИ) {
     const число = ключ === "предложения" ? с.предложения.length : ключ === "желаемое" ? с.желаемое.length : null;
     вкладки.append($("button", { класс: ключ === вкладка ? "выбрана" : "", textContent: имя + (число ? ` (${число})` : ""),
@@ -232,7 +332,7 @@ function рисовать() {
   const вид = {
     предложения: () => сетка(с.предложения, true, "Новых предложений нет. Задание дня ищет их каждый день в 11:00."),
     желаемое: () => сетка(с.желаемое, false, "Список пуст: поставьте 👍 предложенной игре."),
-    календарь, вкус, лента, разговор: () => разговор(null),
+    календарь, библиотека, вкус, лента, разговор: () => разговор(null), настройки: () => настройки(false),
   }[вкладка] || (() => сетка(с.предложения, true, ""));
   место.append(вид());
 }

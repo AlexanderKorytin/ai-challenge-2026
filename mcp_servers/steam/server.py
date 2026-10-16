@@ -22,8 +22,10 @@ srv = MCPServer(
     "steam",
     instructions=(
         "Магазин Steam и хранилище игрового агента. steam_tags — метки магазина с номерами; "
-        "steam_search — номера игр по метке; steam_game — сведения об игре с ценой и оценкой "
-        "пользователей. list_* — предложения, желаемое, календарь выпусков и лента агента. "
+        "steam_search — номера игр по метке; steam_find — номер игры по названию; "
+        "steam_game — сведения об игре с ценой и оценкой "
+        "пользователей. list_* — предложения, желаемое, календарь выпусков, библиотека Steam "
+        "с часами игры и лента агента. "
         "Все инструменты только читают."
     ),
 )
@@ -72,15 +74,30 @@ async def steam_tags() -> dict[str, Any]:
 @srv.tool()
 async def steam_search(
     tag: Annotated[int, Field(description="Номер метки Steam из steam_tags")],
-    upcoming: Annotated[bool, Field(description="true — будущие выпуски, false — вышедшие по отзывам")] = False,
+    upcoming: Annotated[bool, Field(description="true — будущие выпуски, false — вышедшие")] = False,
 ) -> dict[str, Any]:
-    """Номера игр одной страницы выдачи магазина по метке (50 игр — умолчание магазина)."""
+    """Номера игр первой страницы выдачи магазина по метке (50 игр — умолчание магазина).
+    Вышедшие — в порядке соответствия метке, будущие — самые желанные."""
     try:
         async with ss.клиент() as к:
             номера = await ss.найти(к, tag, будущие=upcoming)
     except ss.ОшибкаМагазина as exc:
         raise ToolError(str(exc)) from exc
     return {"номера": номера}
+
+
+@srv.tool()
+async def steam_find(
+    name: Annotated[str, Field(description="Название игры, как его написал человек")],
+) -> dict[str, Any]:
+    """Поиск магазина по названию: номера и точные имена в порядке выдачи. Лёгкие опечатки
+    магазин прощает, не все: пусто — исправь написание и ищи снова."""
+    try:
+        async with ss.клиент() as к:
+            найдено = await ss.найти_по_названию(к, name)
+    except ss.ОшибкаМагазина as exc:
+        raise ToolError(str(exc)) from exc
+    return {"игры": [{"номер": н, "имя": и} for н, и in найдено]}
 
 
 @srv.tool()
@@ -114,6 +131,12 @@ def list_wishlist() -> dict[str, Any]:
 def list_calendar() -> dict[str, Any]:
     """Календарь будущих выпусков, отобранных под вкус человека."""
     return {"календарь": _прочесть(games_db.календарь)}
+
+
+@srv.tool()
+def list_library() -> dict[str, Any]:
+    """Библиотека Steam человека по убыванию часов игры: всего, за две недели, последний запуск."""
+    return {"библиотека": _прочесть(games_db.библиотека)}
 
 
 @srv.tool()
