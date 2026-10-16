@@ -1,0 +1,21 @@
+"""Общая фикстура проверок: все пути записи — во временный каталог.
+
+Правило проекта: проверки однажды писали в настоящий файл настроек и затёрли ключ. Поэтому
+каталог состояния и настроек `myharness` и каталог данных агента уводятся в `tmp_path` у
+КАЖДОЙ проверки, а не только у тех, что пишут."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def каталоги(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("MYHARNESS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("MYHARNESS_CONFIG_DIR", str(tmp_path / "config"))
+    данные = tmp_path / "games"
+    данные.mkdir()
+    monkeypatch.setenv("GAMES_DATA_DIR", str(данные))
+    return данные

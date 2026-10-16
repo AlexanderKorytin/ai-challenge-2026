@@ -1,0 +1,24 @@
+{
+  "name": "отбор-игр",
+  "title": "отбор игр",
+  "description": "местная модель: подходит ли игра Steam под вкус человека",
+  "system_file": "отбор-игр.md",
+  "keep_history": false,
+  "thinking": {"type": "disabled"},
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "вердикт",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "подходит": {"type": "boolean"},
+          "причина": {"type": "string"}
+        },
+        "required": ["подходит", "причина"],
+        "additionalProperties": false
+      }
+    }
+  }
+}

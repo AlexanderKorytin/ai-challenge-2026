@@ -1,0 +1,26 @@
+[project]
+name = "games-agent"
+version = "0.1.0"
+description = "Личный игровой агент: подбирает игры Steam по вкусу человека"
+requires-python = ">=3.11"
+dependencies = [
+    # Агент собран из библиотеки myharness как есть: Agent, карточка папки, инварианты.
+    "myharness",
+    # Магазин Steam: типы `Метка` и `Игра` и запросы к витрине.
+    "steam-mcp",
+    # Веб-приложение агента: страница с подборкой и кнопками оценки.
+    "starlette>=0.40",
+    "uvicorn>=0.30",
+]
+
+[tool.uv.sources]
+# Пути — те же, что у `agents/digest`: агент лежит в репозитории рядом с библиотекой и сервером.
+myharness = { path = "../../myharness" }
+steam-mcp = { path = "../../mcp_servers/steam", editable = true }
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

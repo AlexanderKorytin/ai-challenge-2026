@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Игровой агент</title>
+<style>
+:root {
+  --фон: #f6f5f2; --лист: #ffffff; --текст: #1d1d1f; --тихий: #6b6b70; --рамка: #e2e0da;
+  --акцент: #2f6fde; --плюс: #1f8a4c; --минус: #c23b3b; --скидка: #d9480f; --тень: 0 1px 2px rgba(0,0,0,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root { --фон: #16171a; --лист: #1f2125; --текст: #ececee; --тихий: #9a9ba2; --рамка: #33353b;
+    --акцент: #6c9cff; --плюс: #45c27a; --минус: #ff6b6b; --скидка: #ff8a4c; --тень: none; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--фон); color: var(--текст);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 14px 16px;
+  border-bottom: 1px solid var(--рамка); background: var(--лист); position: sticky; top: 0; z-index: 2; }
+header h1 { font-size: 18px; margin: 0 auto 0 0; }
+button { font: inherit; border: 1px solid var(--рамка); background: var(--лист); color: var(--текст);
+  border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: var(--акцент); }
+button:disabled { opacity: .5; cursor: default; }
+button.плюс { color: var(--плюс); } button.минус { color: var(--минус); }
+nav { display: flex; gap: 4px; padding: 10px 16px 0; flex-wrap: wrap; }
+nav button { border-radius: 8px 8px 0 0; border-bottom: none; }
+nav button.выбрана { background: var(--акцент); color: #fff; border-color: var(--акцент); }
+main { padding: 16px; max-width: 980px; margin: 0 auto; }
+.сетка { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.игра { background: var(--лист); border: 1px solid var(--рамка); border-radius: 12px; padding: 12px;
+  box-shadow: var(--тень); display: flex; flex-direction: column; gap: 6px; }
+.игра a { color: var(--акцент); font-weight: 600; text-decoration: none; font-size: 16px; }
+.тихо { color: var(--тихий); font-size: 13px; }
+.скидка { color: var(--скидка); font-weight: 600; }
+.кнопки { display: flex; gap: 6px; margin-top: auto; flex-wrap: wrap; }
+.кнопки input { flex: 1; min-width: 120px; font: inherit; padding: 5px 8px; border-radius: 8px;
+  border: 1px solid var(--рамка); background: var(--фон); color: var(--текст); }
+.пусто { color: var(--тихий); padding: 24px 0; }
+#разговор { display: flex; flex-direction: column; gap: 10px; }
+.реплика { max-width: 85%; padding: 10px 12px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word; }
+.человек { align-self: flex-end; background: var(--акцент); color: #fff; }
+.агент { align-self: flex-start; background: var(--лист); border: 1px solid var(--рамка); }
+.инструмент { align-self: flex-start; color: var(--тихий); font-size: 12px; }
+form.ввод { display: flex; gap: 8px; margin-top: 12px; }
+form.ввод textarea { flex: 1; font: inherit; padding: 8px 10px; border-radius: 10px; min-height: 44px;
+  border: 1px solid var(--рамка); background: var(--лист); color: var(--текст); resize: vertical; }
+.месяц { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.день { background: var(--лист); border: 1px solid var(--рамка); border-radius: 8px; min-height: 72px;
+  padding: 4px; font-size: 12px; overflow: hidden; }
+.день.чужой { opacity: .35; } .день.сегодня { border-color: var(--акцент); }
+.день a { display: block; color: var(--акцент); text-decoration: none; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.шапка-месяца { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.шапка-месяца b { min-width: 150px; text-align: center; }
+ul.лента { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+ul.лента li { background: var(--лист); border: 1px solid var(--рамка); border-radius: 8px; padding: 8px 10px; }
+.род-скидка { border-left: 4px solid var(--скидка) !important; }
+.род-сбой { border-left: 4px solid var(--минус) !important; }
+h2 { font-size: 16px; margin: 18px 0 8px; }
+#весть { position: fixed; bottom: 16px; left: 16px; right: 16px; max-width: 560px; margin: 0 auto;
+  background: var(--текст); color: var(--фон); padding: 10px 14px; border-radius: 10px; display: none;
+  white-space: pre-wrap; z-index: 3; }
+@media (max-width: 560px) { .день { min-height: 48px; font-size: 10px; } .реплика { max-width: 100%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Игровой агент</h1>
+  <button id="день" title="Поиск вышедших игр и проверка скидок">Задание дня</button>
+  <button id="неделя" title="Будущие выпуски в календарь">Задание недели</button>
+  <button id="пересобрать">Пересобрать вкус</button>
+</header>
+<nav id="вкладки"></nav>
+<main id="место"></main>
+<div id="весть"></div>
+<script>
+const ВКЛАДКИ = [["предложения", "Предложения"], ["желаемое", "Желаемое"], ["календарь", "Календарь"],
+  ["вкус", "Вкус и запреты"], ["лента", "Лента"], ["разговор", "Разговор"]];
+const МЕСЯЦЫ = ["январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"];
+let с = null, вкладка = "предложения", месяц = new Date(), идёт_ответ = false, черновик = [];
+try { вкладка = localStorage.getItem("вкладка") || вкладка; } catch (e) {}
+
+const $ = (т, свойства = {}, ...дети) => {
+  const у = document.createElement(т);
+  for (const [к, з] of Object.entries(свойства)) {
+    if (к.startsWith("on")) у.addEventListener(к.slice(2), з); else if (к === "класс") у.className = з; else у[к] = з;
+  }
+  for (const д of дети.flat()) if (д != null) у.append(д);
+  return у;
+};
+function весть(текст) {
+  const в = document.getElementById("весть"); в.textContent = текст; в.style.display = "block";
+  clearTimeout(весть.т); весть.т = setTimeout(() => в.style.display = "none", 6000);
+}
+async function послать(путь, тело) {
+  const о = await fetch(путь, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(тело || {}) });
+  const д = await о.json().catch(() => ({}));
+  if (!о.ok) throw new Error(д.error || ("HTTP " + о.status));
+  return д;
+}
+async function обновить() {
+  с = await (await fetch("/api/state")).json();
+  if (!идёт_ответ) черновик = с.разговор.flatMap(п => [["человек", п.вопрос], ["агент", п.ответ]]);
+  рисовать();
+  if (с.задания_идут.length) setTimeout(обновить, 5000);
+}
+function рубли(к) { return к == null ? "" : Math.round(к / 100).toLocaleString("ru-RU") + " ₽"; }
+function цена(и) {
+  if (и.бесплатна) return "бесплатно";
+  const ц = и.последняя_цена ?? и.цена, ск = и.последняя_скидка ?? и.скидка;
+  if (ц == null) return и.вышла === false ? "ещё не продаётся" : "";
+  return ск ? $("span", { класс: "скидка" }, `−${ск} % · ${рубли(ц)}`) : рубли(ц);
+}
+function карточка(и, оценивать = true) {
+  const причина = $("input", { placeholder: "почему нет (можно пусто)" });
+  const кнопки = оценивать ? $("div", { класс: "кнопки" },
+    $("button", { класс: "плюс", textContent: "👍 Хочу", onclick: () => оценить(и, true, "") }),
+    причина,
+    $("button", { класс: "минус", textContent: "👎 Нет", onclick: () => оценить(и, false, причина.value) })) : null;
+  return $("div", { класс: "игра" },
+    $("a", { href: и.ссылка, target: "_blank", rel: "noopener", textContent: и.имя || ("игра " + и.номер) }),
+    $("div", { класс: "тихо" }, (и.жанры || []).join(", ")),
+    $("div", {}, "Пользователи Steam: ", $("b", {}, и.отзывы || "отзывов нет")),
+    $("div", { класс: "тихо" }, и.вышла === false ? `Выход: ${и.дата_текст || "не объявлен"}` : ""),
+    $("div", {}, цена(и)),
+    и.причина ? $("div", { класс: "тихо" }, "Почему: " + и.причина) : null,
+    кнопки);
+}
+async function оценить(и, плюс, причина) {
+  try {
+    if (!плюс) весть(`Запрещаю «${и.имя}» и пересматриваю вкус…`);
+    const д = await послать("/api/rate", { номер: и.номер, плюс, причина });
+    весть(д.итог + (д.пересмотр ? "\n\n" + д.пересмотр : "") + (д.вкус_записан === false ? "\n\nВкус не изменён." : ""));
+  } catch (e) { весть("Не вышло: " + e.message); }
+  обновить();
+}
+function сетка(список, оценивать, пусто) {
+  return список.length ? $("div", { класс: "сетка" }, список.map(и => карточка(и, оценивать))) : $("div", { класс: "пусто" }, пусто);
+}
+function календарь() {
+  const г = месяц.getFullYear(), м = месяц.getMonth();
+  const по_дням = {};
+  for (const и of с.календарь) if (и.дата) (по_дням[и.дата] ||= []).push(и);
+  const первый = new Date(г, м, 1), сдвиг = (первый.getDay() + 6) % 7;
+  const сегодня = new Date().toISOString().slice(0, 10);
+  const дни = [];
+  for (let i = 0; i < 42; i++) {
+    const д = new Date(г, м, 1 - сдвиг + i), ключ = `${д.getFullYear()}-${String(д.getMonth() + 1).padStart(2, "0")}-${String(д.getDate()).padStart(2, "0")}`;
+    дни.push($("div", { класс: "день" + (д.getMonth() !== м ? " чужой" : "") + (ключ === сегодня ? " сегодня" : "") },
+      $("div", { класс: "тихо" }, String(д.getDate())),
+      (по_дням[ключ] || []).map(и => $("a", { href: и.ссылка, target: "_blank", title: и.имя + (и.причина ? " — " + и.причина : ""), textContent: и.имя }))));
+  }
+  const без_даты = с.календарь.filter(и => !и.дата);
+  return $("div", {},
+    $("div", { класс: "шапка-месяца" },
+      $("button", { textContent: "‹", onclick: () => { месяц = new Date(г, м - 1, 1); рисовать(); } }),
+      $("b", {}, `${МЕСЯЦЫ[м]} ${г}`),
+      $("button", { textContent: "›", onclick: () => { месяц = new Date(г, м + 1, 1); рисовать(); } }),
+      $("a", { href: "/calendar.ics", textContent: "файл .ics для подписки", style: "margin-left:auto" })),
+    $("div", { класс: "месяц" }, ["пн","вт","ср","чт","пт","сб","вс"].map(н => $("div", { класс: "тихо" }, н)), дни),
+    $("h2", {}, "Все выпуски в календаре"),
+    сетка(с.календарь.filter(и => и.дата), true, "Пока пусто: запустите задание недели."),
+    $("h2", {}, "Дата не объявлена"),
+    сетка(без_даты, true, "Нет таких."));
+}
+function вкус() {
+  const разделы = Object.entries(с.вкус);
+  return $("div", {},
+    разделы.map(([имя, строки]) => [$("h2", {}, имя), строки.length ? $("ul", {}, строки.map(т => $("li", {}, т))) : $("div", { класс: "тихо" }, "пусто")]),
+    $("h2", {}, "Запреты (вы поставили минус)"),
+    с.запреты.length ? $("ul", { класс: "лента" }, с.запреты.map(з => $("li", {}, з.строка, " ",
+      з.номер != null ? $("button", { textContent: "снять", onclick: async () => {
+        try { весть((await послать("/api/unban", { номер: з.номер })).итог); } catch (e) { весть(e.message); }
+        обновить(); } }) : null)))
+      : $("div", { класс: "тихо" }, "Запретов нет."));
+}
+function лента() {
+  return с.лента.length ? $("ul", { класс: "лента" }, с.лента.map(з => $("li", { класс: "род-" + з.род },
+    $("div", { класс: "тихо" }, `${з.род} · ${new Date(з.время).toLocaleString("ru-RU")}`), з.текст)))
+    : $("div", { класс: "пусто" }, "Лента пуста.");
+}
+function разговор(приветствие) {
+  const поле = $("textarea", { placeholder: "Ваш ответ…", onkeydown: е => { if (е.key === "Enter" && !е.shiftKey) { е.preventDefault(); форма.requestSubmit(); } } });
+  const форма = $("form", { класс: "ввод", onsubmit: е => { е.preventDefault(); сказать(поле.value); поле.value = ""; } },
+    поле, $("button", { textContent: "Отправить", disabled: идёт_ответ }));
+  const лист = $("div", { id: "разговор" },
+    приветствие && !черновик.length ? $("div", { класс: "реплика агент" }, приветствие) : null,
+    черновик.map(([кто, т]) => $("div", { класс: "реплика " + кто }, т)));
+  setTimeout(() => поле.focus(), 0);
+  return $("div", {}, лист, форма);
+}
+async function сказать(текст) {
+  текст = текст.trim(); if (!текст || идёт_ответ) return;
+  идёт_ответ = true; черновик.push(["человек", текст], ["агент", ""]); рисовать();
+  try {
+    const о = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: текст }) });
+    if (!о.ok) throw new Error((await о.json().catch(() => ({}))).error || "HTTP " + о.status);
+    const чтение = о.body.getReader(), декодер = new TextDecoder(); let хвост = "";
+    for (;;) {
+      const { value, done } = await чтение.read(); if (done) break;
+      хвост += декодер.decode(value, { stream: true });
+      const строки = хвост.split("\n"); хвост = строки.pop();
+      for (const с_ of строки) {
+        if (!с_) continue; const е = JSON.parse(с_);
+        if (е.kind === "content") черновик[черновик.length - 1][1] += е.text;
+        else if (е.kind === "tool") черновик.splice(черновик.length - 1, 0, ["инструмент", "→ " + е.name]);
+        else if (е.kind === "done" && е.error) черновик[черновик.length - 1][1] += "\n[ошибка: " + е.error + "]";
+        рисовать();
+      }
+    }
+  } catch (e) { черновик[черновик.length - 1][1] = "[ошибка: " + e.message + "]"; }
+  идёт_ответ = false; await обновить();
+}
+function рисовать() {
+  const место = document.getElementById("место"), вкладки = document.getElementById("вкладки");
+  for (const р of ["день", "неделя"]) {
+    const к = document.getElementById(р), идёт = с.задания_идут.includes(р === "день" ? "day" : "week");
+    к.disabled = идёт || !с.опрос_пройден; к.textContent = (р === "день" ? "Задание дня" : "Задание недели") + (идёт ? " — идёт…" : "");
+  }
+  вкладки.replaceChildren(); место.replaceChildren();
+  if (!с.опрос_пройден) {
+    место.append($("h2", {}, "Знакомство"), разговор("Привет! Я подберу вам игры в Steam. Расскажите, какие игры вы любите и что в них цепляет?"));
+    return;
+  }
+  for (const [ключ, имя] of ВКЛАДКИ) {
+    const число = ключ === "предложения" ? с.предложения.length : ключ === "желаемое" ? с.желаемое.length : null;
+    вкладки.append($("button", { класс: ключ === вкладка ? "выбрана" : "", textContent: имя + (число ? ` (${число})` : ""),
+      onclick: () => { вкладка = ключ; try { localStorage.setItem("вкладка", ключ); } catch (e) {} рисовать(); } }));
+  }
+  const вид = {
+    предложения: () => сетка(с.предложения, true, "Новых предложений нет. Задание дня ищет их каждый день в 11:00."),
+    желаемое: () => сетка(с.желаемое, false, "Список пуст: поставьте 👍 предложенной игре."),
+    календарь, вкус, лента, разговор: () => разговор(null),
+  }[вкладка] || (() => сетка(с.предложения, true, ""));
+  место.append(вид());
+}
+document.getElementById("день").onclick = async () => { try { await послать("/api/run/day"); весть("Задание дня запущено"); } catch (e) { весть(e.message); } обновить(); };
+document.getElementById("неделя").onclick = async () => { try { await послать("/api/run/week"); весть("Задание недели запущено"); } catch (e) { весть(e.message); } обновить(); };
+document.getElementById("пересобрать").onclick = async () => {
+  if (!confirm("Начать опрос вкуса заново? Запреты останутся.")) return;
+  try { const д = await послать("/api/retaste"); черновик = []; вкладка = "разговор"; await обновить(); сказать(д.приветствие); }
+  catch (e) { весть(e.message); }
+};
+обновить().catch(e => весть("Нет связи с агентом: " + e.message));
+</script>
+</body>
+</html>
