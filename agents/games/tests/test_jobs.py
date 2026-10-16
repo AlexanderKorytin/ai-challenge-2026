@@ -291,3 +291,11 @@ def test_догоняющий_запуск(среда):
     finally:
         замок.close()
     assert jobs.нужен_догоняющий(с, "day", сейчас)
+
+
+def test_игра_без_цены_из_списка_steam_запоминается(среда):
+    tmp, _, _ = среда
+    учётка = jobs.Учётка(библиотека=lambda: asyncio.sleep(0, []), список_желаемого=lambda: asyncio.sleep(0, [9]))
+    asyncio.run(jobs.день(tmp, магазин({9: игра(9, вышла=False, цена=None)}), судья([]), учётка))
+    с = games_db.открыть()
+    assert [з["имя"] for з in games_db.желаемое(с)] == ["игра 9"]
