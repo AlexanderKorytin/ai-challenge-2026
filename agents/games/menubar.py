@@ -130,6 +130,12 @@ class GamesMenuBar(NSObject):
         if с.get("опрос_пройден") and not службы_стоят():
             self.поставить_службы()
             return
+        if службы_стоят():
+            # Догоняющий запуск: Мак был выключен в срок или запуск прервался — `launchd` сам
+            # такого не догоняет. Запущенную службу `kickstart` без `-k` не перезапускает.
+            for род in с.get("догнать", []):
+                subprocess.run(["launchctl", "kickstart", f"gui/{os.getuid()}/local.games-agent.{род}"],
+                               check=False, capture_output=True)
         число = счётчик(с)
         self.пункт.button().setTitle_(f"🎮 {число}" if число else "🎮")
         self.пункт.button().setToolTip_("Игровой агент — открыть")

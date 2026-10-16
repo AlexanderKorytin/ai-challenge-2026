@@ -28,7 +28,7 @@ import subprocess
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import games_db
@@ -45,6 +45,47 @@ import taste
 СВЕРКА = timedelta(days=182)
 
 Судья = Callable[[ss.Игра], Awaitable[judge.Вердикт]]
+
+# Расписание — то же, что в `deploy/установить.sh` (`StartCalendarInterval`): день — 11:00,
+# неделя — понедельник 10:00. Нужно здесь для догоняющего запуска.
+ВРЕМЯ_ДНЯ = time(11, 0)
+ВРЕМЯ_НЕДЕЛИ = (0, time(10, 0))  # понедельник
+
+
+def последний_срок(род: str, сейчас: datetime) -> datetime:
+    """Последний момент расписания не позже `сейчас` (местное время Мака)."""
+    if род == "day":
+        срок = datetime.combine(сейчас.date(), ВРЕМЯ_ДНЯ)
+        return срок if срок <= сейчас else срок - timedelta(days=1)
+    день_недели, когда = ВРЕМЯ_НЕДЕЛИ
+    срок = datetime.combine(сейчас.date() - timedelta(days=(сейчас.weekday() - день_недели) % 7), когда)
+    return срок if срок <= сейчас else срок - timedelta(days=7)
+
+
+def нужен_догоняющий(с, род: str, сейчас: datetime | None = None) -> bool:
+    """Догнать ли задание. `launchd` догоняет только после сна, а после выключения Мака и после
+    прерванного запуска — нет (вопрос пользователя 2026-10-16).
+
+    Да, если после последнего срока не было ни выполнения, ни обработанного сбоя, и задание не
+    идёт сейчас (замок свободен). Обработанный сбой сам не повторяется: упавшая надолго служба
+    иначе давала бы запуск и уведомление каждую минуту; он виден в ленте, есть кнопка."""
+    сейчас = сейчас or datetime.now()
+    срок = последний_срок(род, сейчас).isoformat(timespec="seconds")
+    if any((games_db.отметка(с, f"{род}_{к}") or "") >= срок for к in ("выполнено", "сбой")):
+        return False
+    try:
+        _замок(род).close()
+    except УжеИдёт:
+        return False
+    return True
+
+
+def _отметить(род: str, что: str) -> None:
+    с = games_db.открыть()
+    try:
+        games_db.поставить_отметку(с, f"{род}_{что}", datetime.now().isoformat(timespec="seconds"))
+    finally:
+        с.close()
 
 
 @dataclass
@@ -526,6 +567,7 @@ async def запустить(род: str, каталог: Path | None = None) ->
     замок = None
     try:
         замок = _замок(род)
+        _отметить(род, "начато")
         тайны = secrets_store.загрузить()
         клиент_модели = api.Clients(тайны.deepseek_ключ)
         индекс = similar.Индекс()
@@ -552,11 +594,17 @@ async def запустить(род: str, каталог: Path | None = None) ->
                 return await judge.судить(клиент_модели, каталог, игра, похожие)
 
             if род == "week":
-                return await неделя(каталог, магазин, судья, индекс)
-            return await день(каталог, магазин, судья, учётка, минимум, индекс)
+                итог = await неделя(каталог, магазин, судья, индекс)
+            else:
+                итог = await день(каталог, магазин, судья, учётка, минимум, индекс)
+            _отметить(род, "выполнено")
+            return итог
     except УжеИдёт:
         raise
     except BaseException as exc:
+        if not isinstance(exc, asyncio.CancelledError):
+            # Прерванный запуск (отмена, убитый процесс) отметки сбоя не получает — его догонят.
+            _отметить(род, "сбой")
         текст = secrets_store.скрыть(f"Задание «{имя}» упало: {type(exc).__name__}: {exc}", тайны)
         if isinstance(exc, asyncio.CancelledError):
             текст = f"Задание «{имя}» прервано: служба остановлена"
