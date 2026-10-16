@@ -63,6 +63,7 @@ main { padding: 16px; max-width: 980px; margin: 0 auto; }
 code { background: var(--фон); padding: 1px 5px; border-radius: 5px; }
 #разговор { display: flex; flex-direction: column; gap: 10px; }
 .реплика { max-width: 85%; padding: 10px 12px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word; }
+.реплика.агент { white-space: normal; }
 .человек { align-self: flex-end; background: var(--акцент); color: #fff; }
 .агент { align-self: flex-start; background: var(--лист); border: 1px solid var(--рамка); }
 .инструмент { align-self: flex-start; color: var(--тихий); font-size: 12px; }
@@ -112,7 +113,7 @@ const $ = (т, свойства = {}, ...дети) => {
   for (const [к, з] of Object.entries(свойства)) {
     if (к.startsWith("on")) у.addEventListener(к.slice(2), з); else if (к === "класс") у.className = з; else у[к] = з;
   }
-  for (const д of дети.flat()) if (д != null) у.append(д);
+  for (const д of дети.flat(Infinity)) if (д != null) у.append(д);
   return у;
 };
 function весть(текст) {
@@ -343,6 +344,23 @@ async function выбрать_модель(имя) {
   try { весть((await послать("/api/models/choose", { имя })).итог); } catch (e) { весть(e.message); }
   обновить();
 }
+// Ответ агента — Markdown («**жирный**», «- пункт»). Показ строится элементами, а не HTML из
+// текста модели: подделки страницы через ответ нет (живой сценарий: звёздочки на экране).
+function строчно(текст) {
+  return текст.split("**").map((кусок, i) => i % 2 ? $("b", {}, кусок) : кусок);
+}
+function текст_агента(текст) {
+  const узлы = []; let список = null;
+  for (const строка of текст.split("\n")) {
+    const пункт = /^\s*[-*•]\s+(.*)$/.exec(строка);
+    if (пункт) { if (!список) { список = $("ul", { style: "margin:4px 0;padding-left:20px" }); узлы.push(список); } список.append($("li", {}, ...строчно(пункт[1]))); continue; }
+    список = null;
+    const заголовок = /^#+\s+(.*)$/.exec(строка);
+    if (заголовок) { узлы.push($("div", {}, $("b", {}, заголовок[1]))); continue; }
+    узлы.push(строка.trim() ? $("div", {}, ...строчно(строка)) : $("div", { style: "height:8px" }));
+  }
+  return узлы;
+}
 // Строки карточки — служебная запись для программы («Ролевая игра (122) — 5»). Человеку —
 // без номеров Steam, важность точками, запрет — названием (живой сценарий пользователя).
 function строка_вкуса(раздел, т) {
@@ -421,7 +439,7 @@ function разговор(приветствие, с_последнего = fals
   if (с_последнего && проверка_начата !== null) реплики = реплики.slice(проверка_начата);
   const лист = $("div", { id: "разговор" },
     приветствие && !черновик.length ? $("div", { класс: "реплика агент" }, приветствие) : null,
-    реплики.map(([кто, т]) => $("div", { класс: "реплика " + кто }, т)),
+    реплики.map(([кто, т]) => $("div", { класс: "реплика " + кто }, ...(кто === "агент" ? текст_агента(т) : [т]))),
     // Пока агент работает — одна строка хода, поля ввода нет: вводить ещё нечего.
     идёт_ответ ? $("div", { класс: "ход-агента" }, $("div", { класс: "крутилка" }),
       `${ход_агента.шаг || "Думаю"}…` + (ход_агента.шагов > 1 ? ` (шаг ${ход_агента.шагов})` : "")) : null);
