@@ -76,10 +76,9 @@ services() {
 " "  <key>StartCalendarInterval</key>
   <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>0</integer></dict>
 "
-  # Первые предложения — сразу, а не в 11:00 завтра (итоговый просмотр): задание дня само
-  # собирает RAG, если его ещё нет; неделя — календарь будущих выпусков.
-  launchctl kickstart "$DOMAIN/local.games-agent.day" 2>/dev/null || true
-  launchctl kickstart "$DOMAIN/local.games-agent.week" 2>/dev/null || true
+  # Первые предложения — сразу, а не в 11:00 завтра: их запускает догоняющий запуск значка
+  # (`jobs.нужен_догоняющий`), раз выполнения после срока ещё не было. Здесь не запускаем:
+  # переустановка служб иначе гоняла бы день и неделю заново.
   echo "службы поставлены; веб — http://127.0.0.1:8791, журналы — $LOGS"
 }
 
