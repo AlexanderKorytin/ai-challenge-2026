@@ -35,7 +35,7 @@ main { padding: 16px; max-width: 980px; margin: 0 auto; }
 .тихо { color: var(--тихий); font-size: 13px; }
 .скидка { color: var(--скидка); font-weight: 600; }
 .кнопки { display: flex; gap: 6px; margin-top: auto; flex-wrap: wrap; }
-.кнопки input { flex: 1; min-width: 120px; font: inherit; padding: 5px 8px; border-radius: 8px;
+.кнопки input { flex: 1; min-width: 0; font: inherit; padding: 5px 8px; border-radius: 8px;
   border: 1px solid var(--рамка); background: var(--фон); color: var(--текст); }
 .пусто { color: var(--тихий); padding: 24px 0; }
 .игра { cursor: pointer; } .игра:hover { border-color: var(--акцент); }
@@ -164,17 +164,19 @@ function цена(и) {
   return ск ? $("span", { класс: "скидка" }, `−${ск} % · ${рубли(ц, и.валюта)}`) : рубли(ц, и.валюта);
 }
 function карточка(и, оценивать = true) {
-  const причина = $("input", { placeholder: "почему нет (можно пусто)", onclick: е => е.stopPropagation() });
+  const причина = $("input", { placeholder: "Почему нет? (необязательно)", onclick: е => е.stopPropagation(), onkeydown: е => е.stopPropagation() });
   const стоп = f => е => { е.stopPropagation(); f(); };
   const сыграл = $("span", { style: "display:none;gap:6px" },
     $("button", { textContent: "понравилась", onclick: стоп(() => играл(и, true, причина.value)) }),
     $("button", { textContent: "не понравилась", onclick: стоп(() => играл(и, false, причина.value)) }));
-  const кнопки = оценивать ? $("div", { класс: "кнопки" },
-    $("button", { класс: "плюс", textContent: "👍 Хочу", onclick: стоп(() => оценить(и, true, "")) }),
-    причина,
-    $("button", { класс: "минус", textContent: "👎 Нет", onclick: стоп(() => оценить(и, false, причина.value)) }),
-    $("button", { textContent: "Уже играл", onclick: стоп(() => { сыграл.style.display = "inline-flex"; }) }),
-    сыграл) : null;
+  // Причина отказа — рядом с «Нет», во всю ширину, подсказка видна целиком (живой сценарий).
+  const кнопки = оценивать ? $("div", { style: "display:flex;flex-direction:column;gap:6px;margin-top:auto" },
+    $("div", { класс: "кнопки" },
+      $("button", { класс: "плюс", textContent: "👍 Хочу", onclick: стоп(() => оценить(и, true, "")) }),
+      $("button", { textContent: "Уже играл", onclick: стоп(() => { сыграл.style.display = "inline-flex"; }) }),
+      сыграл),
+    $("div", { класс: "кнопки" }, причина,
+      $("button", { класс: "минус", textContent: "👎 Нет", onclick: стоп(() => оценить(и, false, причина.value)) }))) : null;
   // Нажатие на плашку открывает игру в клиенте Steam (решение пользователя).
   return $("div", { класс: "игра", title: "Открыть в клиенте Steam", onclick: () => { location.href = "steam://store/" + и.номер; } },
     // Обложка Steam: адрес строится из номера игры. Нет картинки — элемент прячется.
